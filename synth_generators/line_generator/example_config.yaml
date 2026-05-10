@@ -1,0 +1,17 @@
+alphabet: "0123456789abcdefghijklmnopqrstuvwxyz"
+samples: 10000
+image_height: 48
+image_width: 256
+min_text_length: 4
+max_text_length: 16
+font_paths:
+  - /usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf
+  - /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+font_size_min: 24
+font_size_max: 34
+channels: 3
+seed: 42
+noise_std: 4.0
+blur_radius: 0.15
+max_rotation_degrees: 1.0
+horizontal_padding: 8
