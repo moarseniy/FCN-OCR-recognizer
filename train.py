@@ -69,7 +69,7 @@ def compute_loss(logits, targets, lengths, blank_idx, target_mode):
     return logreg_loss(logits, targets)
 
 
-def validate(model, loader, device, blank_idx, target_mode, max_batches=50):
+def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
@@ -79,6 +79,9 @@ def validate(model, loader, device, blank_idx, target_mode, max_batches=50):
         for imgs, targets, lengths in tqdm(loader, desc="Validation"):
             if batches >= max_batches:
                 break
+
+            if preview_saver is not None:
+                preview_saver.save_batch(imgs, targets, lengths)
 
             imgs = imgs.to(device)
             targets = targets.long().to(device)
@@ -99,7 +102,7 @@ def validate(model, loader, device, blank_idx, target_mode, max_batches=50):
 
     return total_loss / batches
 
-def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, max_batches=None):
+def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, max_batches=None, preview_saver=None):
     model.train()
     total_loss = 0.0
     batches = 0
@@ -107,6 +110,9 @@ def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, ma
     for imgs, targets, lengths in tqdm(loader, desc="Training"):
         if max_batches is not None and batches >= max_batches:
             break
+
+        if preview_saver is not None:
+            preview_saver.save_batch(imgs, targets, lengths)
 
         imgs = imgs.to(device)
         targets = targets.long().to(device)
@@ -156,36 +162,47 @@ def decode_target_for_preview(target, length, alphabet, target_mode, space_char)
             previous_idx = idx
     return "".join(chars).strip(space_char)
 
-def save_input_previews(loader, output_dir, count, alphabet, target_mode, space_char):
-    if count <= 0:
-        return
+class InputPreviewSaver:
+    def __init__(self, output_dir, count, alphabet, target_mode, space_char):
+        self.output_path = Path(output_dir)
+        self.count = count
+        self.alphabet = alphabet
+        self.target_mode = target_mode
+        self.space_char = space_char
+        self.saved = 0
+        self.labels_file = None
 
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    labels_path = output_path / "labels.tsv"
+        if count > 0:
+            self.output_path.mkdir(parents=True, exist_ok=True)
+            self.labels_file = (self.output_path / "labels.tsv").open("w")
+            self.labels_file.write("file\ttext\tlength\n")
 
-    saved = 0
-    with labels_path.open("w") as labels_file:
-        labels_file.write("file\ttext\tlength\n")
-        for images, targets, lengths in loader:
-            for image, target, length in zip(images, targets, lengths):
-                if saved >= count:
-                    print(f"Saved {saved} input previews to {output_path}")
-                    return
+    def save_batch(self, images, targets, lengths):
+        if self.count <= 0 or self.saved >= self.count:
+            return
 
-                filename = f"{saved:04d}.png"
-                text = decode_target_for_preview(
-                    target.long(),
-                    int(length),
-                    alphabet,
-                    target_mode,
-                    space_char,
-                )
-                tensor_to_pil(image).save(output_path / filename)
-                labels_file.write(f"{filename}\t{text}\t{int(length)}\n")
-                saved += 1
+        for image, target, length in zip(images, targets, lengths):
+            if self.saved >= self.count:
+                return
 
-    print(f"Saved {saved} input previews to {output_path}")
+            filename = f"{self.saved:04d}.png"
+            text = decode_target_for_preview(
+                target.long(),
+                int(length),
+                self.alphabet,
+                self.target_mode,
+                self.space_char,
+            )
+            tensor_to_pil(image).save(self.output_path / filename)
+            self.labels_file.write(f"{filename}\t{text}\t{int(length)}\n")
+            self.labels_file.flush()
+            self.saved += 1
+
+    def close(self):
+        if self.labels_file is not None:
+            self.labels_file.close()
+            self.labels_file = None
+            print(f"Saved {self.saved} input previews to {self.output_path}")
 
 def plot_losses(train_losses, val_losses, save_path='loss_plot.png'):
     """Строит график лоссов"""
@@ -238,7 +255,7 @@ def parse_args():
     parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
     parser.add_argument("--target-mode", choices=["ctc", "column"], default=None, help="Override config target_mode.")
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of samples used for validation.")
-    parser.add_argument("--preview-samples", type=int, default=0, help="Save N input images from train and val loaders.")
+    parser.add_argument("--preview-samples", type=int, default=0, help="Save N actual input images seen by train and val loops.")
     parser.add_argument("--preview-dir", default="input_previews", help="Directory for saved input previews.")
     return parser.parse_args()
 
@@ -293,17 +310,17 @@ if __name__ == "__main__":
         shuffle=False,
     )
 
+    train_preview_saver = None
+    val_preview_saver = None
     if args.preview_samples > 0:
-        save_input_previews(
-            train_loader,
+        train_preview_saver = InputPreviewSaver(
             Path(args.preview_dir) / "train",
             args.preview_samples,
             alphabet,
             target_mode,
             dataset_config.space_char,
         )
-        save_input_previews(
-            val_loader,
+        val_preview_saver = InputPreviewSaver(
             Path(args.preview_dir) / "val",
             args.preview_samples,
             alphabet,
@@ -365,11 +382,12 @@ if __name__ == "__main__":
             blank_idx,
             target_mode,
             args.max_train_batches,
+            train_preview_saver,
         )
         train_losses.append(train_loss)
 
         # Валидация
-        val_loss = validate(model, val_loader, device, blank_idx, target_mode, args.max_val_batches)
+        val_loss = validate(model, val_loader, device, blank_idx, target_mode, args.max_val_batches, val_preview_saver)
         val_losses.append(val_loss)
 
         print(f"\nEpoch {epoch}:")
@@ -447,6 +465,11 @@ if __name__ == "__main__":
             torch.save(checkpoint, best_train_checkpoint_path)
 
         print("-" * 60)
+
+    if train_preview_saver is not None:
+        train_preview_saver.close()
+    if val_preview_saver is not None:
+        val_preview_saver.close()
 
     # Финальный график
     print("\n" + "="*60)
