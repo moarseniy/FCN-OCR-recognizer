@@ -1,289 +1,192 @@
-# inference.py
-import torch
+from __future__ import annotations
+
+import argparse
+import random
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
-import cv2
-from model import FullyConvTextRecognizer, transform_back, decode_greedy_batch_tensor
-import argparse
-import os
-
-from synth_generators.line_generator.dataset import SingleLineDatasetConfig, SingleLineDataset
+import torch
 import yaml
-from torch.utils.data import DataLoader
-from torchvision.utils import save_image
-from tqdm import tqdm
 
-def get_batch_element(dataloader, k):
-    for i, batch in tqdm(enumerate(dataloader)):
-        if i == k:
-            return batch
+from model import FullyConvTextRecognizer, decode_greedy_batch_tensor
+from synth_generators.line_generator.dataset import SingleLineDataset, SingleLineDatasetConfig
 
-def save_image_safe(image_tensor, filepath):
-    # Приводим к float и нормализуем в [0, 1]
-    img = image_tensor.float()
-    img = (img - img.min()) / (img.max() - img.min())
-    # Сохраняем
-    save_image(img, filepath)
+
+DEFAULT_CONFIG = "synth_generators/line_generator/example_config.yaml"
+
+
+def tensor_to_pil(image_tensor: torch.Tensor) -> Image.Image:
+    image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
+    if image.dim() == 4:
+        image = image[0]
+
+    if image.shape[0] == 1:
+        array = (image[0].numpy() * 255).astype(np.uint8)
+        return Image.fromarray(array, mode="L")
+
+    array = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    return Image.fromarray(array, mode="RGB")
+
 
 class TextRecognizer:
-    def __init__(self, checkpoint_path, device=None):
-        """
-        Инициализация распознавателя текста
-
-        Args:
-            checkpoint_path: путь к файлу чекпоинта
-            device: устройство для инференса ('cuda' или 'cpu')
-        """
-
-        config = "/home/mokin-a/proj/test_dataset_config_50_samples.yaml"
-        print("START!")
-        with open(config, "r") as f:
-            config_data = yaml.safe_load(f)
-            dataset_config = SingleLineDatasetConfig.model_validate(config_data)
-
-        dataset = SingleLineDataset(dataset_config)
-        print("Dataset ready!")
-
-        # alphabet = "0123456789абвгдеёжзийклмнопрстуфхцчьыъэюя"
-        # alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-        # encoder = TextEncoder(alphabet)
-        self.dataloader = DataLoader(
-            dataset,
-            batch_size=1,
-            # shuffle=True,
-            # collate_fn=partial(collate_fn, encoder=encoder)
-        )
-
-        self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
-
-        # Загружаем чекпоинт
+    def __init__(self, checkpoint_path: str, device: str | None = None):
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
-        # Получаем алфавит и параметры модели
-        self.alphabet = self.checkpoint['alphabet']
-        self.idx_to_char = {i: char for i, char in enumerate(self.alphabet)}
+        self.alphabet = self.checkpoint["alphabet"]
+        self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
 
-        model_config = self.checkpoint['model_config']
+        model_config = self.checkpoint.get("model_config", {})
+        self.in_channels = int(model_config.get("in_channels", 3))
+        self.num_classes = int(model_config.get("num_classes", len(self.alphabet)))
+        self.blank_idx = model_config.get("blank_idx")
+        if self.blank_idx is None and self.num_classes > len(self.alphabet):
+            self.blank_idx = self.num_classes - 1
+        self.image_height = int(self.checkpoint.get("config", {}).get("image_height", 48))
 
-        # Создаем и загружаем модель
         self.model = FullyConvTextRecognizer(
-            in_channels=model_config['in_channels'],
-            num_classes=model_config['num_classes']
+            in_channels=self.in_channels,
+            num_classes=self.num_classes,
         ).to(self.device)
-
-        self.model.load_state_dict(self.checkpoint['model_state_dict'])
+        self.model.load_state_dict(self.checkpoint["model_state_dict"])
         self.model.eval()
 
-        print(f"Model loaded from epoch {self.checkpoint['epoch']}, loss: {self.checkpoint['loss']:.8f}")
-        print(f"Alphabet: {self.alphabet}")
+        epoch = self.checkpoint.get("epoch", "?")
+        loss = self.checkpoint.get("loss")
+        loss_text = f", loss: {loss:.8f}" if isinstance(loss, float) else ""
+        print(f"Using device: {self.device}")
+        print(f"Model loaded from epoch {epoch}{loss_text}")
         print(f"Alphabet size: {len(self.alphabet)}")
+        if self.blank_idx is not None:
+            print(f"Blank index: {self.blank_idx}")
 
-    def get_alphabet(self):
-        return self.alphabet
+    def preprocess_image(self, image_path: str | Path) -> torch.Tensor:
+        image = Image.open(image_path)
+        image = image.convert("RGB" if self.in_channels == 3 else "L")
 
-    def preprocess_image(self, image_path):
-        """
-        Предобработка изображения
+        if image.height != self.image_height:
+            new_width = max(1, round(image.width * self.image_height / image.height))
+            image = image.resize((new_width, self.image_height), Image.Resampling.BICUBIC)
 
-        Args:
-            image_path: путь к изображению
-
-        Returns:
-            torch.Tensor: обработанное изображение формы (1, 3, H, W)
-        """
-        # Загружаем изображение
-        if isinstance(image_path, str):
-            image = cv2.imread(image_path)
-            if image is None:
-                raise ValueError(f"Cannot load image from {image_path}")
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        array = np.asarray(image, dtype=np.float32) / 255.0
+        if self.in_channels == 1:
+            tensor = torch.from_numpy(array).unsqueeze(0)
         else:
-            image = image_path  # предполагаем что это numpy array
+            tensor = torch.from_numpy(array).permute(2, 0, 1)
 
-        # Конвертируем в float и нормализуем
-        image = image.astype(np.float32) / 255.0
+        return tensor.unsqueeze(0).to(self.device)
 
-        # Преобразуем в тензор и меняем размерности (H, W, C) -> (C, H, W)
-        image_tensor = torch.from_numpy(image).permute(2, 0, 1)
-
-        # Добавляем batch dimension
-        image_tensor = image_tensor.unsqueeze(0)
-
-        return image_tensor.to(self.device)
-
-    def decode_predictions(self, logits):
-        """
-        Декодирует предсказания модели в текст
-
-        Args:
-            logits: выход модели формы (1, num_classes, width)
-
-        Returns:
-            str: распознанный текст
-            list: сырые предсказания (индексы)
-        """
-        # Получаем предсказанные классы
-        pred_ids = logits.argmax(dim=1)  # (1, width)
-
-        print("BBBB", pred_ids)
-        # Применяем greedy decoding для удаления повторяющихся символов
+    def decode_predictions(self, logits: torch.Tensor) -> tuple[str, list[int]]:
+        pred_ids = logits.argmax(dim=1)
         collapsed, lengths = decode_greedy_batch_tensor(pred_ids)
 
-        # Конвертируем индексы в символы
-        text = []
-        raw_indices = pred_ids[0].cpu().numpy().tolist()
+        chars: list[str] = []
+        for idx in collapsed[0, : lengths[0]].detach().cpu().tolist():
+            if idx == self.blank_idx:
+                continue
+            if idx in self.idx_to_char:
+                chars.append(self.idx_to_char[idx])
 
-        for idx in collapsed[0][:lengths[0]].cpu().numpy():
-            if idx < len(self.alphabet):
-                text.append(self.idx_to_char[idx])
-
-        return ''.join(text), raw_indices
+        return "".join(chars), pred_ids[0].detach().cpu().tolist()
 
     @torch.no_grad()
-    def recognize_tensor(self, image_tensor):
-        """
-        Распознает текст из тензора (как в DataLoader)
-
-        Args:
-            image_tensor: тензор формы (B, C, H, W) или (C, H, W)
-
-        Returns:
-            list: список распознанных текстов
-            list: сырые предсказания
-        """
-        # Проверяем размерность
+    def recognize_tensor(self, image_tensor: torch.Tensor) -> tuple[str, list[int]]:
         if image_tensor.dim() == 3:
-            image_tensor = image_tensor.unsqueeze(0)  # добавляем batch dimension
+            image_tensor = image_tensor.unsqueeze(0)
 
-        # Убеждаемся что тензор на правильном устройстве и правильного типа
-        image_tensor = image_tensor.to(self.device)
-
-        # Проверяем тип данных
-        if image_tensor.dtype != torch.float32:
-            print(f"Warning: Converting tensor from {image_tensor.dtype} to float32")
-            image_tensor = image_tensor.float()
-
-        # Проверяем диапазон значений
+        image_tensor = image_tensor.to(self.device).float()
         if image_tensor.max() > 1.0:
-            print(f"Warning: Tensor values > 1.0 detected (max={image_tensor.max():.2f}), normalizing to [0,1]")
             image_tensor = image_tensor / 255.0
 
-        # Инференс
         logits = self.model(image_tensor)
+        return self.decode_predictions(logits)
 
-        # Применяем transform_back если нужно
-        # logits = transform_back(logits, image_tensor.shape[3])
+    def recognize(self, image_path: str | Path) -> tuple[str, list[int]]:
+        return self.recognize_tensor(self.preprocess_image(image_path))
 
-        # print(logits)
 
-        # Декодирование
-        texts, raw_indices = self.decode_predictions(logits)
+def load_dataset_config(
+    config_path: str | Path | None,
+    checkpoint_config: dict | None = None,
+) -> SingleLineDatasetConfig:
+    if config_path:
+        path = Path(config_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Dataset config not found: {path}")
+        with path.open("r") as file:
+            return SingleLineDatasetConfig.model_validate(yaml.safe_load(file))
 
-        return texts, raw_indices
+    if checkpoint_config:
+        return SingleLineDatasetConfig.model_validate(checkpoint_config)
 
-    def recognize(self, image_path, return_raw=False):
-        """
-        Распознает текст на изображении
+    with Path(DEFAULT_CONFIG).open("r") as file:
+        return SingleLineDatasetConfig.model_validate(yaml.safe_load(file))
 
-        Args:
-            image_path: путь к изображению или numpy array
-            return_raw: возвращать ли сырые предсказания
 
-        Returns:
-            str: распознанный текст
-            list (опционально): сырые предсказания
-        """
-        if image_path:
-            image_tensor = self.preprocess_image(image_path)
-        else:
-            print("AAAAAAAAAAAAAA")
-            image_tensor, tgts, lngths = get_batch_element(self.dataloader, 3)
-            image_tensor = image_tensor.to(self.device)
-            print("TARGETS:", tgts.long().tolist()[0])
-            tgts = [self.alphabet[i] for i in tgts.long().tolist()[0]]
-            print(tgts)
-            save_image_safe(image_tensor[0], "temp.png")
-            return self.recognize_tensor(image_tensor)
-
-        # print(image_tensor.size(), type(image_tensor))
-        # save_image_safe(image_tensor[0], "temp.png")
-
-        # Инференс
-        with torch.no_grad():
-            logits = self.model(image_tensor)
-            # Применяем transform_back если нужно
-            logits = transform_back(logits, image_tensor.shape[3])
-
-        # Декодирование
-        text, raw_indices = self.decode_predictions(logits)
-
-        if return_raw:
-            return text, raw_indices
-
-        return text
-
-    def recognize_batch(self, images):
-        """
-        Распознает текст на батче изображений
-
-        Args:
-            images: список путей к изображениям или список numpy array
-
-        Returns:
-            list: список распознанных текстов
-        """
-        texts = []
-        for image in images:
-            text = self.recognize(image)
-            texts.append(text)
-        return texts
-
-def main():
-    parser = argparse.ArgumentParser(description='Text Recognition Inference')
-    parser.add_argument('--checkpoint', type=str, required=True, 
-                       help='Path to checkpoint file')
-    parser.add_argument('--image', type=str, required=False,
-                       help='Path to image file for recognition')
-    parser.add_argument('--device', type=str, default=None,
-                       help='Device to use (cuda/cpu)')
-
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run FCN OCR inference.")
+    parser.add_argument("--checkpoint", required=True, help="Path to checkpoint file.")
+    parser.add_argument("--image", help="Path to an image file for recognition.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Dataset config for --sample-index mode. Defaults to checkpoint config, then example config.",
+    )
+    parser.add_argument(
+        "--sample-index",
+        type=int,
+        help="Recognize a generated synthetic sample instead of --image.",
+    )
+    parser.add_argument(
+        "--save-sample",
+        default="temp.png",
+        help="Where to save the generated sample image in --sample-index mode.",
+    )
+    parser.add_argument("--device", default=None, help="Device to use: cuda or cpu.")
+    parser.add_argument("--show-raw", action="store_true", help="Print raw per-column predictions.")
     args = parser.parse_args()
 
-    # Проверяем существование файлов
-    if not os.path.exists(args.checkpoint):
-        print(f"Error: Checkpoint file {args.checkpoint} not found!")
-        return
+    checkpoint_path = Path(args.checkpoint)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    # if not os.path.exists(args.image):
-    #     print(f"Error: Image file {args.image} not found!")
-    #     return
+    recognizer = TextRecognizer(str(checkpoint_path), args.device)
 
-    # Инициализируем распознаватель
-    recognizer = TextRecognizer(args.checkpoint, args.device)
+    if args.image:
+        text, raw_indices = recognizer.recognize(args.image)
+        print(f"Image: {args.image}")
+    else:
+        sample_index = args.sample_index if args.sample_index is not None else 0
+        dataset_config = load_dataset_config(args.config, recognizer.checkpoint.get("config"))
+        dataset_config = dataset_config.model_copy(
+            update={
+                "alphabet": recognizer.alphabet,
+                "channels": recognizer.in_channels,
+                "image_height": recognizer.image_height,
+            }
+        )
+        dataset = SingleLineDataset(dataset_config)
 
-    image = None
-    if not args.image:
-        image = args.image
+        rng = random.Random((dataset_config.seed or 0) + sample_index)
+        sample = dataset.generate_sample(rng)
+        tensor_to_pil(sample.image).save(args.save_sample)
 
-    # Распознаем текст
-    text, raw_indices = recognizer.recognize(image, return_raw=True)
+        text, raw_indices = recognizer.recognize_tensor(sample.image)
+        print(f"Synthetic sample index: {sample_index}")
+        print(f"Saved sample image: {args.save_sample}")
+        print(f"Expected text: '{sample.text}'")
 
-    print(f"\n{'='*50}")
-    # print(f"Image: {args.image}")
     print(f"Recognized text: '{text}'")
-    print(f"{'='*50}")
 
-    # Опционально: показываем сырые предсказания
-    print(f"\nRaw predictions (indices): {raw_indices}")
+    if args.show_raw:
+        raw_chars = [
+            "<blank>" if idx == recognizer.blank_idx else recognizer.idx_to_char.get(idx, "?")
+            for idx in raw_indices
+        ]
+        print(f"Raw indices: {raw_indices}")
+        print(f"Raw chars: {raw_chars}")
 
-    raw_preds = [recognizer.get_alphabet()[i] for i in raw_indices]
-    print(raw_preds)
 
 if __name__ == "__main__":
-    # Пример использования без аргументов командной строки
-    # recognizer = TextRecognizer('checkpoints/best_model.pth')
-    # text = recognizer.recognize('path/to/image.jpg')
-    # print(f"Recognized text: {text}")
-
     main()
