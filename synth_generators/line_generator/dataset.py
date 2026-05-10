@@ -18,6 +18,8 @@ DEFAULT_FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/comfortaa/Comfortaa-Regular.ttf",
 )
 
+DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+
 SUPPORTED_AUGMENTATIONS = (
     "cycle_shift",
     "strong_blur",
@@ -64,6 +66,8 @@ class SingleLineDatasetConfig(BaseModel):
     channels: int = Field(default=3, ge=1, le=3)
     seed: int | None = None
     background: int = Field(default=255, ge=0, le=255)
+    background_dir: str | None = None
+    background_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_BACKGROUND_EXTENSIONS))
     foreground_min: int = Field(default=0, ge=0, le=255)
     foreground_max: int = Field(default=60, ge=0, le=255)
     noise_std: float = Field(default=4.0, ge=0.0)
@@ -72,6 +76,33 @@ class SingleLineDatasetConfig(BaseModel):
     augmentation_probabilities: dict[str, float] = Field(default_factory=dict)
     augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     horizontal_padding: int = Field(default=8, ge=0)
+
+    @classmethod
+    def model_validate_with_paths(cls, data: Any, config_path: str | Path | None = None) -> "SingleLineDatasetConfig":
+        if config_path is None:
+            return cls.model_validate(data)
+
+        data = dict(data)
+        config_dir = Path(config_path).resolve().parent
+        data["font_paths"] = cls._resolve_relative_paths(data.get("font_paths"), config_dir)
+
+        background_dir = data.get("background_dir")
+        if background_dir:
+            background_path = Path(background_dir)
+            if not background_path.is_absolute():
+                data["background_dir"] = str(config_dir / background_path)
+
+        return cls.model_validate(data)
+
+    @staticmethod
+    def _resolve_relative_paths(paths: list[str] | None, base_dir: Path) -> list[str] | None:
+        if paths is None:
+            return None
+        resolved_paths = []
+        for path in paths:
+            path_obj = Path(path)
+            resolved_paths.append(str(path_obj if path_obj.is_absolute() else base_dir / path_obj))
+        return resolved_paths
 
     @field_validator("alphabet")
     @classmethod
@@ -124,6 +155,13 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError("foreground_max must be >= foreground_min")
         return value
 
+    @field_validator("background_extensions")
+    @classmethod
+    def background_extensions_must_be_valid(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("background_extensions must not be empty")
+        return [extension if extension.startswith(".") else f".{extension}" for extension in value]
+
     @field_validator("augmentation_probabilities")
     @classmethod
     def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
@@ -164,6 +202,10 @@ class SingleLineDataset(Dataset):
         if not self.sample_alphabet:
             raise ValueError("sample_alphabet must not be empty")
         self.font_paths = self._resolve_font_paths(config.font_paths)
+        self.background_paths = self._resolve_background_paths(
+            config.background_dir,
+            config.background_extensions,
+        )
 
     def __len__(self) -> int:
         return self.config.samples
@@ -230,7 +272,7 @@ class SingleLineDataset(Dataset):
         rng: random.Random,
     ) -> tuple[Image.Image, int, list[float]]:
         cfg = self.config
-        image = Image.new("L", (cfg.image_width, cfg.image_height), color=cfg.background)
+        image = self._make_background(rng)
         draw = ImageDraw.Draw(image)
 
         bbox = draw.textbbox((0, 0), text, font=font)
@@ -272,6 +314,32 @@ class SingleLineDataset(Dataset):
         font_size = size or rng.randint(self.config.font_size_min, self.config.font_size_max)
         path = rng.choice(self.font_paths)
         return ImageFont.truetype(path, font_size)
+
+    def _make_background(self, rng: random.Random) -> Image.Image:
+        cfg = self.config
+        if not self.background_paths:
+            return Image.new("L", (cfg.image_width, cfg.image_height), color=cfg.background)
+
+        path = rng.choice(self.background_paths)
+        with Image.open(path) as background_image:
+            background_image = background_image.convert("L")
+            return self._random_crop_or_resize_background(background_image, rng)
+
+    def _random_crop_or_resize_background(self, image: Image.Image, rng: random.Random) -> Image.Image:
+        cfg = self.config
+        target_width = cfg.image_width
+        target_height = cfg.image_height
+
+        scale = max(target_width / image.width, target_height / image.height)
+        resized_width = max(target_width, int(round(image.width * scale)))
+        resized_height = max(target_height, int(round(image.height * scale)))
+        image = image.resize((resized_width, resized_height), Image.Resampling.BICUBIC)
+
+        max_left = resized_width - target_width
+        max_top = resized_height - target_height
+        left = rng.randint(0, max_left) if max_left > 0 else 0
+        top = rng.randint(0, max_top) if max_top > 0 else 0
+        return image.crop((left, top, left + target_width, top + target_height))
 
     def _apply_augmentations(self, image: Image.Image, rng: random.Random) -> Image.Image:
         probabilities = self._effective_augmentation_probabilities()
@@ -357,7 +425,7 @@ class SingleLineDataset(Dataset):
 
         angle = self._sample_range(rng, params, "angle", 0.0)
         kernel = self._make_motion_kernel(size, angle)
-        return image.filter(ImageFilter.Kernel((size, size), kernel.flatten().tolist(), scale=float(kernel.sum())))
+        return self._filter_with_kernel(image, kernel)
 
     def _augment_scale(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
         factor_x = self._sample_range(rng, params, "factor_x", self._sample_range(rng, params, "factor", 1.0))
@@ -528,7 +596,25 @@ class SingleLineDataset(Dataset):
 
         if kernel.sum() == 0:
             kernel[size // 2, :] = 1.0
-        return kernel
+        return kernel / kernel.sum()
+
+    @staticmethod
+    def _filter_with_kernel(image: Image.Image, kernel: np.ndarray) -> Image.Image:
+        array = np.asarray(image, dtype=np.float32)
+        kernel = np.asarray(kernel, dtype=np.float32)
+        pad_y = kernel.shape[0] // 2
+        pad_x = kernel.shape[1] // 2
+        padded = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x)), mode="edge")
+        filtered = np.zeros_like(array, dtype=np.float32)
+
+        for y in range(kernel.shape[0]):
+            for x in range(kernel.shape[1]):
+                weight = kernel[y, x]
+                if weight == 0:
+                    continue
+                filtered += weight * padded[y : y + array.shape[0], x : x + array.shape[1]]
+
+        return Image.fromarray(np.clip(filtered, 0, 255).astype(np.uint8), mode="L")
 
     @staticmethod
     def _find_perspective_coefficients(src: list[tuple[float, float]], dst: list[tuple[float, float]]) -> list[float]:
@@ -569,3 +655,27 @@ class SingleLineDataset(Dataset):
         raise FileNotFoundError(
             "No usable font files found. Pass font_paths in the dataset config."
         )
+
+    @staticmethod
+    def _resolve_background_paths(background_dir: str | None, extensions: Iterable[str]) -> list[str]:
+        if background_dir is None:
+            return []
+
+        root = Path(background_dir)
+        if not root.exists():
+            raise FileNotFoundError(f"background_dir does not exist: {root}")
+        if not root.is_dir():
+            raise NotADirectoryError(f"background_dir is not a directory: {root}")
+
+        normalized_extensions = {extension.lower() for extension in extensions}
+        paths = [
+            str(path)
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in normalized_extensions
+        ]
+        if not paths:
+            raise FileNotFoundError(
+                f"No background images found in {root}. "
+                f"Supported extensions: {sorted(normalized_extensions)}"
+            )
+        return paths

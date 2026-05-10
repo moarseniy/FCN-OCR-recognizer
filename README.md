@@ -27,6 +27,24 @@
 - `synth_generators/line_generator/example_config.yaml` — CTC;
 - `synth_generators/line_generator/example_column_config.yaml` — старый column-вариант с пробелом для фона.
 
+Если нужно рисовать текст поверх реальных/синтетических фонов, укажите папку:
+
+```yaml
+background_dir: /path/to/backgrounds
+background_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .bmp
+  - .webp
+```
+
+Генератор рекурсивно берёт изображения из `background_dir`, делает случайный
+crop/resize под размер строки и рисует текст поверх. Если `background_dir:
+null`, используется однотонный фон из поля `background`. Относительный путь
+считается относительно YAML-конфига, а не относительно текущей директории
+запуска.
+
 Аугментации задаются двумя словарями:
 
 ```yaml

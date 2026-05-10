@@ -21,7 +21,7 @@ def main() -> None:
     args = parser.parse_args()
 
     with open(args.config, "r") as file:
-        config = SingleLineDatasetConfig.model_validate(yaml.safe_load(file))
+        config = SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), args.config)
 
     dataset = SingleLineDataset(config)
     image, target, length = dataset[args.index]

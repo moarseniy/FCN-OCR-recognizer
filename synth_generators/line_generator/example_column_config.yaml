@@ -14,11 +14,18 @@ font_size_min: 24
 font_size_max: 34
 channels: 3
 seed: 42
+background_dir: backgrounds/
+background_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .bmp
+  # - .webp
 horizontal_padding: 8
 augmentation_probabilities:
-  cycle_shift: 0.1
-  strong_blur: 0.1
-  motion_blur: 0.1
+  cycle_shift: 0.3
+  strong_blur: 0.3
+  motion_blur: 0.3
   scale: 0.2
   darkening: 0.15
   noise: 0.65
@@ -42,9 +49,9 @@ augmentations:
     radius_max: 1.0
   motion_blur:
     size_min: 3
-    size_max: 5
-    angle_min: -5.0
-    angle_max: 5.0
+    size_max: 15
+    angle_min: -15.0
+    angle_max: 15.0
   scale:
     factor_x_min: 0.98
     factor_x_max: 1.02

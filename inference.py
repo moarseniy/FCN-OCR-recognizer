@@ -127,13 +127,14 @@ def load_dataset_config(
         if not path.exists():
             raise FileNotFoundError(f"Dataset config not found: {path}")
         with path.open("r") as file:
-            return SingleLineDatasetConfig.model_validate(yaml.safe_load(file))
+            return SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), path)
 
     if checkpoint_config:
         return SingleLineDatasetConfig.model_validate(checkpoint_config)
 
-    with Path(DEFAULT_CONFIG).open("r") as file:
-        return SingleLineDatasetConfig.model_validate(yaml.safe_load(file))
+    default_path = Path(DEFAULT_CONFIG)
+    with default_path.open("r") as file:
+        return SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), default_path)
 
 
 def main() -> None:

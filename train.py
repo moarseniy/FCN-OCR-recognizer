@@ -268,7 +268,7 @@ if __name__ == "__main__":
         config_data = yaml.safe_load(f)
         if args.target_mode:
             config_data["target_mode"] = args.target_mode
-        dataset_config = SingleLineDatasetConfig.model_validate(config_data)
+        dataset_config = SingleLineDatasetConfig.model_validate_with_paths(config_data, config)
 
     dataset = SingleLineDataset(dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")

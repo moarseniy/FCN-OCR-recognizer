@@ -14,6 +14,13 @@ font_size_min: 24
 font_size_max: 34
 channels: 3
 seed: 42
+background_dir: null
+background_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .bmp
+  - .webp
 horizontal_padding: 8
 augmentation_probabilities:
   cycle_shift: 0.05
