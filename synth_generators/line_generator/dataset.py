@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import random
-from typing import Iterable
+from typing import Iterable, Literal
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -22,15 +22,17 @@ DEFAULT_FONT_CANDIDATES = (
 class SingleLineDatasetConfig(BaseModel):
     """Config for a simple fully-convolutional single-line OCR dataset.
 
-    The dataset returns fixed-width images and padded text-sequence targets:
-    ``image`` has shape ``(C, H, W)``, ``target`` has shape
-    ``(max_text_length,)`` and ``length`` is the real text length.
-    This is intended for CTC training on FCN outputs over image width.
+    In ``ctc`` mode the target is a padded text sequence. In ``column`` mode
+    the target has one class id per image column; background columns are labeled
+    with ``space_char``.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    alphabet: str = "0123456789abcdefghijklmnopqrstuvwxyz"
+    alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
+    sample_alphabet: str | None = None
+    target_mode: Literal["ctc", "column"] = "ctc"
+    space_char: str = " "
     samples: int = Field(default=10_000, ge=1)
     image_height: int = Field(default=48, ge=16)
     image_width: int = Field(default=256, ge=32)
@@ -56,6 +58,24 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError("alphabet must not be empty")
         if len(set(value)) != len(value):
             raise ValueError("alphabet must contain unique characters")
+        return value
+
+    @field_validator("sample_alphabet")
+    @classmethod
+    def sample_alphabet_must_match_alphabet(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return value
+        alphabet = info.data.get("alphabet", "")
+        missing = sorted(set(value) - set(alphabet))
+        if missing:
+            raise ValueError(f"sample_alphabet contains characters outside alphabet: {missing}")
+        return value
+
+    @field_validator("space_char")
+    @classmethod
+    def space_char_must_be_one_char(cls, value: str) -> str:
+        if len(value) != 1:
+            raise ValueError("space_char must contain exactly one character")
         return value
 
     @field_validator("max_text_length")
@@ -97,6 +117,11 @@ class SingleLineDataset(Dataset):
     def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)}
+        if config.target_mode == "column" and config.space_char not in self.char_to_index:
+            raise ValueError("column target_mode requires space_char to be present in alphabet")
+        self.sample_alphabet = config.sample_alphabet or config.alphabet.replace(config.space_char, "")
+        if not self.sample_alphabet:
+            raise ValueError("sample_alphabet must not be empty")
         self.font_paths = self._resolve_font_paths(config.font_paths)
 
     def __len__(self) -> int:
@@ -110,8 +135,13 @@ class SingleLineDataset(Dataset):
     def generate_sample(self, rng: random.Random | None = None) -> GeneratedLineSample:
         rng = rng or random.Random()
         text, font = self._make_text_that_fits(rng)
-        image = self._render_text(text, font, rng)
-        target = self._encode_text(text)
+        image, x_offset, advances = self._render_text(text, font, rng)
+        if self.config.target_mode == "ctc":
+            target = self._encode_text(text)
+            length = len(text)
+        else:
+            target = self._make_column_targets(text, advances, x_offset)
+            length = self.config.image_width
 
         if self.config.channels == 3:
             array = np.asarray(image.convert("RGB"), dtype=np.float32)
@@ -124,7 +154,7 @@ class SingleLineDataset(Dataset):
             text=text,
             image=tensor.contiguous(),
             target=target,
-            length=len(text),
+            length=length,
         )
 
     def _sample_seed(self, index: int) -> int | None:
@@ -138,7 +168,7 @@ class SingleLineDataset(Dataset):
 
         for _ in range(100):
             text_length = rng.randint(self.config.min_text_length, self.config.max_text_length)
-            text = "".join(rng.choice(self.config.alphabet) for _ in range(text_length))
+            text = "".join(rng.choice(self.sample_alphabet) for _ in range(text_length))
             font = self._load_font(rng)
             advances = self._char_advances(text, font)
             last_candidate = (text, font)
@@ -157,7 +187,7 @@ class SingleLineDataset(Dataset):
         text: str,
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
-    ) -> Image.Image:
+    ) -> tuple[Image.Image, int, list[float]]:
         cfg = self.config
         image = Image.new("L", (cfg.image_width, cfg.image_height), color=cfg.background)
         draw = ImageDraw.Draw(image)
@@ -186,12 +216,27 @@ class SingleLineDataset(Dataset):
             array += noise_rng.normal(0.0, cfg.noise_std, size=array.shape)
             image = Image.fromarray(np.clip(array, 0, 255).astype(np.uint8), mode="L")
 
-        return image
+        return image, x, self._char_advances(text, font)
 
     def _encode_text(self, text: str) -> torch.Tensor:
         target = torch.zeros(self.config.max_text_length, dtype=torch.long)
         encoded = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
         target[: len(encoded)] = encoded
+        return target
+
+    def _make_column_targets(self, text: str, advances: list[float], x_offset: int) -> torch.Tensor:
+        target = torch.full(
+            (self.config.image_width,),
+            fill_value=self.char_to_index[self.config.space_char],
+            dtype=torch.long,
+        )
+        cursor = float(x_offset)
+        for char, advance in zip(text, advances):
+            start = max(0, int(round(cursor)))
+            end = min(self.config.image_width, int(round(cursor + advance)))
+            if end > start:
+                target[start:end] = self.char_to_index[char]
+            cursor += advance
         return target
 
     def _load_font(self, rng: random.Random, size: int | None = None) -> ImageFont.FreeTypeFont:

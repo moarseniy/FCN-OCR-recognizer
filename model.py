@@ -26,24 +26,18 @@ def decode_greedy_batch_tensor(pred_ids: torch.Tensor):
         collapsed: (B, W) LongTensor
         lengths:   (B,)   LongTensor
     """
-    B, W = pred_ids.shape
-    device = pred_ids.device
-
-    # keep[b, t] = True если t == 0 или pred[b,t] != pred[b,t-1]
-    keep = torch.ones((B, W), dtype=torch.bool, device=device)
-    keep[:, 1:] = pred_ids[:, 1:] != pred_ids[:, :-1]
-
-    # индексы для scatter
-    idx = torch.cumsum(keep, dim=1) - 1   # (B, W), starts from 0
-
-    # длины после collapse
-    lengths = keep.sum(dim=1)
-
-    # выходной тензор
     collapsed = torch.zeros_like(pred_ids)
+    lengths = torch.zeros(pred_ids.size(0), dtype=torch.long, device=pred_ids.device)
 
-    # scatter без циклов
-    collapsed.scatter_(1, idx, pred_ids * keep)
+    for batch_idx, row in enumerate(pred_ids):
+        if row.numel() == 0:
+            continue
+
+        keep = torch.ones_like(row, dtype=torch.bool)
+        keep[1:] = row[1:] != row[:-1]
+        values = row[keep]
+        collapsed[batch_idx, : values.numel()] = values
+        lengths[batch_idx] = values.numel()
 
     return collapsed, lengths
 

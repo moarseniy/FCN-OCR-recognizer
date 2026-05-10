@@ -10,14 +10,22 @@
 Он возвращает элементы в формате, который подходит текущей FCN-идее:
 
 - `image`: тензор `C x H x W`;
-- `target`: padded-тензор длиной `max_text_length` с индексами символов;
-- `length`: реальная длина строки.
+- в режиме `ctc`: `target` — padded-тензор длиной `max_text_length`, `length` — реальная длина строки;
+- в режиме `column`: `target` — тензор длиной `W`, `length` — ширина изображения.
 
-Модель обучается через CTC loss. Последний класс модели — `blank`, поэтому
-`num_classes = len(alphabet) + 1`. На инференсе повторы схлопываются, а blank
-удаляется.
+Есть два режима обучения:
 
-Пример конфига: `synth_generators/line_generator/example_config.yaml`.
+- `target_mode: ctc` — обучение через CTC loss. Последний класс модели — `blank`, поэтому `num_classes = len(alphabet) + 1`.
+- `target_mode: column` — старый вариант с классификацией каждого столбца через cross-entropy. Фон и отступы размечаются пробелом, поэтому пробел должен быть в `alphabet`.
+
+В примерах `alphabet` начинается с пробела, а `sample_alphabet` пробел не
+содержит. Так пробел есть как класс фона, но синтетические строки не состоят из
+случайных пробелов.
+
+Примеры конфигов:
+
+- `synth_generators/line_generator/example_config.yaml` — CTC;
+- `synth_generators/line_generator/example_column_config.yaml` — старый column-вариант с пробелом для фона.
 
 Сохранить один пример изображения:
 
@@ -33,8 +41,14 @@ python -m synth_generators.line_generator.preview \
 python train.py --config synth_generators/line_generator/example_config.yaml
 ```
 
-Продолжать старые чекпоинты после перехода на CTC не стоит: у модели изменился
-последний слой. Для продолжения новой CTC-тренировки используйте:
+Запустить старый column-вариант:
+
+```bash
+python train.py --config synth_generators/line_generator/example_column_config.yaml
+```
+
+Продолжать чекпоинт можно только в том же режиме, в котором он был создан. Для
+продолжения используйте:
 
 ```bash
 python train.py --resume --config synth_generators/line_generator/example_config.yaml

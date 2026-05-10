@@ -6,8 +6,8 @@ import yaml
 from torch.utils.data import DataLoader
 
 import torch
-from model import FullyConvTextRecognizer
-from loss import ctc_loss
+from model import FullyConvTextRecognizer, transform_back
+from loss import ctc_loss, logreg_loss
 
 from tqdm import tqdm
 from datetime import datetime
@@ -41,8 +41,9 @@ def save_checkpoint(
         'config': config,
         'model_config': {
             'in_channels': config.get('channels', 3),
-            'num_classes': len(alphabet) + 1,
-            'blank_idx': len(alphabet),
+            'num_classes': len(alphabet) + (1 if config.get('target_mode', 'ctc') == 'ctc' else 0),
+            'blank_idx': len(alphabet) if config.get('target_mode', 'ctc') == 'ctc' else None,
+            'target_mode': config.get('target_mode', 'ctc'),
         },
         'train_losses': train_losses,
         'val_losses': val_losses,
@@ -58,7 +59,13 @@ def save_checkpoint(
 
     return checkpoint_path
 
-def validate(model, loader, device, blank_idx, max_batches=50):
+def compute_loss(logits, targets, lengths, blank_idx, target_mode):
+    if target_mode == "ctc":
+        return ctc_loss(logits, targets, lengths, blank_idx)
+    return logreg_loss(logits, targets)
+
+
+def validate(model, loader, device, blank_idx, target_mode, max_batches=50):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
@@ -74,8 +81,10 @@ def validate(model, loader, device, blank_idx, max_batches=50):
             lengths = lengths.long().to(device)
 
             logits = model(imgs)
+            if target_mode == "column":
+                logits = transform_back(logits, imgs.shape[3])
 
-            loss = ctc_loss(logits, targets, lengths, blank_idx)
+            loss = compute_loss(logits, targets, lengths, blank_idx, target_mode)
             total_loss += loss.item()
             batches += 1
 
@@ -86,7 +95,7 @@ def validate(model, loader, device, blank_idx, max_batches=50):
 
     return total_loss / batches
 
-def train_one_epoch(model, loader, optimizer, device, blank_idx, max_batches=None):
+def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, max_batches=None):
     model.train()
     total_loss = 0.0
     batches = 0
@@ -100,8 +109,10 @@ def train_one_epoch(model, loader, optimizer, device, blank_idx, max_batches=Non
         lengths = lengths.long().to(device)
 
         logits = model(imgs)
+        if target_mode == "column":
+            logits = transform_back(logits, imgs.shape[3])
 
-        loss = ctc_loss(logits, targets, lengths, blank_idx)
+        loss = compute_loss(logits, targets, lengths, blank_idx, target_mode)
 
         # print(torch.isnan(loss), torch.isinf(loss))
 
@@ -166,6 +177,7 @@ def parse_args():
     parser.add_argument("--max-train-batches", type=int, default=None, help="Optional train batches per epoch limit.")
     parser.add_argument("--max-val-batches", type=int, default=50, help="Validation batches per epoch limit.")
     parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
+    parser.add_argument("--target-mode", choices=["ctc", "column"], default=None, help="Override config target_mode.")
     return parser.parse_args()
 
 
@@ -175,16 +187,21 @@ if __name__ == "__main__":
     print("START!")
     with open(config, "r") as f:
         config_data = yaml.safe_load(f)
+        if args.target_mode:
+            config_data["target_mode"] = args.target_mode
         dataset_config = SingleLineDatasetConfig.model_validate(config_data)
 
     dataset = SingleLineDataset(dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
     alphabet = dataset_config.alphabet
-    blank_idx = len(alphabet)
+    target_mode = dataset_config.target_mode
+    blank_idx = len(alphabet) if target_mode == "ctc" else None
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
-    print("Blank index: ", blank_idx)
+    print("Target mode: ", target_mode)
+    if blank_idx is not None:
+        print("Blank index: ", blank_idx)
 
     dataloader = DataLoader(
         dataset,
@@ -197,7 +214,7 @@ if __name__ == "__main__":
 
     model = FullyConvTextRecognizer(
         in_channels=dataset_config.channels,
-        num_classes=len(alphabet) + 1
+        num_classes=len(alphabet) + (1 if target_mode == "ctc" else 0)
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -244,12 +261,13 @@ if __name__ == "__main__":
             optimizer,
             device,
             blank_idx,
+            target_mode,
             args.max_train_batches,
         )
         train_losses.append(train_loss)
 
         # Валидация
-        val_loss = validate(model, dataloader, device, blank_idx, args.max_val_batches)
+        val_loss = validate(model, dataloader, device, blank_idx, target_mode, args.max_val_batches)
         val_losses.append(val_loss)
 
         print(f"\nEpoch {epoch}:")
@@ -293,8 +311,9 @@ if __name__ == "__main__":
                 'config': config_data,
                 'model_config': {
                     'in_channels': dataset_config.channels,
-                    'num_classes': len(alphabet) + 1,
+                    'num_classes': len(alphabet) + (1 if target_mode == "ctc" else 0),
                     'blank_idx': blank_idx,
+                    'target_mode': target_mode,
                 },
                 'train_losses': train_losses,
                 'val_losses': val_losses
@@ -316,8 +335,9 @@ if __name__ == "__main__":
                 'config': config_data,
                 'model_config': {
                     'in_channels': dataset_config.channels,
-                    'num_classes': len(alphabet) + 1,
+                    'num_classes': len(alphabet) + (1 if target_mode == "ctc" else 0),
                     'blank_idx': blank_idx,
+                    'target_mode': target_mode,
                 },
                 'train_losses': train_losses,
                 'val_losses': val_losses

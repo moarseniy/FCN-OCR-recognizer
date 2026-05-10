@@ -1,6 +1,6 @@
 alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
 sample_alphabet: "0123456789abcdefghijklmnopqrstuvwxyz"
-target_mode: ctc
+target_mode: column
 space_char: " "
 samples: 10000
 image_height: 48
