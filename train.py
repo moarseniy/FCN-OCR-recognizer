@@ -1,23 +1,30 @@
 
 # train.py
 from synth_generators.line_generator.dataset import SingleLineDatasetConfig, SingleLineDataset
+import argparse
 import yaml
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
 import torch
-from model import FullyConvTextRecognizer, transform_back
-from loss import logreg_loss, simple_logreg_loss
-
-from functools import partial
-# from utils import TextEncoder, collate_fn
+from model import FullyConvTextRecognizer
+from loss import ctc_loss
 
 from tqdm import tqdm
-from itertools import islice
 from datetime import datetime
 import os
-import matplotlib.pyplot as plt
 
-def save_checkpoint(model, optimizer, epoch, loss, alphabet, config, checkpoint_dir='checkpoints'):
+def save_checkpoint(
+    model,
+    optimizer,
+    epoch,
+    loss,
+    val_loss,
+    alphabet,
+    config,
+    train_losses,
+    val_losses,
+    checkpoint_dir="checkpoints",
+):
     """Сохраняет чекпоинт модели"""
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -29,12 +36,16 @@ def save_checkpoint(model, optimizer, epoch, loss, alphabet, config, checkpoint_
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': loss,
+        'val_loss': val_loss,
         'alphabet': alphabet,
         'config': config,
         'model_config': {
-            'in_channels': 3,
-            'num_classes': len(alphabet)
-        }
+            'in_channels': config.get('channels', 3),
+            'num_classes': len(alphabet) + 1,
+            'blank_idx': len(alphabet),
+        },
+        'train_losses': train_losses,
+        'val_losses': val_losses,
     }
 
     torch.save(checkpoint, checkpoint_path)
@@ -47,52 +58,50 @@ def save_checkpoint(model, optimizer, epoch, loss, alphabet, config, checkpoint_
 
     return checkpoint_path
 
-def validate(model, loader, device):
+def validate(model, loader, device, blank_idx, max_batches=50):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
+    batches = 0
 
-    iterations = [20, 40]
-    cur_iter = 0
     with torch.no_grad():
         for imgs, targets, lengths in tqdm(loader, desc="Validation"):
-            cur_iter += 1
-            if cur_iter == iterations[1]:
+            if batches >= max_batches:
                 break
-            if cur_iter < iterations[0]:
-                continue
 
             imgs = imgs.to(device)
             targets = targets.long().to(device)
+            lengths = lengths.long().to(device)
 
             logits = model(imgs)
-            logits = transform_back(logits, imgs.shape[3])
 
-            loss = logreg_loss(logits, targets)
+            loss = ctc_loss(logits, targets, lengths, blank_idx)
             total_loss += loss.item()
+            batches += 1
 
             # print(torch.isnan(loss), torch.isinf(loss))
 
-    return total_loss / 20
+    if batches == 0:
+        raise RuntimeError("Validation loader produced no batches")
 
-def train_one_epoch(model, loader, optimizer, device):
+    return total_loss / batches
+
+def train_one_epoch(model, loader, optimizer, device, blank_idx, max_batches=None):
     model.train()
     total_loss = 0.0
+    batches = 0
 
-    iterations = 20
-    cur_iter = 0
     for imgs, targets, lengths in tqdm(loader, desc="Training"):
-        cur_iter += 1
-        if cur_iter == iterations:
+        if max_batches is not None and batches >= max_batches:
             break
 
         imgs = imgs.to(device)
         targets = targets.long().to(device)
+        lengths = lengths.long().to(device)
 
         logits = model(imgs)
-        logits = transform_back(logits, imgs.shape[3])
 
-        loss = logreg_loss(logits, targets)
+        loss = ctc_loss(logits, targets, lengths, blank_idx)
 
         # print(torch.isnan(loss), torch.isinf(loss))
 
@@ -101,11 +110,21 @@ def train_one_epoch(model, loader, optimizer, device):
         optimizer.step()
 
         total_loss += loss.item()
+        batches += 1
 
-    return total_loss / iterations
+    if batches == 0:
+        raise RuntimeError("Training loader produced no batches")
+
+    return total_loss / batches
 
 def plot_losses(train_losses, val_losses, save_path='loss_plot.png'):
     """Строит график лоссов"""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as error:
+        print(f"Skipping loss plot: matplotlib is not available ({error})")
+        return
+
     plt.figure(figsize=(10, 6))
     epochs = range(1, len(train_losses) + 1)
 
@@ -133,8 +152,26 @@ def plot_losses(train_losses, val_losses, save_path='loss_plot.png'):
     plt.close()
     print(f"Loss plot saved to {save_path}")
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the FCN OCR recognizer on synthetic lines.")
+    parser.add_argument(
+        "--config",
+        default="synth_generators/line_generator/example_config.yaml",
+        help="Path to a SingleLineDataset YAML config.",
+    )
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train.")
+    parser.add_argument("--batch-size", type=int, default=128, help="Training batch size.")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate.")
+    parser.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for checkpoints.")
+    parser.add_argument("--max-train-batches", type=int, default=None, help="Optional train batches per epoch limit.")
+    parser.add_argument("--max-val-batches", type=int, default=50, help="Validation batches per epoch limit.")
+    parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    config = "/home/mokin-a/proj/test_dataset_config_50_samples.yaml"
+    args = parse_args()
+    config = args.config
     print("START!")
     with open(config, "r") as f:
         config_data = yaml.safe_load(f)
@@ -143,32 +180,34 @@ if __name__ == "__main__":
     dataset = SingleLineDataset(dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
-    alphabet = config_data['alphabet']
+    alphabet = dataset_config.alphabet
+    blank_idx = len(alphabet)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
+    print("Blank index: ", blank_idx)
 
     dataloader = DataLoader(
         dataset,
-        batch_size=1024,
-        shuffle=False,  # шаффлим тренировочные данные
+        batch_size=args.batch_size,
+        shuffle=True,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device ", device)
 
     model = FullyConvTextRecognizer(
-        in_channels=3,
-        num_classes=len(alphabet)
+        in_channels=dataset_config.channels,
+        num_classes=len(alphabet) + 1
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Списки для хранения истории лоссов
     train_losses = []
     val_losses = []
 
     # Создаем директорию для чекпоинтов и графиков
-    checkpoint_dir = 'checkpoints'
+    checkpoint_dir = args.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     start_epoch = 0
@@ -177,7 +216,7 @@ if __name__ == "__main__":
 
     # Можно загрузить последний чекпоинт если нужно продолжить обучение
     latest_checkpoint = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
-    if os.path.exists(latest_checkpoint):
+    if args.resume and os.path.exists(latest_checkpoint):
         print("Found latest checkpoint, loading...")
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -197,18 +236,20 @@ if __name__ == "__main__":
     print("Starting training...")
     print("="*60 + "\n")
 
-    for epoch in range(start_epoch, 50):
+    for epoch in range(start_epoch, args.epochs):
         # Тренировка
         train_loss = train_one_epoch(
             model,
             dataloader,
             optimizer,
-            device
+            device,
+            blank_idx,
+            args.max_train_batches,
         )
         train_losses.append(train_loss)
 
         # Валидация
-        val_loss = validate(model, dataloader, device)
+        val_loss = validate(model, dataloader, device, blank_idx, args.max_val_batches)
         val_losses.append(val_loss)
 
         print(f"\nEpoch {epoch}:")
@@ -222,22 +263,18 @@ if __name__ == "__main__":
 
         # Сохраняем чекпоинт каждые 5 эпох
         if epoch % 5 == 0:
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': train_loss,
-                'val_loss': val_loss,
-                'alphabet': alphabet,
-                'config': config_data,
-                'model_config': {
-                    'in_channels': 3,
-                    'num_classes': len(alphabet)
-                },
-                'train_losses': train_losses,
-                'val_losses': val_losses
-            }
-            save_checkpoint(model, optimizer, epoch, train_loss, alphabet, config_data, checkpoint_dir)
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch,
+                train_loss,
+                val_loss,
+                alphabet,
+                config_data,
+                train_losses,
+                val_losses,
+                checkpoint_dir,
+            )
 
             # Строим график каждые 5 эпох
             plot_losses(train_losses, val_losses, 
@@ -255,8 +292,9 @@ if __name__ == "__main__":
                 'alphabet': alphabet,
                 'config': config_data,
                 'model_config': {
-                    'in_channels': 3,
-                    'num_classes': len(alphabet)
+                    'in_channels': dataset_config.channels,
+                    'num_classes': len(alphabet) + 1,
+                    'blank_idx': blank_idx,
                 },
                 'train_losses': train_losses,
                 'val_losses': val_losses
@@ -277,8 +315,9 @@ if __name__ == "__main__":
                 'alphabet': alphabet,
                 'config': config_data,
                 'model_config': {
-                    'in_channels': 3,
-                    'num_classes': len(alphabet)
+                    'in_channels': dataset_config.channels,
+                    'num_classes': len(alphabet) + 1,
+                    'blank_idx': blank_idx,
                 },
                 'train_losses': train_losses,
                 'val_losses': val_losses
