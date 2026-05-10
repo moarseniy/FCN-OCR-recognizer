@@ -27,6 +27,39 @@
 - `synth_generators/line_generator/example_config.yaml` — CTC;
 - `synth_generators/line_generator/example_column_config.yaml` — старый column-вариант с пробелом для фона.
 
+Аугментации задаются двумя словарями:
+
+```yaml
+augmentation_probabilities:
+  rotate: 0.8
+  gaussian_blur: 0.35
+  gaussian_noise: 0.8
+  brightness: 0.3
+  contrast: 0.3
+  invert: 0.0
+augmentations:
+  rotate:
+    max_degrees: 1.0
+    fillcolor: 255
+  gaussian_blur:
+    radius_min: 0.0
+    radius_max: 0.25
+  gaussian_noise:
+    std_min: 0.0
+    std_max: 5.0
+  brightness:
+    factor_min: 0.85
+    factor_max: 1.15
+  contrast:
+    factor_min: 0.85
+    factor_max: 1.2
+  invert: {}
+```
+
+Вероятность `0.0` выключает преобразование, `1.0` применяет всегда. Для
+`column`-режима лучше держать геометрические преобразования мягкими, потому что
+target размечен по горизонтальным столбцам.
+
 Сохранить один пример изображения:
 
 ```bash

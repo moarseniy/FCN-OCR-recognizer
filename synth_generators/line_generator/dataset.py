@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import random
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import torch
 from torch.utils.data import Dataset
@@ -16,6 +16,15 @@ DEFAULT_FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/comfortaa/Comfortaa-Regular.ttf",
+)
+
+SUPPORTED_AUGMENTATIONS = (
+    "rotate",
+    "gaussian_blur",
+    "gaussian_noise",
+    "brightness",
+    "contrast",
+    "invert",
 )
 
 
@@ -49,6 +58,8 @@ class SingleLineDatasetConfig(BaseModel):
     noise_std: float = Field(default=4.0, ge=0.0)
     blur_radius: float = Field(default=0.15, ge=0.0)
     max_rotation_degrees: float = Field(default=1.0, ge=0.0)
+    augmentation_probabilities: dict[str, float] = Field(default_factory=dict)
+    augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     horizontal_padding: int = Field(default=8, ge=0)
 
     @field_validator("alphabet")
@@ -100,6 +111,25 @@ class SingleLineDatasetConfig(BaseModel):
         min_value = info.data.get("foreground_min")
         if min_value is not None and value < min_value:
             raise ValueError("foreground_max must be >= foreground_min")
+        return value
+
+    @field_validator("augmentation_probabilities")
+    @classmethod
+    def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
+        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
+        if unknown:
+            raise ValueError(f"unknown augmentations: {unknown}")
+        for name, probability in value.items():
+            if not 0.0 <= probability <= 1.0:
+                raise ValueError(f"probability for {name} must be between 0 and 1")
+        return value
+
+    @field_validator("augmentations")
+    @classmethod
+    def augmentations_must_be_known(cls, value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
+        if unknown:
+            raise ValueError(f"unknown augmentation configs: {unknown}")
         return value
 
 
@@ -202,19 +232,7 @@ class SingleLineDataset(Dataset):
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
 
         draw.text((x, y), text, font=font, fill=fill)
-
-        if cfg.max_rotation_degrees:
-            angle = rng.uniform(-cfg.max_rotation_degrees, cfg.max_rotation_degrees)
-            image = image.rotate(angle, resample=Image.Resampling.BICUBIC, fillcolor=cfg.background)
-
-        if cfg.blur_radius:
-            image = image.filter(ImageFilter.GaussianBlur(radius=cfg.blur_radius))
-
-        if cfg.noise_std:
-            noise_rng = np.random.default_rng(rng.randrange(2**32))
-            array = np.asarray(image, dtype=np.float32)
-            array += noise_rng.normal(0.0, cfg.noise_std, size=array.shape)
-            image = Image.fromarray(np.clip(array, 0, 255).astype(np.uint8), mode="L")
+        image = self._apply_augmentations(image, rng)
 
         return image, x, self._char_advances(text, font)
 
@@ -243,6 +261,89 @@ class SingleLineDataset(Dataset):
         font_size = size or rng.randint(self.config.font_size_min, self.config.font_size_max)
         path = rng.choice(self.font_paths)
         return ImageFont.truetype(path, font_size)
+
+    def _apply_augmentations(self, image: Image.Image, rng: random.Random) -> Image.Image:
+        probabilities = self._effective_augmentation_probabilities()
+        for name in SUPPORTED_AUGMENTATIONS:
+            probability = probabilities.get(name, 0.0)
+            if probability <= 0.0 or rng.random() > probability:
+                continue
+
+            params = self.config.augmentations.get(name, {})
+            if name == "rotate":
+                image = self._augment_rotate(image, rng, params)
+            elif name == "gaussian_blur":
+                image = self._augment_gaussian_blur(image, rng, params)
+            elif name == "gaussian_noise":
+                image = self._augment_gaussian_noise(image, rng, params)
+            elif name == "brightness":
+                image = self._augment_brightness(image, rng, params)
+            elif name == "contrast":
+                image = self._augment_contrast(image, rng, params)
+            elif name == "invert":
+                image = ImageOps.invert(image)
+
+        return image
+
+    def _effective_augmentation_probabilities(self) -> dict[str, float]:
+        if self.config.augmentation_probabilities:
+            return self.config.augmentation_probabilities
+
+        probabilities: dict[str, float] = {}
+        if self.config.max_rotation_degrees:
+            probabilities["rotate"] = 1.0
+        if self.config.blur_radius:
+            probabilities["gaussian_blur"] = 1.0
+        if self.config.noise_std:
+            probabilities["gaussian_noise"] = 1.0
+        return probabilities
+
+    def _augment_rotate(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        max_degrees = float(params.get("max_degrees", self.config.max_rotation_degrees))
+        if max_degrees <= 0.0:
+            return image
+        angle = rng.uniform(-max_degrees, max_degrees)
+        fillcolor = int(params.get("fillcolor", self.config.background))
+        return image.rotate(angle, resample=Image.Resampling.BICUBIC, fillcolor=fillcolor)
+
+    def _augment_gaussian_blur(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        radius = self._sample_range(rng, params, "radius", self.config.blur_radius)
+        if radius <= 0.0:
+            return image
+        return image.filter(ImageFilter.GaussianBlur(radius=radius))
+
+    def _augment_gaussian_noise(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        std = self._sample_range(rng, params, "std", self.config.noise_std)
+        if std <= 0.0:
+            return image
+        noise_rng = np.random.default_rng(rng.randrange(2**32))
+        array = np.asarray(image, dtype=np.float32)
+        array += noise_rng.normal(0.0, std, size=array.shape)
+        return Image.fromarray(np.clip(array, 0, 255).astype(np.uint8), mode="L")
+
+    def _augment_brightness(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        factor = self._sample_range(rng, params, "factor", 1.0)
+        return ImageEnhance.Brightness(image).enhance(factor)
+
+    def _augment_contrast(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        factor = self._sample_range(rng, params, "factor", 1.0)
+        return ImageEnhance.Contrast(image).enhance(factor)
+
+    @staticmethod
+    def _sample_range(rng: random.Random, params: dict[str, Any], name: str, default: float) -> float:
+        if name in params:
+            return float(params[name])
+
+        min_name = f"{name}_min"
+        max_name = f"{name}_max"
+        if min_name in params or max_name in params:
+            low = float(params.get(min_name, default))
+            high = float(params.get(max_name, default))
+            if high < low:
+                low, high = high, low
+            return rng.uniform(low, high)
+
+        return float(default)
 
     @staticmethod
     def _char_advances(text: str, font: ImageFont.FreeTypeFont) -> list[float]:

@@ -14,7 +14,28 @@ font_size_min: 24
 font_size_max: 34
 channels: 3
 seed: 42
-noise_std: 4.0
-blur_radius: 0.15
-max_rotation_degrees: 1.0
 horizontal_padding: 8
+augmentation_probabilities:
+  rotate: 0.4
+  gaussian_blur: 0.25
+  gaussian_noise: 0.7
+  brightness: 0.2
+  contrast: 0.2
+  invert: 0.0
+augmentations:
+  rotate:
+    max_degrees: 0.5
+    fillcolor: 255
+  gaussian_blur:
+    radius_min: 0.0
+    radius_max: 0.2
+  gaussian_noise:
+    std_min: 0.0
+    std_max: 4.0
+  brightness:
+    factor_min: 0.9
+    factor_max: 1.1
+  contrast:
+    factor_min: 0.9
+    factor_max: 1.15
+  invert: {}
