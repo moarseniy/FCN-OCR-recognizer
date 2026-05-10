@@ -2,6 +2,8 @@
 # train.py
 from synth_generators.line_generator.dataset import SingleLineDatasetConfig, SingleLineDataset
 import argparse
+import math
+import time
 import yaml
 from torch.utils.data import DataLoader, random_split
 
@@ -9,7 +11,6 @@ import torch
 from model import FullyConvTextRecognizer, transform_back
 from loss import ctc_loss, logreg_loss
 
-from tqdm import tqdm
 from datetime import datetime
 import os
 from pathlib import Path
@@ -69,14 +70,17 @@ def compute_loss(logits, targets, lengths, blank_idx, target_mode):
     return logreg_loss(logits, targets)
 
 
-def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None):
+def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None, log_every=0):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
     batches = 0
+    samples = 0
+    started_at = time.perf_counter()
 
     with torch.no_grad():
-        for imgs, targets, lengths in tqdm(loader, desc="Validation"):
+        total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
+        for batch_idx, (imgs, targets, lengths) in enumerate(loader, start=1):
             if batches >= max_batches:
                 break
 
@@ -94,20 +98,46 @@ def validate(model, loader, device, blank_idx, target_mode, max_batches=50, prev
             loss = compute_loss(logits, targets, lengths, blank_idx, target_mode)
             total_loss += loss.item()
             batches += 1
+            samples += imgs.size(0)
+
+            if log_every and (batch_idx % log_every == 0):
+                running_loss = total_loss / batches
+                print(
+                    f"  val   batch {batch_idx:04d}/{total_batches:04d} "
+                    f"loss={loss.item():.6f} avg={running_loss:.6f} samples={samples}"
+                )
 
             # print(torch.isnan(loss), torch.isinf(loss))
 
     if batches == 0:
         raise RuntimeError("Validation loader produced no batches")
 
-    return total_loss / batches
+    return {
+        "loss": total_loss / batches,
+        "batches": batches,
+        "samples": samples,
+        "seconds": time.perf_counter() - started_at,
+    }
 
-def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, max_batches=None, preview_saver=None):
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    device,
+    blank_idx,
+    target_mode,
+    max_batches=None,
+    preview_saver=None,
+    log_every=0,
+):
     model.train()
     total_loss = 0.0
     batches = 0
+    samples = 0
+    started_at = time.perf_counter()
 
-    for imgs, targets, lengths in tqdm(loader, desc="Training"):
+    total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
+    for batch_idx, (imgs, targets, lengths) in enumerate(loader, start=1):
         if max_batches is not None and batches >= max_batches:
             break
 
@@ -132,11 +162,24 @@ def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, ma
 
         total_loss += loss.item()
         batches += 1
+        samples += imgs.size(0)
+
+        if log_every and (batch_idx % log_every == 0):
+            running_loss = total_loss / batches
+            print(
+                f"  train batch {batch_idx:04d}/{total_batches:04d} "
+                f"loss={loss.item():.6f} avg={running_loss:.6f} samples={samples}"
+            )
 
     if batches == 0:
         raise RuntimeError("Training loader produced no batches")
 
-    return total_loss / batches
+    return {
+        "loss": total_loss / batches,
+        "batches": batches,
+        "samples": samples,
+        "seconds": time.perf_counter() - started_at,
+    }
 
 def tensor_to_pil(image_tensor):
     image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
@@ -204,40 +247,25 @@ class InputPreviewSaver:
             self.labels_file = None
             print(f"Saved {self.saved} input previews to {self.output_path}")
 
-def plot_losses(train_losses, val_losses, save_path='loss_plot.png'):
-    """Строит график лоссов"""
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as error:
-        print(f"Skipping loss plot: matplotlib is not available ({error})")
-        return
+def batch_count(sample_count, batch_size, drop_last):
+    if drop_last:
+        return sample_count // batch_size
+    return math.ceil(sample_count / batch_size)
 
-    plt.figure(figsize=(10, 6))
-    epochs = range(1, len(train_losses) + 1)
-
-    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
-    plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
-
-    plt.xlabel('Epoch', fontsize=12)
-    plt.ylabel('Loss', fontsize=12)
-    plt.title('Training and Validation Loss', fontsize=14)
-    plt.legend(fontsize=12)
-    plt.grid(True, alpha=0.3)
-
-    # Добавляем аннотации для лучшей модели
-    best_val_epoch = val_losses.index(min(val_losses)) + 1
-    best_val_loss = min(val_losses)
-    plt.scatter(best_val_epoch, best_val_loss, color='green', s=100, zorder=5)
-    plt.annotate(f'Best: {best_val_loss:.4f}', 
-                xy=(best_val_epoch, best_val_loss),
-                xytext=(best_val_epoch + 0.5, best_val_loss + 0.1),
-                fontsize=10,
-                arrowprops=dict(arrowstyle='->', color='green'))
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=100)
-    plt.close()
-    print(f"Loss plot saved to {save_path}")
+def append_training_log(log_path, row):
+    is_new_file = not log_path.exists()
+    with log_path.open("a") as file:
+        if is_new_file:
+            file.write(
+                "epoch\ttrain_loss\tval_loss\ttrain_batches\tval_batches\t"
+                "train_samples\tval_samples\tlr\tepoch_seconds\tis_best\n"
+            )
+        file.write(
+            f"{row['epoch']}\t{row['train_loss']:.8f}\t{row['val_loss']:.8f}\t"
+            f"{row['train_batches']}\t{row['val_batches']}\t"
+            f"{row['train_samples']}\t{row['val_samples']}\t"
+            f"{row['lr']:.8g}\t{row['epoch_seconds']:.3f}\t{int(row['is_best'])}\n"
+        )
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the FCN OCR recognizer on synthetic lines.")
@@ -252,6 +280,9 @@ def parse_args():
     parser.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for checkpoints.")
     parser.add_argument("--max-train-batches", type=int, default=None, help="Optional train batches per epoch limit.")
     parser.add_argument("--max-val-batches", type=int, default=50, help="Validation batches per epoch limit.")
+    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker processes.")
+    parser.add_argument("--drop-last", action="store_true", help="Drop incomplete train/val batches.")
+    parser.add_argument("--log-every", type=int, default=1, help="Print every N batch losses. 0 disables batch logs.")
     parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
     parser.add_argument("--target-mode", choices=["ctc", "column"], default=None, help="Override config target_mode.")
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of samples used for validation.")
@@ -303,12 +334,34 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+        drop_last=args.drop_last,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+        drop_last=args.drop_last,
     )
+
+    train_batches = batch_count(len(train_dataset), args.batch_size, args.drop_last)
+    val_batches = batch_count(len(val_dataset), args.batch_size, args.drop_last)
+    if train_batches == 0 or val_batches == 0:
+        raise ValueError("Batch configuration leaves train or validation loader empty")
+
+    print("\nData loaders:")
+    print(f"  Batch size:      {args.batch_size}")
+    print(f"  Drop last:       {args.drop_last}")
+    print(f"  Num workers:     {args.num_workers}")
+    print(f"  Train batches:   {train_batches}")
+    print(f"  Val batches:     {val_batches}")
+    if args.max_train_batches is not None:
+        print(f"  Train limit:     {min(args.max_train_batches, train_batches)} batches/epoch")
+    if args.max_val_batches is not None:
+        print(f"  Val limit:       {min(args.max_val_batches, val_batches)} batches/epoch")
 
     train_preview_saver = None
     val_preview_saver = None
@@ -345,6 +398,7 @@ if __name__ == "__main__":
     # Создаем директорию для чекпоинтов и графиков
     checkpoint_dir = args.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
+    log_path = Path(checkpoint_dir) / "training_log.tsv"
 
     start_epoch = 0
     best_val_loss = float('inf')
@@ -373,8 +427,10 @@ if __name__ == "__main__":
     print("="*60 + "\n")
 
     for epoch in range(start_epoch, args.epochs):
-        # Тренировка
-        train_loss = train_one_epoch(
+        epoch_started_at = time.perf_counter()
+        print(f"\nEpoch {epoch + 1}/{args.epochs}")
+
+        train_stats = train_one_epoch(
             model,
             train_loader,
             optimizer,
@@ -383,21 +439,56 @@ if __name__ == "__main__":
             target_mode,
             args.max_train_batches,
             train_preview_saver,
+            args.log_every,
         )
+        train_loss = train_stats["loss"]
         train_losses.append(train_loss)
 
-        # Валидация
-        val_loss = validate(model, val_loader, device, blank_idx, target_mode, args.max_val_batches, val_preview_saver)
+        val_stats = validate(
+            model,
+            val_loader,
+            device,
+            blank_idx,
+            target_mode,
+            args.max_val_batches,
+            val_preview_saver,
+            args.log_every,
+        )
+        val_loss = val_stats["loss"]
         val_losses.append(val_loss)
 
-        print(f"\nEpoch {epoch}:")
-        print(f"  Train Loss: {train_loss:.8f}")
-        print(f"  Val Loss:   {val_loss:.8f}")
-        print(f"  Difference: {abs(train_loss - val_loss):.8f}")
+        epoch_seconds = time.perf_counter() - epoch_started_at
+        is_best_val = val_loss < best_val_loss
+        lr = optimizer.param_groups[0]["lr"]
 
-        # Проверяем на переобучение
+        append_training_log(
+            log_path,
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "train_batches": train_stats["batches"],
+                "val_batches": val_stats["batches"],
+                "train_samples": train_stats["samples"],
+                "val_samples": val_stats["samples"],
+                "lr": lr,
+                "epoch_seconds": epoch_seconds,
+                "is_best": is_best_val,
+            },
+        )
+
+        print(
+            f"  train loss={train_loss:.6f} "
+            f"({train_stats['batches']} batches, {train_stats['samples']} samples, {train_stats['seconds']:.1f}s)"
+        )
+        print(
+            f"  val   loss={val_loss:.6f} "
+            f"({val_stats['batches']} batches, {val_stats['samples']} samples, {val_stats['seconds']:.1f}s)"
+        )
+        print(f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s")
+
         if train_loss < val_loss * 0.7:
-            print(f"  ⚠️  Warning: Possible overfitting detected!")
+            print("  warning: possible overfitting")
 
         # Сохраняем чекпоинт каждые 5 эпох
         if epoch % 5 == 0:
@@ -414,11 +505,8 @@ if __name__ == "__main__":
                 checkpoint_dir,
             )
 
-            # Строим график каждые 5 эпох
-            plot_losses(train_losses, val_losses, 
-                       save_path=os.path.join(checkpoint_dir, f'loss_plot_epoch_{epoch}.png'))
             # Сохраняем лучшую модель по валидационному лоссу
-        if val_loss < best_val_loss:
+        if is_best_val:
             best_val_loss = val_loss
             best_checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
             checkpoint = {
@@ -439,7 +527,7 @@ if __name__ == "__main__":
                 'val_losses': val_losses
             }
             torch.save(checkpoint, best_checkpoint_path)
-            print(f"  ✅ Best model saved (val_loss={val_loss:.8f})")
+            print(f"  best model saved: {best_checkpoint_path}")
 
         # Сохраняем лучшую модель по тренировочному лоссу (для сравнения)
         if train_loss < best_train_loss:
@@ -471,12 +559,9 @@ if __name__ == "__main__":
     if val_preview_saver is not None:
         val_preview_saver.close()
 
-    # Финальный график
     print("\n" + "="*60)
     print("Training completed!")
     print(f"Best validation loss: {best_val_loss:.8f}")
     print(f"Best training loss:   {best_train_loss:.8f}")
+    print(f"Training log: {log_path}")
     print("="*60)
-
-    plot_losses(train_losses, val_losses, 
-               save_path=os.path.join(checkpoint_dir, 'final_loss_plot.png'))

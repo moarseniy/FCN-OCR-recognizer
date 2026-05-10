@@ -108,6 +108,28 @@ python -m synth_generators.line_generator.preview \
 python train.py --config synth_generators/line_generator/example_config.yaml
 ```
 
+Обучение пишет компактный лог по эпохам в консоль и TSV-файл:
+
+```text
+checkpoints/training_log.tsv
+```
+
+Разбиение на батчи настраивается явно:
+
+```bash
+python train.py \
+  --config synth_generators/line_generator/example_config.yaml \
+  --batch-size 128 \
+  --num-workers 4 \
+  --drop-last \
+  --log-every 10
+```
+
+При старте печатаются размеры train/validation split, batch size, количество
+батчей и лимиты `--max-train-batches` / `--max-val-batches`, если они заданы.
+По умолчанию `--log-every 1`, то есть loss печатается на каждом batch; значение
+`0` отключает batch-логи.
+
 Сохранить примеры именно тех тензоров, которые подаются в train/validation:
 
 ```bash
