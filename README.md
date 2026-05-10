@@ -74,6 +74,19 @@ python -m synth_generators.line_generator.preview \
 python train.py --config synth_generators/line_generator/example_config.yaml
 ```
 
+Сохранить примеры именно тех тензоров, которые подаются в train/validation:
+
+```bash
+python train.py \
+  --config synth_generators/line_generator/example_config.yaml \
+  --preview-samples 16 \
+  --preview-dir input_previews
+```
+
+Картинки будут сохранены в `input_previews/train` и `input_previews/val`.
+Рядом создаётся `labels.tsv` с именем файла, текстом и длиной target. Размер
+validation-части задаётся через `--val-fraction`, по умолчанию `0.1`.
+
 Запустить старый column-вариант:
 
 ```bash

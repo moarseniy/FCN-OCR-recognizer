@@ -3,7 +3,7 @@
 from synth_generators.line_generator.dataset import SingleLineDatasetConfig, SingleLineDataset
 import argparse
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 
 import torch
 from model import FullyConvTextRecognizer, transform_back
@@ -12,6 +12,10 @@ from loss import ctc_loss, logreg_loss
 from tqdm import tqdm
 from datetime import datetime
 import os
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
 
 def save_checkpoint(
     model,
@@ -128,6 +132,61 @@ def train_one_epoch(model, loader, optimizer, device, blank_idx, target_mode, ma
 
     return total_loss / batches
 
+def tensor_to_pil(image_tensor):
+    image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
+    if image.dim() == 4:
+        image = image[0]
+
+    if image.shape[0] == 1:
+        array = (image[0].numpy() * 255).astype(np.uint8)
+        return Image.fromarray(array, mode="L")
+
+    array = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    return Image.fromarray(array, mode="RGB")
+
+def decode_target_for_preview(target, length, alphabet, target_mode, space_char):
+    if target_mode == "ctc":
+        return "".join(alphabet[idx] for idx in target[:length].tolist())
+
+    chars = []
+    previous_idx = None
+    for idx in target.tolist():
+        if idx != previous_idx:
+            chars.append(alphabet[idx])
+            previous_idx = idx
+    return "".join(chars).strip(space_char)
+
+def save_input_previews(loader, output_dir, count, alphabet, target_mode, space_char):
+    if count <= 0:
+        return
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    labels_path = output_path / "labels.tsv"
+
+    saved = 0
+    with labels_path.open("w") as labels_file:
+        labels_file.write("file\ttext\tlength\n")
+        for images, targets, lengths in loader:
+            for image, target, length in zip(images, targets, lengths):
+                if saved >= count:
+                    print(f"Saved {saved} input previews to {output_path}")
+                    return
+
+                filename = f"{saved:04d}.png"
+                text = decode_target_for_preview(
+                    target.long(),
+                    int(length),
+                    alphabet,
+                    target_mode,
+                    space_char,
+                )
+                tensor_to_pil(image).save(output_path / filename)
+                labels_file.write(f"{filename}\t{text}\t{int(length)}\n")
+                saved += 1
+
+    print(f"Saved {saved} input previews to {output_path}")
+
 def plot_losses(train_losses, val_losses, save_path='loss_plot.png'):
     """Строит график лоссов"""
     try:
@@ -178,6 +237,9 @@ def parse_args():
     parser.add_argument("--max-val-batches", type=int, default=50, help="Validation batches per epoch limit.")
     parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
     parser.add_argument("--target-mode", choices=["ctc", "column"], default=None, help="Override config target_mode.")
+    parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of samples used for validation.")
+    parser.add_argument("--preview-samples", type=int, default=0, help="Save N input images from train and val loaders.")
+    parser.add_argument("--preview-dir", default="input_previews", help="Directory for saved input previews.")
     return parser.parse_args()
 
 
@@ -194,6 +256,23 @@ if __name__ == "__main__":
     dataset = SingleLineDataset(dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
+    if not 0.0 < args.val_fraction < 1.0:
+        raise ValueError("--val-fraction must be between 0 and 1")
+
+    val_size = max(1, int(len(dataset) * args.val_fraction))
+    train_size = len(dataset) - val_size
+    if train_size <= 0:
+        raise ValueError("Dataset is too small for the requested validation split")
+
+    split_generator = torch.Generator().manual_seed(dataset_config.seed or 0)
+    train_dataset, val_dataset = random_split(
+        dataset,
+        [train_size, val_size],
+        generator=split_generator,
+    )
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Validation samples: {len(val_dataset)}")
+
     alphabet = dataset_config.alphabet
     target_mode = dataset_config.target_mode
     blank_idx = len(alphabet) if target_mode == "ctc" else None
@@ -203,11 +282,34 @@ if __name__ == "__main__":
     if blank_idx is not None:
         print("Blank index: ", blank_idx)
 
-    dataloader = DataLoader(
-        dataset,
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
     )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+    )
+
+    if args.preview_samples > 0:
+        save_input_previews(
+            train_loader,
+            Path(args.preview_dir) / "train",
+            args.preview_samples,
+            alphabet,
+            target_mode,
+            dataset_config.space_char,
+        )
+        save_input_previews(
+            val_loader,
+            Path(args.preview_dir) / "val",
+            args.preview_samples,
+            alphabet,
+            target_mode,
+            dataset_config.space_char,
+        )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device ", device)
@@ -257,7 +359,7 @@ if __name__ == "__main__":
         # Тренировка
         train_loss = train_one_epoch(
             model,
-            dataloader,
+            train_loader,
             optimizer,
             device,
             blank_idx,
@@ -267,7 +369,7 @@ if __name__ == "__main__":
         train_losses.append(train_loss)
 
         # Валидация
-        val_loss = validate(model, dataloader, device, blank_idx, target_mode, args.max_val_batches)
+        val_loss = validate(model, val_loader, device, blank_idx, target_mode, args.max_val_batches)
         val_losses.append(val_loss)
 
         print(f"\nEpoch {epoch}:")
