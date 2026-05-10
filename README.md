@@ -31,9 +31,20 @@
 
 ```yaml
 augmentation_probabilities:
+  cycle_shift: 0.05
+  strong_blur: 0.08
+  motion_blur: 0.08
+  scale: 0.15
+  darkening: 0.2
+  noise: 0.75
+  projective: 0.12
   rotate: 0.8
-  gaussian_blur: 0.35
-  gaussian_noise: 0.8
+  crop_x: 0.08
+  crop_y: 0.05
+  morphology: 0.08
+  unsharp_mask: 0.12
+  gaussian_blur: 0.0
+  gaussian_noise: 0.0
   brightness: 0.3
   contrast: 0.3
   invert: 0.0
@@ -59,6 +70,11 @@ augmentations:
 Вероятность `0.0` выключает преобразование, `1.0` применяет всегда. Для
 `column`-режима лучше держать геометрические преобразования мягкими, потому что
 target размечен по горизонтальным столбцам.
+
+Доступные OCR-аугментации: `cycle_shift`, `strong_blur`, `motion_blur`,
+`scale`, `darkening`, `noise`, `projective`, `rotate`, `crop_x`, `crop_y`,
+`morphology`, `unsharp_mask`. Старые `gaussian_blur` и `gaussian_noise`
+оставлены как совместимые алиасы.
 
 Сохранить один пример изображения:
 

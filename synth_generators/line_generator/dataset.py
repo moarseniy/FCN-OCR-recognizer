@@ -19,7 +19,18 @@ DEFAULT_FONT_CANDIDATES = (
 )
 
 SUPPORTED_AUGMENTATIONS = (
+    "cycle_shift",
+    "strong_blur",
+    "motion_blur",
+    "scale",
+    "darkening",
+    "noise",
+    "projective",
     "rotate",
+    "crop_x",
+    "crop_y",
+    "morphology",
+    "unsharp_mask",
     "gaussian_blur",
     "gaussian_noise",
     "brightness",
@@ -270,8 +281,30 @@ class SingleLineDataset(Dataset):
                 continue
 
             params = self.config.augmentations.get(name, {})
-            if name == "rotate":
+            if name == "cycle_shift":
+                image = self._augment_cycle_shift(image, rng, params)
+            elif name == "strong_blur":
+                image = self._augment_strong_blur(image, rng, params)
+            elif name == "motion_blur":
+                image = self._augment_motion_blur(image, rng, params)
+            elif name == "scale":
+                image = self._augment_scale(image, rng, params)
+            elif name == "darkening":
+                image = self._augment_darkening(image, rng, params)
+            elif name == "noise":
+                image = self._augment_noise(image, rng, params)
+            elif name == "projective":
+                image = self._augment_projective(image, rng, params)
+            elif name == "rotate":
                 image = self._augment_rotate(image, rng, params)
+            elif name == "crop_x":
+                image = self._augment_crop_x(image, rng, params)
+            elif name == "crop_y":
+                image = self._augment_crop_y(image, rng, params)
+            elif name == "morphology":
+                image = self._augment_morphology(image, rng, params)
+            elif name == "unsharp_mask":
+                image = self._augment_unsharp_mask(image, rng, params)
             elif name == "gaussian_blur":
                 image = self._augment_gaussian_blur(image, rng, params)
             elif name == "gaussian_noise":
@@ -295,8 +328,80 @@ class SingleLineDataset(Dataset):
         if self.config.blur_radius:
             probabilities["gaussian_blur"] = 1.0
         if self.config.noise_std:
-            probabilities["gaussian_noise"] = 1.0
+            probabilities["noise"] = 1.0
         return probabilities
+
+    def _augment_cycle_shift(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        max_x = int(params.get("max_x", 0))
+        max_y = int(params.get("max_y", 0))
+        shift_x = rng.randint(-max_x, max_x) if max_x > 0 else 0
+        shift_y = rng.randint(-max_y, max_y) if max_y > 0 else 0
+        if shift_x == 0 and shift_y == 0:
+            return image
+        array = np.asarray(image)
+        array = np.roll(array, shift=(shift_y, shift_x), axis=(0, 1))
+        return Image.fromarray(array.astype(np.uint8), mode="L")
+
+    def _augment_strong_blur(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        radius = self._sample_range(rng, params, "radius", 1.2)
+        if radius <= 0.0:
+            return image
+        return image.filter(ImageFilter.GaussianBlur(radius=radius))
+
+    def _augment_motion_blur(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        size = int(round(self._sample_range(rng, params, "size", 5)))
+        if size <= 1:
+            return image
+        if size % 2 == 0:
+            size += 1
+
+        angle = self._sample_range(rng, params, "angle", 0.0)
+        kernel = self._make_motion_kernel(size, angle)
+        return image.filter(ImageFilter.Kernel((size, size), kernel.flatten().tolist(), scale=float(kernel.sum())))
+
+    def _augment_scale(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        factor_x = self._sample_range(rng, params, "factor_x", self._sample_range(rng, params, "factor", 1.0))
+        factor_y = self._sample_range(rng, params, "factor_y", self._sample_range(rng, params, "factor", 1.0))
+        if factor_x <= 0.0 or factor_y <= 0.0:
+            return image
+
+        width, height = image.size
+        scaled_width = max(1, int(round(width * factor_x)))
+        scaled_height = max(1, int(round(height * factor_y)))
+        scaled = image.resize((scaled_width, scaled_height), Image.Resampling.BICUBIC)
+        return self._fit_to_canvas(scaled, width, height, int(params.get("fillcolor", self.config.background)))
+
+    def _augment_darkening(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        factor = self._sample_range(rng, params, "factor", 0.75)
+        return ImageEnhance.Brightness(image).enhance(factor)
+
+    def _augment_noise(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        kind = params.get("kind", "gaussian")
+        if kind == "salt_pepper":
+            amount = self._sample_range(rng, params, "amount", 0.01)
+            return self._augment_salt_pepper_noise(image, rng, amount)
+        return self._augment_gaussian_noise(image, rng, params)
+
+    def _augment_projective(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        max_dx = self._sample_range(rng, params, "max_dx", 4.0)
+        max_dy = self._sample_range(rng, params, "max_dy", 2.0)
+        width, height = image.size
+        src = [(0, 0), (width, 0), (width, height), (0, height)]
+        dst = [
+            (rng.uniform(-max_dx, max_dx), rng.uniform(-max_dy, max_dy)),
+            (width + rng.uniform(-max_dx, max_dx), rng.uniform(-max_dy, max_dy)),
+            (width + rng.uniform(-max_dx, max_dx), height + rng.uniform(-max_dy, max_dy)),
+            (rng.uniform(-max_dx, max_dx), height + rng.uniform(-max_dy, max_dy)),
+        ]
+        coefficients = self._find_perspective_coefficients(dst, src)
+        fillcolor = int(params.get("fillcolor", self.config.background))
+        return image.transform(
+            image.size,
+            Image.Transform.PERSPECTIVE,
+            coefficients,
+            resample=Image.Resampling.BICUBIC,
+            fillcolor=fillcolor,
+        )
 
     def _augment_rotate(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
         max_degrees = float(params.get("max_degrees", self.config.max_rotation_degrees))
@@ -321,6 +426,61 @@ class SingleLineDataset(Dataset):
         array += noise_rng.normal(0.0, std, size=array.shape)
         return Image.fromarray(np.clip(array, 0, 255).astype(np.uint8), mode="L")
 
+    def _augment_crop_x(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        max_left = int(round(self._sample_range(rng, params, "left", float(params.get("max_left", 0)))))
+        max_right = int(round(self._sample_range(rng, params, "right", float(params.get("max_right", 0)))))
+        crop_left = rng.randint(0, max(0, max_left))
+        crop_right = rng.randint(0, max(0, max_right))
+        if crop_left == 0 and crop_right == 0:
+            return image
+        width, height = image.size
+        right = max(crop_left + 1, width - crop_right)
+        cropped = image.crop((crop_left, 0, right, height))
+        canvas = Image.new("L", (width, height), color=int(params.get("fillcolor", self.config.background)))
+        canvas.paste(cropped, (0, 0))
+        return canvas
+
+    def _augment_crop_y(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        max_top = int(round(self._sample_range(rng, params, "top", float(params.get("max_top", 0)))))
+        max_bottom = int(round(self._sample_range(rng, params, "bottom", float(params.get("max_bottom", 0)))))
+        crop_top = rng.randint(0, max(0, max_top))
+        crop_bottom = rng.randint(0, max(0, max_bottom))
+        if crop_top == 0 and crop_bottom == 0:
+            return image
+        width, height = image.size
+        bottom = max(crop_top + 1, height - crop_bottom)
+        cropped = image.crop((0, crop_top, width, bottom))
+        canvas = Image.new("L", (width, height), color=int(params.get("fillcolor", self.config.background)))
+        canvas.paste(cropped, (0, 0))
+        return canvas
+
+    def _augment_morphology(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        size = int(round(self._sample_range(rng, params, "size", 3)))
+        if size <= 1:
+            return image
+        if size % 2 == 0:
+            size += 1
+
+        operation = params.get("operation", "random")
+        if operation == "random":
+            operation = rng.choice(["dilate", "erode", "open", "close"])
+
+        if operation == "dilate":
+            return image.filter(ImageFilter.MinFilter(size=size))
+        if operation == "erode":
+            return image.filter(ImageFilter.MaxFilter(size=size))
+        if operation == "open":
+            return image.filter(ImageFilter.MaxFilter(size=size)).filter(ImageFilter.MinFilter(size=size))
+        if operation == "close":
+            return image.filter(ImageFilter.MinFilter(size=size)).filter(ImageFilter.MaxFilter(size=size))
+        return image
+
+    def _augment_unsharp_mask(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
+        radius = self._sample_range(rng, params, "radius", 1.0)
+        percent = int(round(self._sample_range(rng, params, "percent", 120.0)))
+        threshold = int(round(self._sample_range(rng, params, "threshold", 3.0)))
+        return image.filter(ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=threshold))
+
     def _augment_brightness(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
         factor = self._sample_range(rng, params, "factor", 1.0)
         return ImageEnhance.Brightness(image).enhance(factor)
@@ -328,6 +488,57 @@ class SingleLineDataset(Dataset):
     def _augment_contrast(self, image: Image.Image, rng: random.Random, params: dict[str, Any]) -> Image.Image:
         factor = self._sample_range(rng, params, "factor", 1.0)
         return ImageEnhance.Contrast(image).enhance(factor)
+
+    def _augment_salt_pepper_noise(self, image: Image.Image, rng: random.Random, amount: float) -> Image.Image:
+        if amount <= 0.0:
+            return image
+        noise_rng = np.random.default_rng(rng.randrange(2**32))
+        array = np.asarray(image, dtype=np.uint8).copy()
+        mask = noise_rng.random(array.shape)
+        amount = min(max(amount, 0.0), 1.0)
+        array[mask < amount / 2.0] = 0
+        array[(mask >= amount / 2.0) & (mask < amount)] = 255
+        return Image.fromarray(array, mode="L")
+
+    def _fit_to_canvas(self, image: Image.Image, width: int, height: int, fillcolor: int) -> Image.Image:
+        canvas = Image.new("L", (width, height), color=fillcolor)
+
+        crop_left = max(0, (image.width - width) // 2)
+        crop_top = max(0, (image.height - height) // 2)
+        image = image.crop((crop_left, crop_top, crop_left + min(width, image.width), crop_top + min(height, image.height)))
+
+        paste_x = max(0, (width - image.width) // 2)
+        paste_y = max(0, (height - image.height) // 2)
+        canvas.paste(image, (paste_x, paste_y))
+        return canvas
+
+    @staticmethod
+    def _make_motion_kernel(size: int, angle: float) -> np.ndarray:
+        kernel = np.zeros((size, size), dtype=np.float32)
+        center = (size - 1) / 2.0
+        radians = np.deg2rad(angle)
+        dx = np.cos(radians)
+        dy = np.sin(radians)
+
+        for step in np.linspace(-center, center, size):
+            x = int(round(center + step * dx))
+            y = int(round(center + step * dy))
+            if 0 <= x < size and 0 <= y < size:
+                kernel[y, x] = 1.0
+
+        if kernel.sum() == 0:
+            kernel[size // 2, :] = 1.0
+        return kernel
+
+    @staticmethod
+    def _find_perspective_coefficients(src: list[tuple[float, float]], dst: list[tuple[float, float]]) -> list[float]:
+        matrix = []
+        vector = []
+        for (src_x, src_y), (dst_x, dst_y) in zip(src, dst):
+            matrix.append([src_x, src_y, 1, 0, 0, 0, -dst_x * src_x, -dst_x * src_y])
+            matrix.append([0, 0, 0, src_x, src_y, 1, -dst_y * src_x, -dst_y * src_y])
+            vector.extend([dst_x, dst_y])
+        return np.linalg.solve(np.asarray(matrix, dtype=np.float64), np.asarray(vector, dtype=np.float64)).tolist()
 
     @staticmethod
     def _sample_range(rng: random.Random, params: dict[str, Any], name: str, default: float) -> float:

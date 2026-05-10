@@ -16,16 +16,71 @@ channels: 3
 seed: 42
 horizontal_padding: 8
 augmentation_probabilities:
+  cycle_shift: 0.1
+  strong_blur: 0.1
+  motion_blur: 0.1
+  scale: 0.2
+  darkening: 0.15
+  noise: 0.65
+  projective: 0.03
   rotate: 0.4
-  gaussian_blur: 0.25
-  gaussian_noise: 0.7
+  crop_x: 0.1
+  crop_y: 0.1
+  morphology: 0.1
+  unsharp_mask: 0.1
+  gaussian_blur: 0.0
+  gaussian_noise: 0.0
   brightness: 0.2
   contrast: 0.2
   invert: 0.0
 augmentations:
+  cycle_shift:
+    max_x: 1
+    max_y: 0
+  strong_blur:
+    radius_min: 0.6
+    radius_max: 1.0
+  motion_blur:
+    size_min: 3
+    size_max: 5
+    angle_min: -5.0
+    angle_max: 5.0
+  scale:
+    factor_x_min: 0.98
+    factor_x_max: 1.02
+    factor_y_min: 0.96
+    factor_y_max: 1.04
+    fillcolor: 255
+  darkening:
+    factor_min: 0.65
+    factor_max: 0.9
+  noise:
+    kind: gaussian
+    std_min: 0.0
+    std_max: 5.0
+  projective:
+    max_dx: 1.5
+    max_dy: 1.0
+    fillcolor: 255
   rotate:
     max_degrees: 0.5
     fillcolor: 255
+  crop_x:
+    max_left: 1
+    max_right: 1
+    fillcolor: 255
+  crop_y:
+    max_top: 1
+    max_bottom: 1
+    fillcolor: 255
+  morphology:
+    operation: random
+    size: 3
+  unsharp_mask:
+    radius: 1.0
+    percent_min: 80
+    percent_max: 140
+    threshold: 3
   gaussian_blur:
     radius_min: 0.0
     radius_max: 0.2
