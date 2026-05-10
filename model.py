@@ -117,10 +117,10 @@ class FullyConvTextRecognizer(nn.Module):
         # инициализация весов: небольшая, стандартная Xavier
         self._init_weights()
 
-    def *init_weights(self):
+    def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.xavier_uniform*(m.weight)
+                nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.BatchNorm2d):
