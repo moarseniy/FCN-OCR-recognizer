@@ -15,14 +15,10 @@ def ctc_loss(logits, targets, lengths, blank_idx):
         dtype=torch.long,
         device=logits.device,
     )
+    targets = targets.to(device=logits.device, dtype=torch.long)
     target_lengths = lengths.to(device=logits.device, dtype=torch.long)
-    flat_targets = torch.cat(
-        [
-            targets[i, : int(target_lengths[i].item())].to(device=logits.device, dtype=torch.long)
-            for i in range(targets.size(0))
-        ],
-        dim=0,
-    )
+    target_positions = torch.arange(targets.size(1), device=logits.device).unsqueeze(0)
+    flat_targets = targets[target_positions < target_lengths.unsqueeze(1)]
     return F.ctc_loss(
         log_probs,
         flat_targets,

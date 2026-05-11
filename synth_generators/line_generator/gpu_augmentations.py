@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 from typing import Any
 
 import torch
@@ -34,8 +35,9 @@ class GpuTextAugmenter:
             if not bool(mask.any()):
                 continue
 
-            augmented = self._apply_one(name, output, self.params.get(name, {}))
-            output = torch.where(mask[:, None, None, None], augmented, output)
+            augmented = self._apply_one(name, output[mask], self.params.get(name, {}))
+            output = output.clone()
+            output[mask] = augmented
 
         return output.clamp(0.0, 1.0)
 
@@ -226,7 +228,7 @@ class GpuTextAugmenter:
         size = size | 1
         operation = params.get("operation", "random")
         if operation == "random":
-            operation = "dilate" if bool(torch.rand((), device=images.device) < 0.5) else "erode"
+            operation = "dilate" if random.random() < 0.5 else "erode"
 
         if operation == "dilate":
             return -F.max_pool2d(-images, size, stride=1, padding=size // 2)
@@ -259,19 +261,20 @@ class GpuTextAugmenter:
 
     @staticmethod
     def _motion_kernel(device: torch.device, dtype: torch.dtype, size: int, angle: float) -> torch.Tensor:
-        kernel = torch.zeros((size, size), device=device, dtype=dtype)
+        kernel = torch.zeros((size, size), dtype=dtype)
         center = (size - 1) / 2.0
         radians = angle * math.pi / 180.0
         dx = math.cos(radians)
         dy = math.sin(radians)
-        for step in torch.linspace(-center, center, size, device=device):
-            x = int(round(center + float(step) * dx))
-            y = int(round(center + float(step) * dy))
+        for step_idx in range(size):
+            step = -center + step_idx
+            x = int(round(center + step * dx))
+            y = int(round(center + step * dy))
             if 0 <= x < size and 0 <= y < size:
                 kernel[y, x] = 1.0
         if float(kernel.sum()) == 0.0:
             kernel[size // 2, :] = 1.0
-        return kernel / kernel.sum()
+        return (kernel / kernel.sum()).to(device=device)
 
     @staticmethod
     def _sample_range(device: torch.device, params: dict[str, Any], name: str, default: float) -> float:
@@ -285,8 +288,7 @@ class GpuTextAugmenter:
             high = float(params.get(max_name, default))
             if high < low:
                 low, high = high, low
-            sample = torch.rand((), device=device).item()
-            return low + (high - low) * sample
+            return random.uniform(low, high)
 
         return float(default)
 
@@ -294,7 +296,7 @@ class GpuTextAugmenter:
     def _randint(device: torch.device, low: int, high: int) -> int:
         if high <= low:
             return low
-        return int(torch.randint(low, high + 1, (), device=device).item())
+        return random.randint(low, high)
 
     def _fill_value(self, params: dict[str, Any]) -> float:
         return float(params.get("fillcolor", self.config.background)) / 255.0

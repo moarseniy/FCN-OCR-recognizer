@@ -137,6 +137,23 @@ python train.py --chunks-dir data/line_chunks
 python train.py --chunks-dir data/line_chunks --no-gpu-augmentations
 ```
 
+Для offline-чанков batch-и по умолчанию группируются по `chunk_*.pt`, чтобы
+один batch не заставлял читать десятки файлов с диска. Для реального обучения
+обычно имеет смысл включить несколько workers:
+
+```bash
+python train.py \
+  --chunks-dir data/line_chunks \
+  --batch-size 256 \
+  --num-workers 4 \
+  --prefetch-factor 2 \
+  --chunk-cache-size 2
+```
+
+Картинки из чанков остаются `uint8` до переноса batch на устройство обучения и
+нормализуются уже там, поэтому CPU RAM и host-to-device transfer не раздуваются
+до `float32` раньше времени.
+
 Обучение пишет компактный лог по эпохам в консоль и TSV-файл:
 
 ```text

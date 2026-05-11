@@ -26,6 +26,7 @@ class ChunkedLineDataset(Dataset):
         self.chunks = self.manifest["chunks"]
         self.total_samples = int(self.manifest["total_samples"])
         self.config = SingleLineDatasetConfig.model_validate(self.manifest["config"])
+        self.rendered_with_augmentations = bool(self.manifest.get("rendered_with_augmentations", False))
         self.chunk_ends = []
         total = 0
         for chunk in self.chunks:
@@ -48,10 +49,17 @@ class ChunkedLineDataset(Dataset):
         local_idx = index - chunk_start
         chunk = self._load_chunk(chunk_idx)
 
-        image = chunk["images"][local_idx].float() / 255.0
-        target = chunk["targets"][local_idx].long()
-        length = chunk["lengths"][local_idx].long()
+        image = chunk["images"][local_idx]
+        target = chunk["targets"][local_idx]
+        length = chunk["lengths"][local_idx]
         return image, target, length
+
+    def chunk_index_for_sample(self, index: int) -> int:
+        if index < 0:
+            index += self.total_samples
+        if index < 0 or index >= self.total_samples:
+            raise IndexError(index)
+        return bisect_right(self.chunk_ends, index)
 
     def _load_chunk(self, chunk_idx: int) -> dict:
         if chunk_idx in self._chunk_cache:

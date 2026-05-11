@@ -7,7 +7,7 @@ import argparse
 import math
 import time
 import yaml
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
 from model import FullyConvTextRecognizer, transform_back
@@ -72,6 +72,17 @@ def compute_loss(logits, targets, lengths, blank_idx, target_mode):
     return logreg_loss(logits, targets)
 
 
+def prepare_batch(imgs, targets, lengths, device):
+    imgs = imgs.to(device, non_blocking=True)
+    if imgs.dtype == torch.uint8:
+        imgs = imgs.float().div_(255.0)
+    else:
+        imgs = imgs.float()
+    targets = targets.to(device=device, dtype=torch.long, non_blocking=True)
+    lengths = lengths.to(device=device, dtype=torch.long, non_blocking=True)
+    return imgs, targets, lengths
+
+
 def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None, log_every=0, augmenter=None):
     """Валидация модели"""
     model.eval()
@@ -83,12 +94,10 @@ def validate(model, loader, device, blank_idx, target_mode, max_batches=50, prev
     with torch.no_grad():
         total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
         for batch_idx, (imgs, targets, lengths) in enumerate(loader, start=1):
-            if batches >= max_batches:
+            if max_batches is not None and batches >= max_batches:
                 break
 
-            imgs = imgs.to(device)
-            targets = targets.long().to(device)
-            lengths = lengths.long().to(device)
+            imgs, targets, lengths = prepare_batch(imgs, targets, lengths, device)
             if augmenter is not None:
                 imgs = augmenter(imgs)
 
@@ -146,9 +155,7 @@ def train_one_epoch(
         if max_batches is not None and batches >= max_batches:
             break
 
-        imgs = imgs.to(device)
-        targets = targets.long().to(device)
-        lengths = lengths.long().to(device)
+        imgs, targets, lengths = prepare_batch(imgs, targets, lengths, device)
         if augmenter is not None:
             imgs = augmenter(imgs)
 
@@ -274,6 +281,61 @@ def append_training_log(log_path, row):
             f"{row['lr']:.8g}\t{row['epoch_seconds']:.3f}\t{int(row['is_best'])}\n"
         )
 
+
+class ChunkBatchSampler(Sampler):
+    def __init__(self, subset, base_dataset, batch_size, drop_last, shuffle, seed=0):
+        self.subset = subset
+        self.base_dataset = base_dataset
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+        self.groups = self._group_subset_positions_by_chunk()
+
+    def __iter__(self):
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        self.epoch += 1
+
+        chunk_ids = list(self.groups)
+        if self.shuffle:
+            permutation = torch.randperm(len(chunk_ids), generator=generator).tolist()
+            chunk_ids = [chunk_ids[index] for index in permutation]
+
+        for chunk_id in chunk_ids:
+            positions = list(self.groups[chunk_id])
+            if self.shuffle:
+                permutation = torch.randperm(len(positions), generator=generator).tolist()
+                positions = [positions[index] for index in permutation]
+
+            for start in range(0, len(positions), self.batch_size):
+                batch = positions[start : start + self.batch_size]
+                if len(batch) == self.batch_size or (batch and not self.drop_last):
+                    yield batch
+
+    def __len__(self):
+        total = 0
+        for positions in self.groups.values():
+            if self.drop_last:
+                total += len(positions) // self.batch_size
+            else:
+                total += math.ceil(len(positions) / self.batch_size)
+        return total
+
+    def _group_subset_positions_by_chunk(self):
+        groups = {}
+        for subset_position in range(len(self.subset)):
+            sample_index = self._sample_index(subset_position)
+            chunk_id = self.base_dataset.chunk_index_for_sample(sample_index)
+            groups.setdefault(chunk_id, []).append(subset_position)
+        return groups
+
+    def _sample_index(self, subset_position):
+        if isinstance(self.subset, Subset):
+            return int(self.subset.indices[subset_position])
+        return subset_position
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the FCN OCR recognizer on synthetic lines.")
     parser.add_argument(
@@ -295,6 +357,20 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker processes.")
     parser.add_argument("--drop-last", action="store_true", help="Drop incomplete train/val batches.")
     parser.add_argument("--log-every", type=int, default=1, help="Print every N batch losses. 0 disables batch logs.")
+    parser.add_argument("--chunk-cache-size", type=int, default=2, help="Loaded chunk files cached per DataLoader worker.")
+    parser.add_argument(
+        "--chunk-aware-batches",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Group batches by chunk file for offline datasets. Enabled by default.",
+    )
+    parser.add_argument("--prefetch-factor", type=int, default=2, help="DataLoader prefetch factor when num_workers > 0.")
+    parser.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep DataLoader workers alive between epochs when num_workers > 0.",
+    )
     parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
     parser.add_argument("--target-mode", choices=["ctc", "column"], default=None, help="Override config target_mode.")
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of samples used for validation.")
@@ -327,7 +403,7 @@ def load_dataset_from_args(args):
     if args.chunks_dir:
         if args.target_mode:
             raise ValueError("--target-mode cannot override a pre-rendered chunk dataset")
-        dataset = ChunkedLineDataset(args.chunks_dir)
+        dataset = ChunkedLineDataset(args.chunks_dir, cache_size=args.chunk_cache_size)
         dataset_config = dataset.config
         config_data = dataset_config.model_dump()
         print(f"Dataset source: chunks ({args.chunks_dir})")
@@ -342,6 +418,38 @@ def load_dataset_from_args(args):
     dataset = SingleLineDataset(render_config)
     print(f"Dataset source: online generator ({args.config})")
     return dataset, dataset_config, config_data
+
+
+def make_data_loader(dataset, split_dataset, args, shuffle, seed):
+    common_kwargs = {
+        "num_workers": args.num_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if args.num_workers > 0:
+        common_kwargs["prefetch_factor"] = args.prefetch_factor
+        common_kwargs["persistent_workers"] = args.persistent_workers
+
+    if isinstance(dataset, ChunkedLineDataset) and args.chunk_aware_batches:
+        return DataLoader(
+            split_dataset,
+            batch_sampler=ChunkBatchSampler(
+                split_dataset,
+                dataset,
+                args.batch_size,
+                args.drop_last,
+                shuffle,
+                seed,
+            ),
+            **common_kwargs,
+        )
+
+    return DataLoader(
+        split_dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        drop_last=args.drop_last,
+        **common_kwargs,
+    )
 
 
 if __name__ == "__main__":
@@ -376,25 +484,11 @@ if __name__ == "__main__":
     if blank_idx is not None:
         print("Blank index: ", blank_idx)
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=args.drop_last,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=args.drop_last,
-    )
+    train_loader = make_data_loader(dataset, train_dataset, args, shuffle=True, seed=dataset_config.seed or 0)
+    val_loader = make_data_loader(dataset, val_dataset, args, shuffle=False, seed=(dataset_config.seed or 0) + 100_000)
 
-    train_batches = batch_count(len(train_dataset), args.batch_size, args.drop_last)
-    val_batches = batch_count(len(val_dataset), args.batch_size, args.drop_last)
+    train_batches = len(train_loader)
+    val_batches = len(val_loader)
     if train_batches == 0 or val_batches == 0:
         raise ValueError("Batch configuration leaves train or validation loader empty")
 
@@ -402,6 +496,12 @@ if __name__ == "__main__":
     print(f"  Batch size:      {args.batch_size}")
     print(f"  Drop last:       {args.drop_last}")
     print(f"  Num workers:     {args.num_workers}")
+    if isinstance(dataset, ChunkedLineDataset):
+        print(f"  Chunk batching:  {args.chunk_aware_batches}")
+        print(f"  Chunk cache:     {args.chunk_cache_size} files/worker")
+    if args.num_workers > 0:
+        print(f"  Prefetch factor: {args.prefetch_factor}")
+        print(f"  Persistent:      {args.persistent_workers}")
     print(f"  Train batches:   {train_batches}")
     print(f"  Val batches:     {val_batches}")
     if args.max_train_batches is not None:
@@ -432,6 +532,8 @@ if __name__ == "__main__":
     train_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augmentations else None
     val_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augment_val else None
     print("GPU augmentations: ", "train" if train_augmenter is not None else "off")
+    if isinstance(dataset, ChunkedLineDataset) and dataset.rendered_with_augmentations and train_augmenter is not None:
+        print("warning: chunks were rendered with CPU augmentations and GPU augmentations are also enabled")
     if val_augmenter is not None:
         print("GPU validation augmentations: on")
 
