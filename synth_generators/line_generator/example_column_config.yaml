@@ -2,7 +2,7 @@ alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
 sample_alphabet: "0123456789abcdefghijklmnopqrstuvwxyz"
 target_mode: column
 space_char: " "
-samples: 10000
+samples: 100000
 image_height: 48
 image_width: 256
 min_text_length: 4
@@ -42,21 +42,21 @@ augmentation_probabilities:
   invert: 0.0
 augmentations:
   cycle_shift:
-    max_x: 1
+    max_x: 3
     max_y: 0
   strong_blur:
     radius_min: 0.6
-    radius_max: 1.0
+    radius_max: 1.2
   motion_blur:
     size_min: 3
-    size_max: 15
-    angle_min: -15.0
-    angle_max: 15.0
+    size_max: 7
+    angle_min: -7.0
+    angle_max: 7.0
   scale:
-    factor_x_min: 0.98
-    factor_x_max: 1.02
-    factor_y_min: 0.96
-    factor_y_max: 1.04
+    factor_x_min: 0.9
+    factor_x_max: 1.1
+    factor_y_min: 0.9
+    factor_y_max: 1.1
     fillcolor: 255
   darkening:
     factor_min: 0.65
@@ -64,7 +64,7 @@ augmentations:
   noise:
     kind: gaussian
     std_min: 0.0
-    std_max: 5.0
+    std_max: 10.0
   projective:
     max_dx: 1.5
     max_dy: 1.0
