@@ -34,12 +34,10 @@ def save_chunk(dataset: SingleLineDataset, start: int, end: int, output_dir: Pat
             "targets": torch.stack(targets, dim=0).contiguous(),
             "lengths": torch.stack(lengths, dim=0).contiguous(),
             "texts": texts,
-            "start": start,
-            "end": end,
         },
         output_dir / filename,
     )
-    return {"file": filename, "start": start, "end": end, "samples": end - start}
+    return {"file": filename, "samples": end - start}
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,31 +90,16 @@ def main() -> None:
         config_data = yaml.safe_load(file)
     if args.samples is not None:
         config_data["samples"] = args.samples
-    manifest_config = SingleLineDatasetConfig.model_validate_with_paths(config_data, config_path)
     render_config_data = config_data if args.with_augmentations else without_augmentations(config_data)
     render_config = SingleLineDatasetConfig.model_validate_with_paths(render_config_data, config_path)
     dataset = SingleLineDataset(render_config)
 
-    chunks = []
     total = len(dataset)
     for chunk_idx, start in enumerate(range(0, total, args.chunk_size)):
         end = min(start + args.chunk_size, total)
         chunk = save_chunk(dataset, start, end, output_dir, chunk_idx)
-        chunks.append(chunk)
         print(f"saved {chunk['file']} [{start}:{end}]")
-
-    manifest = {
-        "format": "fcn_ocr_line_chunks_v1",
-        "total_samples": total,
-        "chunk_size": args.chunk_size,
-        "chunks": chunks,
-        "config": manifest_config.model_dump(),
-        "rendered_with_augmentations": args.with_augmentations,
-    }
-    torch.save(manifest, output_dir / "manifest.pt")
-    with (output_dir / "manifest.yaml").open("w") as file:
-        yaml.safe_dump(manifest, file, sort_keys=False, allow_unicode=True)
-    print(f"Saved manifest to {output_dir / 'manifest.pt'}")
+    print(f"Saved {total} samples to {output_dir}")
 
 
 if __name__ == "__main__":

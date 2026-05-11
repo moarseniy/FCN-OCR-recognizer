@@ -112,11 +112,12 @@ python -m synth_generators.line_generator.materialize \
   --overwrite
 ```
 
-В каждом `chunk_*.pt` лежат `images` (`uint8`, `N x C x H x W`), `targets`,
-`lengths` и исходные `texts`; рядом пишется `manifest.pt`. Offline-генерация
-по умолчанию не применяет аугментации, но сохраняет их настройки в manifest,
-чтобы обучение могло применять их на GPU. Если всё же нужно запечь CPU-
-аугментации прямо в чанки, добавьте `--with-augmentations`.
+В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
+`N x C x H x W`), `targets`, `lengths` и исходные `texts` как текстовая
+разметка. Конфиг, алфавит, target mode и настройки аугментаций в offline-
+датасет не сохраняются. Offline-генерация по умолчанию не применяет
+аугментации. Если всё же нужно запечь CPU-аугментации прямо в чанки, добавьте
+`--with-augmentations`.
 
 Запустить обучение на синтетике:
 
@@ -127,14 +128,19 @@ python train.py --config synth_generators/line_generator/example_config.yaml
 Запустить обучение из сохранённых чанков:
 
 ```bash
-python train.py --chunks-dir data/line_chunks
+python train.py \
+  --chunks-dir data/line_chunks \
+  --config synth_generators/line_generator/example_config.yaml
 ```
 
 По умолчанию `train.py` применяет настроенные аугментации на устройстве
 обучения (`cuda`, если доступна). Отключить это можно флагом:
 
 ```bash
-python train.py --chunks-dir data/line_chunks --no-gpu-augmentations
+python train.py \
+  --chunks-dir data/line_chunks \
+  --config synth_generators/line_generator/example_config.yaml \
+  --no-gpu-augmentations
 ```
 
 Для offline-чанков batch-и по умолчанию группируются по `chunk_*.pt`, чтобы
@@ -144,6 +150,7 @@ python train.py --chunks-dir data/line_chunks --no-gpu-augmentations
 ```bash
 python train.py \
   --chunks-dir data/line_chunks \
+  --config synth_generators/line_generator/example_config.yaml \
   --batch-size 256 \
   --num-workers 4 \
   --prefetch-factor 2 \

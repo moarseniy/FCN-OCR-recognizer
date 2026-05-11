@@ -7,8 +7,6 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from .dataset import SingleLineDatasetConfig
-
 
 class ChunkedLineDataset(Dataset):
     """Reads pre-rendered OCR line chunks saved by materialize.py."""
@@ -16,22 +14,19 @@ class ChunkedLineDataset(Dataset):
     def __init__(self, root_dir: str | Path, cache_size: int = 2):
         self.root_dir = Path(root_dir)
         self.cache_size = max(1, cache_size)
-        manifest_path = self.root_dir / "manifest.pt"
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Chunk manifest not found: {manifest_path}")
+        chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
+        if not chunk_paths:
+            raise FileNotFoundError(f"No chunk_*.pt files found in {self.root_dir}")
 
-        self.manifest = torch.load(manifest_path, map_location="cpu", weights_only=False)
-        if self.manifest.get("format") != "fcn_ocr_line_chunks_v1":
-            raise ValueError(f"Unsupported chunk dataset format in {manifest_path}")
-        self.chunks = self.manifest["chunks"]
-        self.total_samples = int(self.manifest["total_samples"])
-        self.config = SingleLineDatasetConfig.model_validate(self.manifest["config"])
-        self.rendered_with_augmentations = bool(self.manifest.get("rendered_with_augmentations", False))
+        self.chunks = []
         self.chunk_ends = []
         total = 0
-        for chunk in self.chunks:
-            total += int(chunk["samples"])
+        for path in chunk_paths:
+            sample_count = self._read_chunk_sample_count(path)
+            self.chunks.append({"file": path.name, "samples": sample_count})
+            total += sample_count
             self.chunk_ends.append(total)
+        self.total_samples = total
 
         self._chunk_cache = OrderedDict()
 
@@ -67,9 +62,32 @@ class ChunkedLineDataset(Dataset):
             return self._chunk_cache[chunk_idx]
 
         path = self.root_dir / self.chunks[chunk_idx]["file"]
-        chunk = torch.load(path, map_location="cpu", weights_only=False)
+        chunk = self._load_torch_chunk(path)
         self._chunk_cache[chunk_idx] = chunk
         self._chunk_cache.move_to_end(chunk_idx)
         while len(self._chunk_cache) > self.cache_size:
             self._chunk_cache.popitem(last=False)
         return chunk
+
+    def _read_chunk_sample_count(self, path: Path) -> int:
+        chunk = self._load_torch_chunk(path)
+        self._validate_chunk(chunk, path)
+        return int(chunk["images"].shape[0])
+
+    @staticmethod
+    def _load_torch_chunk(path: Path) -> dict:
+        try:
+            return torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+        except (RuntimeError, TypeError):
+            return torch.load(path, map_location="cpu", weights_only=False)
+
+    @staticmethod
+    def _validate_chunk(chunk: dict, path: Path) -> None:
+        required_keys = {"images", "targets", "lengths"}
+        missing = sorted(required_keys - set(chunk))
+        if missing:
+            raise KeyError(f"Chunk {path} is missing keys: {missing}")
+
+        sample_count = chunk["images"].shape[0]
+        if chunk["targets"].shape[0] != sample_count or chunk["lengths"].shape[0] != sample_count:
+            raise ValueError(f"Chunk {path} has inconsistent first dimensions")

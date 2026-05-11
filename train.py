@@ -400,20 +400,18 @@ def dataset_render_config(dataset_config):
 
 
 def load_dataset_from_args(args):
-    if args.chunks_dir:
-        if args.target_mode:
-            raise ValueError("--target-mode cannot override a pre-rendered chunk dataset")
-        dataset = ChunkedLineDataset(args.chunks_dir, cache_size=args.chunk_cache_size)
-        dataset_config = dataset.config
-        config_data = dataset_config.model_dump()
-        print(f"Dataset source: chunks ({args.chunks_dir})")
-        return dataset, dataset_config, config_data
-
     with open(args.config, "r") as f:
         config_data = yaml.safe_load(f)
     if args.target_mode:
         config_data["target_mode"] = args.target_mode
     dataset_config = SingleLineDatasetConfig.model_validate_with_paths(config_data, args.config)
+
+    if args.chunks_dir:
+        dataset = ChunkedLineDataset(args.chunks_dir, cache_size=args.chunk_cache_size)
+        print(f"Dataset source: chunks ({args.chunks_dir})")
+        print(f"Dataset config: {args.config}")
+        return dataset, dataset_config, config_data
+
     render_config = dataset_render_config(dataset_config) if args.gpu_augmentations else dataset_config
     dataset = SingleLineDataset(render_config)
     print(f"Dataset source: online generator ({args.config})")
@@ -532,8 +530,6 @@ if __name__ == "__main__":
     train_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augmentations else None
     val_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augment_val else None
     print("GPU augmentations: ", "train" if train_augmenter is not None else "off")
-    if isinstance(dataset, ChunkedLineDataset) and dataset.rendered_with_augmentations and train_augmenter is not None:
-        print("warning: chunks were rendered with CPU augmentations and GPU augmentations are also enabled")
     if val_augmenter is not None:
         print("GPU validation augmentations: on")
 
