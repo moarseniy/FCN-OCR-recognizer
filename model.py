@@ -1,23 +1,6 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple
-
-def transform_back(logits, W_in):
-    """
-    logits: (B, C, W_out)
-    return: (B, C, W_in)
-    """
-    B, C, W_out = logits.shape
-    device = logits.device
-
-    # inverse mapping: x -> t
-    t_idx = torch.floor(
-        torch.arange(W_in, device=device) * W_out / W_in
-    ).long()
-
-    return logits.index_select(dim=2, index=t_idx)
 
 def decode_greedy_batch_tensor(pred_ids: torch.Tensor):
     """
@@ -121,7 +104,7 @@ class FullyConvTextRecognizer(nn.Module):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: (B, C, H, W)  -- переменная ширина W, фиксированная H
         Возвращает:

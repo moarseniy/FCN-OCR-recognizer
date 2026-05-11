@@ -9,11 +9,11 @@ from PIL import Image
 import torch
 import yaml
 
-from model import FullyConvTextRecognizer, decode_greedy_batch_tensor, transform_back
+from model import FullyConvTextRecognizer, decode_greedy_batch_tensor
 from synth_generators.line_generator.dataset import SingleLineDataset, SingleLineDatasetConfig
 
 
-DEFAULT_CONFIG = "synth_generators/line_generator/example_config.yaml"
+DEFAULT_CONFIG = "synth_generators/line_generator/configs/example.yaml"
 
 
 def tensor_to_pil(image_tensor: torch.Tensor) -> Image.Image:
@@ -40,13 +40,8 @@ class TextRecognizer:
         model_config = self.checkpoint.get("model_config", {})
         checkpoint_config = self.checkpoint.get("config", {})
         self.in_channels = int(model_config.get("in_channels", 3))
-        self.num_classes = int(model_config.get("num_classes", len(self.alphabet)))
-        self.target_mode = model_config.get("target_mode") or checkpoint_config.get("target_mode")
-        self.blank_idx = model_config.get("blank_idx")
-        if self.target_mode is None:
-            self.target_mode = "ctc" if self.num_classes > len(self.alphabet) else "column"
-        if self.target_mode == "ctc" and self.blank_idx is None and self.num_classes > len(self.alphabet):
-            self.blank_idx = self.num_classes - 1
+        self.num_classes = int(model_config.get("num_classes", len(self.alphabet) + 1))
+        self.blank_idx = int(model_config.get("blank_idx", len(self.alphabet)))
         self.space_char = checkpoint_config.get("space_char", " ")
         self.space_idx = self.alphabet.index(self.space_char) if self.space_char in self.alphabet else None
         self.image_height = int(checkpoint_config.get("image_height", 48))
@@ -64,9 +59,7 @@ class TextRecognizer:
         print(f"Using device: {self.device}")
         print(f"Model loaded from epoch {epoch}{loss_text}")
         print(f"Alphabet size: {len(self.alphabet)}")
-        print(f"Target mode: {self.target_mode}")
-        if self.blank_idx is not None:
-            print(f"Blank index: {self.blank_idx}")
+        print(f"Blank index: {self.blank_idx}")
 
     def preprocess_image(self, image_path: str | Path) -> torch.Tensor:
         image = Image.open(image_path)
@@ -90,14 +83,12 @@ class TextRecognizer:
 
         chars: list[str] = []
         for idx in collapsed[0, : lengths[0]].detach().cpu().tolist():
-            if self.target_mode == "ctc" and idx == self.blank_idx:
+            if idx == self.blank_idx:
                 continue
             if idx in self.idx_to_char:
                 chars.append(self.idx_to_char[idx])
 
         text = "".join(chars)
-        if self.target_mode == "column" and self.space_char:
-            text = text.strip(self.space_char)
         return text, pred_ids[0].detach().cpu().tolist()
 
     @torch.no_grad()
@@ -110,8 +101,6 @@ class TextRecognizer:
             image_tensor = image_tensor / 255.0
 
         logits = self.model(image_tensor)
-        if self.target_mode == "column":
-            logits = transform_back(logits, image_tensor.shape[3])
         return self.decode_predictions(logits)
 
     def recognize(self, image_path: str | Path) -> tuple[str, list[int]]:
@@ -157,7 +146,7 @@ def main() -> None:
         help="Where to save the generated sample image in --sample-index mode.",
     )
     parser.add_argument("--device", default=None, help="Device to use: cuda or cpu.")
-    parser.add_argument("--show-raw", action="store_true", help="Print raw per-column predictions.")
+    parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     args = parser.parse_args()
 
     checkpoint_path = Path(args.checkpoint)
@@ -177,7 +166,6 @@ def main() -> None:
                 "alphabet": recognizer.alphabet,
                 "channels": recognizer.in_channels,
                 "image_height": recognizer.image_height,
-                "target_mode": recognizer.target_mode,
             }
         )
         dataset = SingleLineDataset(dataset_config)
@@ -195,7 +183,7 @@ def main() -> None:
 
     if args.show_raw:
         raw_chars = [
-            "<blank>" if recognizer.target_mode == "ctc" and idx == recognizer.blank_idx else recognizer.idx_to_char.get(idx, "?")
+            "<blank>" if idx == recognizer.blank_idx else recognizer.idx_to_char.get(idx, "?")
             for idx in raw_indices
         ]
         print(f"Raw indices: {raw_indices}")

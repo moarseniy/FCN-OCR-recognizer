@@ -10,13 +10,11 @@
 Он возвращает элементы в формате, который подходит текущей FCN-идее:
 
 - `image`: тензор `C x H x W`;
-- в режиме `ctc`: `target` — padded-тензор длиной `max_text_length`, `length` — реальная длина строки;
-- в режиме `column`: `target` — тензор длиной `W`, `length` — ширина изображения.
+- `target` — padded-тензор длиной `max_text_length`;
+- `length` — реальная длина строки.
 
-Есть два режима обучения:
-
-- `target_mode: ctc` — обучение через CTC loss. Последний класс модели — `blank`, поэтому `num_classes = len(alphabet) + 1`.
-- `target_mode: column` — старый вариант с классификацией каждого столбца через cross-entropy. Фон и отступы размечаются пробелом, поэтому пробел должен быть в `alphabet`.
+Обучение сейчас использует один основной режим: CTC loss. Последний класс
+модели — `blank`, поэтому `num_classes = len(alphabet) + 1`.
 
 В примерах `alphabet` начинается с пробела, а `sample_alphabet` пробел не
 содержит. Так пробел есть как класс фона, но синтетические строки не состоят из
@@ -24,8 +22,8 @@
 
 Примеры конфигов:
 
-- `synth_generators/line_generator/example_config.yaml` — CTC;
-- `synth_generators/line_generator/example_column_config.yaml` — старый column-вариант с пробелом для фона.
+- `synth_generators/line_generator/configs/example.yaml` — генерация;
+- `configs/example_train.yaml` — обучение.
 
 Если нужно рисовать текст поверх реальных/синтетических фонов, укажите папку:
 
@@ -85,9 +83,7 @@ augmentations:
   invert: {}
 ```
 
-Вероятность `0.0` выключает преобразование, `1.0` применяет всегда. Для
-`column`-режима лучше держать геометрические преобразования мягкими, потому что
-target размечен по горизонтальным столбцам.
+Вероятность `0.0` выключает преобразование, `1.0` применяет всегда.
 
 Доступные OCR-аугментации: `cycle_shift`, `strong_blur`, `motion_blur`,
 `scale`, `darkening`, `noise`, `projective`, `rotate`, `crop_x`, `crop_y`,
@@ -98,7 +94,7 @@ target размечен по горизонтальным столбцам.
 
 ```bash
 python -m synth_generators.line_generator.preview \
-  --config synth_generators/line_generator/example_config.yaml \
+  --config synth_generators/line_generator/configs/example.yaml \
   --output synthetic_line_preview.png
 ```
 
@@ -106,56 +102,41 @@ python -m synth_generators.line_generator.preview \
 
 ```bash
 python -m synth_generators.line_generator.materialize \
-  --config synth_generators/line_generator/example_config.yaml \
-  --output-dir data/line_chunks \
-  --chunk-size 1024 \
-  --overwrite
+  --config synth_generators/line_generator/configs/example.yaml
 ```
 
 В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
-`N x C x H x W`), `targets`, `lengths` и исходные `texts` как текстовая
-разметка. Конфиг, алфавит, target mode и настройки аугментаций в offline-
-датасет не сохраняются. Offline-генерация по умолчанию не применяет
-аугментации. Если всё же нужно запечь CPU-аугментации прямо в чанки, добавьте
-`--with-augmentations`.
+`N x C x H x W`) и исходные `texts` как текстовая разметка. Конфиг, алфавит,
+настройки обучения и настройки аугментаций в offline-датасет не сохраняются.
+`output_dir`, `chunk_size`, `overwrite` и `apply_augmentations` задаются в
+generation-конфиге. Offline-генерация по умолчанию не применяет аугментации.
 
 Запустить обучение на синтетике:
 
 ```bash
-python train.py --config synth_generators/line_generator/example_config.yaml
+python train.py --config configs/example_train.yaml
 ```
 
-Запустить обучение из сохранённых чанков:
+В training-конфиге задаются `chunks_dir` или `generator_config`, алфавит,
+learning rate, batch size, workers, checkpoint path, preview-настройки и
+GPU-аугментации. При старте обучения `train.py` читает `texts` из датасета,
+сравнивает символы с training-алфавитом и сохраняет статистику в:
 
-```bash
-python train.py \
-  --chunks-dir data/line_chunks \
-  --config synth_generators/line_generator/example_config.yaml
+```text
+checkpoints/alphabet_stats.tsv
 ```
 
 По умолчанию `train.py` применяет настроенные аугментации на устройстве
-обучения (`cuda`, если доступна). Отключить это можно флагом:
+обучения (`cuda`, если доступна). Отключить это можно в training-конфиге:
 
-```bash
-python train.py \
-  --chunks-dir data/line_chunks \
-  --config synth_generators/line_generator/example_config.yaml \
-  --no-gpu-augmentations
+```yaml
+gpu_augmentations: false
 ```
 
 Для offline-чанков batch-и по умолчанию группируются по `chunk_*.pt`, чтобы
 один batch не заставлял читать десятки файлов с диска. Для реального обучения
-обычно имеет смысл включить несколько workers:
-
-```bash
-python train.py \
-  --chunks-dir data/line_chunks \
-  --config synth_generators/line_generator/example_config.yaml \
-  --batch-size 256 \
-  --num-workers 4 \
-  --prefetch-factor 2 \
-  --chunk-cache-size 2
-```
+обычно имеет смысл включить `num_workers`, `prefetch_factor` и подобрать
+`batch_size` в training-конфиге.
 
 Картинки из чанков остаются `uint8` до переноса batch на устройство обучения и
 нормализуются уже там, поэтому CPU RAM и host-to-device transfer не раздуваются
@@ -169,27 +150,23 @@ checkpoints/training_log.tsv
 
 Разбиение на батчи настраивается явно:
 
-```bash
-python train.py \
-  --config synth_generators/line_generator/example_config.yaml \
-  --batch-size 128 \
-  --num-workers 4 \
-  --drop-last \
-  --log-every 10
+```yaml
+batch_size: 128
+num_workers: 4
+drop_last: true
+log_every: 10
 ```
 
 При старте печатаются размеры train/validation split, batch size, количество
-батчей и лимиты `--max-train-batches` / `--max-val-batches`, если они заданы.
-По умолчанию `--log-every 1`, то есть loss печатается на каждом batch; значение
+батчей и лимиты `max_train_batches` / `max_val_batches`, если они заданы.
+По умолчанию `log_every: 1`, то есть loss печатается на каждом batch; значение
 `0` отключает batch-логи.
 
 Сохранить примеры именно тех тензоров, которые подаются в train/validation:
 
-```bash
-python train.py \
-  --config synth_generators/line_generator/example_config.yaml \
-  --preview-samples 16 \
-  --preview-dir input_previews
+```yaml
+preview_samples: 16
+preview_dir: input_previews
 ```
 
 Картинки будут сохранены в `input_previews/train` и `input_previews/val`.
@@ -197,19 +174,12 @@ python train.py \
 поэтому это ровно те изображения, которые подаются на вход сети, уже с
 применёнными аугментациями. Рядом создаётся `labels.tsv` с именем файла,
 текстом и длиной target. Размер validation-части задаётся через
-`--val-fraction`, по умолчанию `0.1`.
+`val_fraction`, по умолчанию `0.1`.
 
-Запустить старый column-вариант:
+Для продолжения обучения выставьте в training-конфиге:
 
-```bash
-python train.py --config synth_generators/line_generator/example_column_config.yaml
-```
-
-Продолжать чекпоинт можно только в том же режиме, в котором он был создан. Для
-продолжения используйте:
-
-```bash
-python train.py --resume --config synth_generators/line_generator/example_config.yaml
+```yaml
+resume: true
 ```
 
 Инференс на синтетическом примере:

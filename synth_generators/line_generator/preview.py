@@ -13,7 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render one synthetic OCR line preview.")
     parser.add_argument(
         "--config",
-        default="synth_generators/line_generator/example_config.yaml",
+        default="synth_generators/line_generator/configs/example.yaml",
         help="Path to a SingleLineDataset YAML config.",
     )
     parser.add_argument("--index", type=int, default=0, help="Sample index to render.")

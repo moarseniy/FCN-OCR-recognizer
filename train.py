@@ -4,14 +4,16 @@ from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset
 from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig, SingleLineDataset
 from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 import argparse
+from collections import Counter
 import math
 import time
 import yaml
+from typing import Any
 from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
-from model import FullyConvTextRecognizer, transform_back
-from loss import ctc_loss, logreg_loss
+from model import FullyConvTextRecognizer
+from loss import ctc_loss
 
 from datetime import datetime
 import os
@@ -19,6 +21,88 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class TrainingConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
+    space_char: str = " "
+    max_text_length: int = Field(default=64, ge=1)
+    channels: int = Field(default=3, ge=1, le=3)
+    image_height: int = Field(default=48, ge=16)
+    image_width: int = Field(default=256, ge=32)
+    background: int = Field(default=255, ge=0, le=255)
+
+    chunks_dir: str | None = None
+    generator_config: str | None = None
+
+    epochs: int = Field(default=50, ge=1)
+    batch_size: int = Field(default=128, ge=1)
+    lr: float = Field(default=1e-3, gt=0.0)
+    checkpoint_dir: str = "checkpoints"
+    max_train_batches: int | None = None
+    max_val_batches: int | None = 50
+    val_fraction: float = Field(default=0.1, gt=0.0, lt=1.0)
+    seed: int = 0
+    resume: bool = False
+
+    num_workers: int = Field(default=0, ge=0)
+    drop_last: bool = False
+    prefetch_factor: int = Field(default=2, ge=1)
+    persistent_workers: bool = True
+    chunk_cache_size: int = Field(default=2, ge=1)
+    chunk_aware_batches: bool = True
+
+    log_every: int = Field(default=1, ge=0)
+    preview_samples: int = Field(default=0, ge=0)
+    preview_dir: str = "input_previews"
+
+    gpu_augmentations: bool = True
+    gpu_augment_val: bool = False
+    augmentation_probabilities: dict[str, float] = Field(default_factory=dict)
+    augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @classmethod
+    def model_validate_with_paths(cls, data: Any, config_path: str | Path) -> "TrainingConfig":
+        data = dict(data)
+        config_dir = Path(config_path).resolve().parent
+        for key in ("chunks_dir", "generator_config", "checkpoint_dir", "preview_dir"):
+            value = data.get(key)
+            if value:
+                path = Path(value)
+                if not path.is_absolute():
+                    data[key] = str(config_dir / path)
+        return cls.model_validate(data)
+
+    @field_validator("alphabet")
+    @classmethod
+    def alphabet_must_be_unique(cls, value: str) -> str:
+        if not value:
+            raise ValueError("alphabet must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("alphabet must contain unique characters")
+        return value
+
+    @field_validator("augmentation_probabilities")
+    @classmethod
+    def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
+        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
+        if unknown:
+            raise ValueError(f"unknown augmentations: {unknown}")
+        for name, probability in value.items():
+            if not 0.0 <= probability <= 1.0:
+                raise ValueError(f"probability for {name} must be between 0 and 1")
+        return value
+
+    @field_validator("augmentations")
+    @classmethod
+    def augmentations_must_be_known(cls, value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
+        if unknown:
+            raise ValueError(f"unknown augmentation configs: {unknown}")
+        return value
 
 def save_checkpoint(
     model,
@@ -48,9 +132,8 @@ def save_checkpoint(
         'config': config,
         'model_config': {
             'in_channels': config.get('channels', 3),
-            'num_classes': len(alphabet) + (1 if config.get('target_mode', 'ctc') == 'ctc' else 0),
-            'blank_idx': len(alphabet) if config.get('target_mode', 'ctc') == 'ctc' else None,
-            'target_mode': config.get('target_mode', 'ctc'),
+            'num_classes': len(alphabet) + 1,
+            'blank_idx': len(alphabet),
         },
         'train_losses': train_losses,
         'val_losses': val_losses,
@@ -66,10 +149,8 @@ def save_checkpoint(
 
     return checkpoint_path
 
-def compute_loss(logits, targets, lengths, blank_idx, target_mode):
-    if target_mode == "ctc":
-        return ctc_loss(logits, targets, lengths, blank_idx)
-    return logreg_loss(logits, targets)
+def compute_loss(logits, targets, lengths, blank_idx):
+    return ctc_loss(logits, targets, lengths, blank_idx)
 
 
 def prepare_batch(imgs, targets, lengths, device):
@@ -83,7 +164,7 @@ def prepare_batch(imgs, targets, lengths, device):
     return imgs, targets, lengths
 
 
-def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None, log_every=0, augmenter=None):
+def validate(model, loader, device, blank_idx, max_batches=50, preview_saver=None, log_every=0, augmenter=None):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
@@ -105,10 +186,8 @@ def validate(model, loader, device, blank_idx, target_mode, max_batches=50, prev
                 preview_saver.save_batch(imgs, targets, lengths)
 
             logits = model(imgs)
-            if target_mode == "column":
-                logits = transform_back(logits, imgs.shape[3])
 
-            loss = compute_loss(logits, targets, lengths, blank_idx, target_mode)
+            loss = compute_loss(logits, targets, lengths, blank_idx)
             total_loss += loss.item()
             batches += 1
             samples += imgs.size(0)
@@ -138,7 +217,6 @@ def train_one_epoch(
     optimizer,
     device,
     blank_idx,
-    target_mode,
     max_batches=None,
     preview_saver=None,
     log_every=0,
@@ -163,10 +241,8 @@ def train_one_epoch(
             preview_saver.save_batch(imgs, targets, lengths)
 
         logits = model(imgs)
-        if target_mode == "column":
-            logits = transform_back(logits, imgs.shape[3])
 
-        loss = compute_loss(logits, targets, lengths, blank_idx, target_mode)
+        loss = compute_loss(logits, targets, lengths, blank_idx)
 
         # print(torch.isnan(loss), torch.isinf(loss))
 
@@ -207,25 +283,14 @@ def tensor_to_pil(image_tensor):
     array = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     return Image.fromarray(array, mode="RGB")
 
-def decode_target_for_preview(target, length, alphabet, target_mode, space_char):
-    if target_mode == "ctc":
-        return "".join(alphabet[idx] for idx in target[:length].tolist())
-
-    chars = []
-    previous_idx = None
-    for idx in target.tolist():
-        if idx != previous_idx:
-            chars.append(alphabet[idx])
-            previous_idx = idx
-    return "".join(chars).strip(space_char)
+def decode_target_for_preview(target, length, alphabet):
+    return "".join(alphabet[idx] for idx in target[:length].tolist())
 
 class InputPreviewSaver:
-    def __init__(self, output_dir, count, alphabet, target_mode, space_char):
+    def __init__(self, output_dir, count, alphabet):
         self.output_path = Path(output_dir)
         self.count = count
         self.alphabet = alphabet
-        self.target_mode = target_mode
-        self.space_char = space_char
         self.saved = 0
         self.labels_file = None
 
@@ -247,8 +312,6 @@ class InputPreviewSaver:
                 target.long(),
                 int(length),
                 self.alphabet,
-                self.target_mode,
-                self.space_char,
             )
             tensor_to_pil(image).save(self.output_path / filename)
             self.labels_file.write(f"{filename}\t{text}\t{int(length)}\n")
@@ -338,56 +401,31 @@ class ChunkBatchSampler(Sampler):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the FCN OCR recognizer on synthetic lines.")
-    parser.add_argument(
-        "--config",
-        default="synth_generators/line_generator/example_config.yaml",
-        help="Path to a SingleLineDataset YAML config.",
-    )
-    parser.add_argument(
-        "--chunks-dir",
-        default=None,
-        help="Directory with pre-rendered uint8 torch chunks produced by materialize.py.",
-    )
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train.")
-    parser.add_argument("--batch-size", type=int, default=128, help="Training batch size.")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate.")
-    parser.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for checkpoints.")
-    parser.add_argument("--max-train-batches", type=int, default=None, help="Optional train batches per epoch limit.")
-    parser.add_argument("--max-val-batches", type=int, default=50, help="Validation batches per epoch limit.")
-    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker processes.")
-    parser.add_argument("--drop-last", action="store_true", help="Drop incomplete train/val batches.")
-    parser.add_argument("--log-every", type=int, default=1, help="Print every N batch losses. 0 disables batch logs.")
-    parser.add_argument("--chunk-cache-size", type=int, default=2, help="Loaded chunk files cached per DataLoader worker.")
-    parser.add_argument(
-        "--chunk-aware-batches",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Group batches by chunk file for offline datasets. Enabled by default.",
-    )
-    parser.add_argument("--prefetch-factor", type=int, default=2, help="DataLoader prefetch factor when num_workers > 0.")
-    parser.add_argument(
-        "--persistent-workers",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Keep DataLoader workers alive between epochs when num_workers > 0.",
-    )
-    parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth.")
-    parser.add_argument("--target-mode", choices=["ctc", "column"], default=None, help="Override config target_mode.")
-    parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of samples used for validation.")
-    parser.add_argument("--preview-samples", type=int, default=0, help="Save N actual input images seen by train and val loops.")
-    parser.add_argument("--preview-dir", default="input_previews", help="Directory for saved input previews.")
-    parser.add_argument(
-        "--gpu-augmentations",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Apply configured augmentations on the training device. Enabled by default.",
-    )
-    parser.add_argument(
-        "--gpu-augment-val",
-        action="store_true",
-        help="Also apply GPU augmentations during validation.",
-    )
+    parser.add_argument("--config", required=True, help="Path to training YAML config.")
     return parser.parse_args()
+
+
+def load_training_config(config_path: str | Path) -> tuple[TrainingConfig, dict]:
+    with Path(config_path).open("r") as file:
+        config_data = yaml.safe_load(file)
+    return TrainingConfig.model_validate_with_paths(config_data, config_path), config_data
+
+
+def dataset_config_from_training_config(config: TrainingConfig) -> SingleLineDatasetConfig:
+    return SingleLineDatasetConfig.model_validate(
+        {
+            "alphabet": config.alphabet,
+            "space_char": config.space_char,
+            "max_text_length": config.max_text_length,
+            "channels": config.channels,
+            "image_height": config.image_height,
+            "image_width": config.image_width,
+            "background": config.background,
+            "seed": config.seed,
+            "augmentation_probabilities": config.augmentation_probabilities,
+            "augmentations": config.augmentations,
+        }
+    )
 
 
 def dataset_render_config(dataset_config):
@@ -399,23 +437,39 @@ def dataset_render_config(dataset_config):
     return SingleLineDatasetConfig.model_validate(config_data)
 
 
-def load_dataset_from_args(args):
-    with open(args.config, "r") as f:
-        config_data = yaml.safe_load(f)
-    if args.target_mode:
-        config_data["target_mode"] = args.target_mode
-    dataset_config = SingleLineDatasetConfig.model_validate_with_paths(config_data, args.config)
+def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
+    dataset_config = dataset_config_from_training_config(config)
 
-    if args.chunks_dir:
-        dataset = ChunkedLineDataset(args.chunks_dir, cache_size=args.chunk_cache_size)
-        print(f"Dataset source: chunks ({args.chunks_dir})")
-        print(f"Dataset config: {args.config}")
-        return dataset, dataset_config, config_data
+    if config.chunks_dir:
+        dataset = ChunkedLineDataset(config.chunks_dir, cache_size=config.chunk_cache_size, config=dataset_config)
+        print(f"Dataset source: chunks ({config.chunks_dir})")
+        return dataset, dataset_config
 
-    render_config = dataset_render_config(dataset_config) if args.gpu_augmentations else dataset_config
+    if not config.generator_config:
+        raise ValueError("Training config must contain either chunks_dir or generator_config")
+
+    with Path(config.generator_config).open("r") as file:
+        generator_data = yaml.safe_load(file)
+    generator_config = SingleLineDatasetConfig.model_validate_with_paths(generator_data, config.generator_config)
+    generator_config = generator_config.model_copy(
+        update={
+            "alphabet": config.alphabet,
+            "space_char": config.space_char,
+            "max_text_length": config.max_text_length,
+            "channels": config.channels,
+            "image_height": config.image_height,
+            "image_width": config.image_width,
+            "background": config.background,
+            "seed": config.seed,
+            "augmentation_probabilities": config.augmentation_probabilities,
+            "augmentations": config.augmentations,
+        }
+    )
+
+    render_config = dataset_render_config(generator_config) if config.gpu_augmentations else generator_config
     dataset = SingleLineDataset(render_config)
-    print(f"Dataset source: online generator ({args.config})")
-    return dataset, dataset_config, config_data
+    print(f"Dataset source: online generator ({config.generator_config})")
+    return dataset, generator_config
 
 
 def make_data_loader(dataset, split_dataset, args, shuffle, seed):
@@ -450,11 +504,87 @@ def make_data_loader(dataset, split_dataset, args, shuffle, seed):
     )
 
 
+def printable_char(char: str) -> str:
+    if char == " ":
+        return "<space>"
+    if char == "\t":
+        return "<tab>"
+    if char == "\n":
+        return "<newline>"
+    return char
+
+
+def iter_dataset_texts(dataset):
+    if hasattr(dataset, "iter_texts"):
+        yield from dataset.iter_texts()
+        return
+
+    if isinstance(dataset, SingleLineDataset):
+        for index in range(len(dataset)):
+            yield dataset.generate_sample_from_index(index).text
+        return
+
+    raise TypeError("Dataset does not expose texts for alphabet validation")
+
+
+def validate_and_log_alphabet(dataset, alphabet: str, max_text_length: int, checkpoint_dir: str | Path) -> None:
+    counts = Counter()
+    sample_count = 0
+    max_observed_length = 0
+
+    for text in iter_dataset_texts(dataset):
+        sample_count += 1
+        max_observed_length = max(max_observed_length, len(text))
+        counts.update(text)
+
+    alphabet_set = set(alphabet)
+    data_chars = set(counts)
+    missing_chars = sorted(data_chars - alphabet_set)
+    unused_chars = [char for char in alphabet if char not in data_chars]
+
+    stats_path = Path(checkpoint_dir) / "alphabet_stats.tsv"
+    with stats_path.open("w") as file:
+        file.write("char\tcount\tin_training_alphabet\n")
+        for char in alphabet:
+            file.write(f"{printable_char(char)}\t{counts.get(char, 0)}\t1\n")
+        for char in missing_chars:
+            file.write(f"{printable_char(char)}\t{counts[char]}\t0\n")
+
+    print("\nAlphabet/data check:")
+    print(f"  Samples scanned:        {sample_count}")
+    print(f"  Unique chars in data:   {len(data_chars)}")
+    print(f"  Max text length:        {max_observed_length}")
+    print(f"  Stats file:             {stats_path}")
+    print("  Per-char counts:")
+    for char in alphabet:
+        print(f"    {printable_char(char):>9}: {counts.get(char, 0)}")
+
+    if unused_chars:
+        printable = ", ".join(printable_char(char) for char in unused_chars)
+        print(f"  Alphabet chars absent in data: {printable}")
+
+    if max_observed_length > max_text_length:
+        raise ValueError(
+            f"Data contains text length {max_observed_length}, "
+            f"but training max_text_length is {max_text_length}"
+        )
+    if missing_chars:
+        printable = ", ".join(printable_char(char) for char in missing_chars)
+        raise ValueError(f"Training alphabet is missing data chars: {printable}")
+
+
 if __name__ == "__main__":
-    args = parse_args()
+    cli_args = parse_args()
+    args, _ = load_training_config(cli_args.config)
+    config_data = args.model_dump()
     print("START!")
-    dataset, dataset_config, config_data = load_dataset_from_args(args)
+    dataset, dataset_config = load_dataset_from_config(args)
     print(f"Dataset ready! Total samples: {len(dataset)}")
+
+    checkpoint_dir = args.checkpoint_dir
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    log_path = Path(checkpoint_dir) / "training_log.tsv"
+    validate_and_log_alphabet(dataset, args.alphabet, args.max_text_length, checkpoint_dir)
 
     if not 0.0 < args.val_fraction < 1.0:
         raise ValueError("--val-fraction must be between 0 and 1")
@@ -474,13 +604,10 @@ if __name__ == "__main__":
     print(f"Validation samples: {len(val_dataset)}")
 
     alphabet = dataset_config.alphabet
-    target_mode = dataset_config.target_mode
-    blank_idx = len(alphabet) if target_mode == "ctc" else None
+    blank_idx = len(alphabet)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
-    print("Target mode: ", target_mode)
-    if blank_idx is not None:
-        print("Blank index: ", blank_idx)
+    print("Blank index: ", blank_idx)
 
     train_loader = make_data_loader(dataset, train_dataset, args, shuffle=True, seed=dataset_config.seed or 0)
     val_loader = make_data_loader(dataset, val_dataset, args, shuffle=False, seed=(dataset_config.seed or 0) + 100_000)
@@ -514,15 +641,11 @@ if __name__ == "__main__":
             Path(args.preview_dir) / "train",
             args.preview_samples,
             alphabet,
-            target_mode,
-            dataset_config.space_char,
         )
         val_preview_saver = InputPreviewSaver(
             Path(args.preview_dir) / "val",
             args.preview_samples,
             alphabet,
-            target_mode,
-            dataset_config.space_char,
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -535,7 +658,7 @@ if __name__ == "__main__":
 
     model = FullyConvTextRecognizer(
         in_channels=dataset_config.channels,
-        num_classes=len(alphabet) + (1 if target_mode == "ctc" else 0)
+        num_classes=len(alphabet) + 1
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -543,11 +666,6 @@ if __name__ == "__main__":
     # Списки для хранения истории лоссов
     train_losses = []
     val_losses = []
-
-    # Создаем директорию для чекпоинтов и графиков
-    checkpoint_dir = args.checkpoint_dir
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    log_path = Path(checkpoint_dir) / "training_log.tsv"
 
     start_epoch = 0
     best_val_loss = float('inf')
@@ -585,7 +703,6 @@ if __name__ == "__main__":
             optimizer,
             device,
             blank_idx,
-            target_mode,
             args.max_train_batches,
             train_preview_saver,
             args.log_every,
@@ -599,7 +716,6 @@ if __name__ == "__main__":
             val_loader,
             device,
             blank_idx,
-            target_mode,
             args.max_val_batches,
             val_preview_saver,
             args.log_every,
@@ -670,9 +786,8 @@ if __name__ == "__main__":
                 'config': config_data,
                 'model_config': {
                     'in_channels': dataset_config.channels,
-                    'num_classes': len(alphabet) + (1 if target_mode == "ctc" else 0),
+                    'num_classes': len(alphabet) + 1,
                     'blank_idx': blank_idx,
-                    'target_mode': target_mode,
                 },
                 'train_losses': train_losses,
                 'val_losses': val_losses
@@ -694,9 +809,8 @@ if __name__ == "__main__":
                 'config': config_data,
                 'model_config': {
                     'in_channels': dataset_config.channels,
-                    'num_classes': len(alphabet) + (1 if target_mode == "ctc" else 0),
+                    'num_classes': len(alphabet) + 1,
                     'blank_idx': blank_idx,
-                    'target_mode': target_mode,
                 },
                 'train_losses': train_losses,
                 'val_losses': val_losses

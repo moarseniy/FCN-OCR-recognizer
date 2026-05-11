@@ -1,27 +1,37 @@
 alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
-sample_alphabet: "0123456789abcdefghijklmnopqrstuvwxyz"
-target_mode: ctc
 space_char: " "
-samples: 100000
+max_text_length: 64
+channels: 3
 image_height: 48
 image_width: 256
-min_text_length: 4
-max_text_length: 16
-font_paths:
-  - /usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf
-  - /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-font_size_min: 24
-font_size_max: 34
-channels: 3
+background: 255
+
+chunks_dir: ../data/line_chunks
+generator_config: null
+
+epochs: 50
+batch_size: 128
+lr: 0.001
+checkpoint_dir: ../checkpoints
+max_train_batches: null
+max_val_batches: 50
+val_fraction: 0.1
 seed: 42
-background_dir: null
-background_extensions:
-  - .png
-  - .jpg
-  - .jpeg
-  - .bmp
-  - .webp
-horizontal_padding: 8
+resume: false
+
+num_workers: 0
+drop_last: false
+prefetch_factor: 2
+persistent_workers: true
+chunk_cache_size: 2
+chunk_aware_batches: true
+
+log_every: 1
+preview_samples: 0
+preview_dir: ../input_previews
+
+gpu_augmentations: true
+gpu_augment_val: false
 augmentation_probabilities:
   cycle_shift: 0.05
   strong_blur: 0.08

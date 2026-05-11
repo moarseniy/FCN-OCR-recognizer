@@ -7,13 +7,17 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
+from .dataset import SingleLineDatasetConfig
+
 
 class ChunkedLineDataset(Dataset):
     """Reads pre-rendered OCR line chunks saved by materialize.py."""
 
-    def __init__(self, root_dir: str | Path, cache_size: int = 2):
+    def __init__(self, root_dir: str | Path, cache_size: int = 2, config: SingleLineDatasetConfig | None = None):
         self.root_dir = Path(root_dir)
         self.cache_size = max(1, cache_size)
+        self.config = config
+        self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)} if config else {}
         chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
         if not chunk_paths:
             raise FileNotFoundError(f"No chunk_*.pt files found in {self.root_dir}")
@@ -45,9 +49,23 @@ class ChunkedLineDataset(Dataset):
         chunk = self._load_chunk(chunk_idx)
 
         image = chunk["images"][local_idx]
+
+        if self.config is not None and "texts" in chunk:
+            return self._make_target_from_text(image, chunk["texts"][local_idx])
+
+        if "targets" not in chunk or "lengths" not in chunk:
+            raise KeyError("Chunk does not contain targets/lengths. Pass a training config to encode labels from texts.")
+
         target = chunk["targets"][local_idx]
         length = chunk["lengths"][local_idx]
         return image, target, length
+
+    def iter_texts(self):
+        for chunk_idx in range(len(self.chunks)):
+            chunk = self._load_chunk(chunk_idx)
+            if "texts" not in chunk:
+                raise KeyError(f"Chunk {self.chunks[chunk_idx]['file']} does not contain texts")
+            yield from chunk["texts"]
 
     def chunk_index_for_sample(self, index: int) -> int:
         if index < 0:
@@ -83,11 +101,28 @@ class ChunkedLineDataset(Dataset):
 
     @staticmethod
     def _validate_chunk(chunk: dict, path: Path) -> None:
-        required_keys = {"images", "targets", "lengths"}
+        required_keys = {"images", "texts"}
         missing = sorted(required_keys - set(chunk))
         if missing:
             raise KeyError(f"Chunk {path} is missing keys: {missing}")
 
         sample_count = chunk["images"].shape[0]
-        if chunk["targets"].shape[0] != sample_count or chunk["lengths"].shape[0] != sample_count:
+        if len(chunk["texts"]) != sample_count:
             raise ValueError(f"Chunk {path} has inconsistent first dimensions")
+
+    def _make_target_from_text(self, image: torch.Tensor, text: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.config is None:
+            raise RuntimeError("config is required to encode targets from text")
+
+        missing = sorted(set(text) - set(self.config.alphabet))
+        if missing:
+            raise ValueError(f"text contains chars outside training alphabet: {missing}")
+
+        if len(text) > self.config.max_text_length:
+            raise ValueError(
+                f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}: {text!r}"
+            )
+        target = torch.zeros(self.config.max_text_length, dtype=torch.long)
+        if text:
+            target[: len(text)] = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
+        return image, target, torch.tensor(len(text), dtype=torch.long)

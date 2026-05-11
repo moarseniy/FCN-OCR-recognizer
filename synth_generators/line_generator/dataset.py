@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import random
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
@@ -42,18 +42,12 @@ SUPPORTED_AUGMENTATIONS = (
 
 
 class SingleLineDatasetConfig(BaseModel):
-    """Config for a simple fully-convolutional single-line OCR dataset.
-
-    In ``ctc`` mode the target is a padded text sequence. In ``column`` mode
-    the target has one class id per image column; background columns are labeled
-    with ``space_char``.
-    """
+    """Config for a simple fully-convolutional single-line OCR dataset."""
 
     model_config = ConfigDict(extra="ignore")
 
     alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
     sample_alphabet: str | None = None
-    target_mode: Literal["ctc", "column"] = "ctc"
     space_char: str = " "
     samples: int = Field(default=10_000, ge=1)
     image_height: int = Field(default=48, ge=16)
@@ -76,6 +70,10 @@ class SingleLineDatasetConfig(BaseModel):
     augmentation_probabilities: dict[str, float] = Field(default_factory=dict)
     augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     horizontal_padding: int = Field(default=8, ge=0)
+    output_dir: str | None = None
+    chunk_size: int = Field(default=1024, ge=1)
+    overwrite: bool = False
+    apply_augmentations: bool = False
 
     @classmethod
     def model_validate_with_paths(cls, data: Any, config_path: str | Path | None = None) -> "SingleLineDatasetConfig":
@@ -91,6 +89,12 @@ class SingleLineDatasetConfig(BaseModel):
             background_path = Path(background_dir)
             if not background_path.is_absolute():
                 data["background_dir"] = str(config_dir / background_path)
+
+        output_dir = data.get("output_dir")
+        if output_dir:
+            output_path = Path(output_dir)
+            if not output_path.is_absolute():
+                data["output_dir"] = str(config_dir / output_path)
 
         return cls.model_validate(data)
 
@@ -196,8 +200,6 @@ class SingleLineDataset(Dataset):
     def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)}
-        if config.target_mode == "column" and config.space_char not in self.char_to_index:
-            raise ValueError("column target_mode requires space_char to be present in alphabet")
         self.sample_alphabet = config.sample_alphabet or config.alphabet.replace(config.space_char, "")
         if not self.sample_alphabet:
             raise ValueError("sample_alphabet must not be empty")
@@ -221,13 +223,9 @@ class SingleLineDataset(Dataset):
     def generate_sample(self, rng: random.Random | None = None) -> GeneratedLineSample:
         rng = rng or random.Random()
         text, font = self._make_text_that_fits(rng)
-        image, x_offset, advances = self._render_text(text, font, rng)
-        if self.config.target_mode == "ctc":
-            target = self._encode_text(text)
-            length = len(text)
-        else:
-            target = self._make_column_targets(text, advances, x_offset)
-            length = self.config.image_width
+        image = self._render_text(text, font, rng)
+        target = self._encode_text(text)
+        length = len(text)
 
         if self.config.channels == 3:
             array = np.asarray(image.convert("RGB"), dtype=np.float32)
@@ -273,7 +271,7 @@ class SingleLineDataset(Dataset):
         text: str,
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
-    ) -> tuple[Image.Image, int, list[float]]:
+    ) -> Image.Image:
         cfg = self.config
         image = self._make_background(rng)
         draw = ImageDraw.Draw(image)
@@ -290,27 +288,12 @@ class SingleLineDataset(Dataset):
         draw.text((x, y), text, font=font, fill=fill)
         image = self._apply_augmentations(image, rng)
 
-        return image, x, self._char_advances(text, font)
+        return image
 
     def _encode_text(self, text: str) -> torch.Tensor:
         target = torch.zeros(self.config.max_text_length, dtype=torch.long)
         encoded = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
         target[: len(encoded)] = encoded
-        return target
-
-    def _make_column_targets(self, text: str, advances: list[float], x_offset: int) -> torch.Tensor:
-        target = torch.full(
-            (self.config.image_width,),
-            fill_value=self.char_to_index[self.config.space_char],
-            dtype=torch.long,
-        )
-        cursor = float(x_offset)
-        for char, advance in zip(text, advances):
-            start = max(0, int(round(cursor)))
-            end = min(self.config.image_width, int(round(cursor + advance)))
-            if end > start:
-                target[start:end] = self.char_to_index[char]
-            cursor += advance
         return target
 
     def _load_font(self, rng: random.Random, size: int | None = None) -> ImageFont.FreeTypeFont:

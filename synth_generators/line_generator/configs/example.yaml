@@ -1,8 +1,11 @@
 alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
 sample_alphabet: "0123456789abcdefghijklmnopqrstuvwxyz"
-target_mode: column
 space_char: " "
 samples: 100000
+output_dir: ../../../data/line_chunks
+chunk_size: 1024
+overwrite: false
+apply_augmentations: false
 image_height: 48
 image_width: 256
 min_text_length: 4
@@ -14,67 +17,67 @@ font_size_min: 24
 font_size_max: 34
 channels: 3
 seed: 42
-background_dir: backgrounds/
+background_dir: null
 background_extensions:
   - .png
   - .jpg
   - .jpeg
   - .bmp
-  # - .webp
+  - .webp
 horizontal_padding: 8
 augmentation_probabilities:
-  cycle_shift: 0.3
-  strong_blur: 0.3
-  motion_blur: 0.3
-  scale: 0.2
-  darkening: 0.15
-  noise: 0.65
-  projective: 0.03
-  rotate: 0.4
-  crop_x: 0.1
-  crop_y: 0.1
-  morphology: 0.1
-  unsharp_mask: 0.1
+  cycle_shift: 0.05
+  strong_blur: 0.08
+  motion_blur: 0.08
+  scale: 0.15
+  darkening: 0.2
+  noise: 0.75
+  projective: 0.12
+  rotate: 0.8
+  crop_x: 0.08
+  crop_y: 0.05
+  morphology: 0.08
+  unsharp_mask: 0.12
   gaussian_blur: 0.0
   gaussian_noise: 0.0
-  brightness: 0.2
-  contrast: 0.2
+  brightness: 0.3
+  contrast: 0.3
   invert: 0.0
 augmentations:
   cycle_shift:
-    max_x: 3
-    max_y: 0
+    max_x: 2
+    max_y: 1
   strong_blur:
-    radius_min: 0.6
-    radius_max: 1.2
+    radius_min: 0.8
+    radius_max: 1.4
   motion_blur:
     size_min: 3
     size_max: 7
-    angle_min: -7.0
-    angle_max: 7.0
+    angle_min: -8.0
+    angle_max: 8.0
   scale:
-    factor_x_min: 0.9
-    factor_x_max: 1.1
+    factor_x_min: 0.95
+    factor_x_max: 1.05
     factor_y_min: 0.9
-    factor_y_max: 1.1
+    factor_y_max: 1.08
     fillcolor: 255
   darkening:
-    factor_min: 0.65
+    factor_min: 0.55
     factor_max: 0.9
   noise:
     kind: gaussian
     std_min: 0.0
-    std_max: 10.0
+    std_max: 7.0
   projective:
-    max_dx: 1.5
-    max_dy: 1.0
+    max_dx: 4.0
+    max_dy: 2.0
     fillcolor: 255
   rotate:
-    max_degrees: 0.5
+    max_degrees: 1.0
     fillcolor: 255
   crop_x:
-    max_left: 1
-    max_right: 1
+    max_left: 2
+    max_right: 2
     fillcolor: 255
   crop_y:
     max_top: 1
@@ -85,19 +88,19 @@ augmentations:
     size: 3
   unsharp_mask:
     radius: 1.0
-    percent_min: 80
-    percent_max: 140
+    percent_min: 90
+    percent_max: 160
     threshold: 3
   gaussian_blur:
     radius_min: 0.0
-    radius_max: 0.2
+    radius_max: 0.25
   gaussian_noise:
     std_min: 0.0
-    std_max: 4.0
+    std_max: 5.0
   brightness:
-    factor_min: 0.9
-    factor_max: 1.1
-  contrast:
-    factor_min: 0.9
+    factor_min: 0.85
     factor_max: 1.15
+  contrast:
+    factor_min: 0.85
+    factor_max: 1.2
   invert: {}
