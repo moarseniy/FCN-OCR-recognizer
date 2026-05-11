@@ -65,7 +65,8 @@ class ChunkedLineDataset(Dataset):
             chunk = self._load_chunk(chunk_idx)
             if "texts" not in chunk:
                 raise KeyError(f"Chunk {self.chunks[chunk_idx]['file']} does not contain texts")
-            yield from chunk["texts"]
+            for text in chunk["texts"]:
+                yield self._normalize_text(text)
 
     def chunk_index_for_sample(self, index: int) -> int:
         if index < 0:
@@ -113,10 +114,13 @@ class ChunkedLineDataset(Dataset):
     def _make_target_from_text(self, image: torch.Tensor, text: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.config is None:
             raise RuntimeError("config is required to encode targets from text")
+        text = self._normalize_text(text)
 
         missing = sorted(set(text) - set(self.config.alphabet))
         if missing:
             raise ValueError(f"text contains chars outside training alphabet: {missing}")
+        if not text:
+            raise ValueError("text must not be empty after space normalization")
 
         if len(text) > self.config.max_text_length:
             raise ValueError(
@@ -126,3 +130,9 @@ class ChunkedLineDataset(Dataset):
         if text:
             target[: len(text)] = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
         return image, target, torch.tensor(len(text), dtype=torch.long)
+
+    def _normalize_text(self, text: str) -> str:
+        if self.config is None:
+            return text
+        space_char = self.config.space_char
+        return space_char.join(part for part in text.split(space_char) if part)

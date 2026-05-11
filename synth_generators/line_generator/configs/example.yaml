@@ -1,5 +1,5 @@
 alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
-sample_alphabet: "0123456789abcdefghijklmnopqrstuvwxyz"
+sample_alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
 space_char: " "
 samples: 100000
 output_dir: ../../../data/line_chunks

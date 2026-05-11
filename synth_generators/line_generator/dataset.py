@@ -200,7 +200,9 @@ class SingleLineDataset(Dataset):
     def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)}
-        self.sample_alphabet = config.sample_alphabet or config.alphabet.replace(config.space_char, "")
+        if config.space_char not in self.char_to_index:
+            raise ValueError("space_char must be present in alphabet")
+        self.sample_alphabet = config.sample_alphabet or config.alphabet
         if not self.sample_alphabet:
             raise ValueError("sample_alphabet must not be empty")
         self.font_paths = self._resolve_font_paths(config.font_paths)
@@ -223,6 +225,20 @@ class SingleLineDataset(Dataset):
     def generate_sample(self, rng: random.Random | None = None) -> GeneratedLineSample:
         rng = rng or random.Random()
         text, font = self._make_text_that_fits(rng)
+        return self.generate_text_sample(text, rng, font)
+
+    def generate_text_sample(
+        self,
+        text: str,
+        rng: random.Random | None = None,
+        font: ImageFont.FreeTypeFont | None = None,
+    ) -> GeneratedLineSample:
+        rng = rng or random.Random()
+        self._validate_text(text)
+        text = self._normalize_spaces(text)
+        if len(text) > self.config.max_text_length:
+            raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
+        font = font or self._load_font_that_fits(text, rng)
         image = self._render_text(text, font, rng)
         target = self._encode_text(text)
         length = len(text)
@@ -241,6 +257,33 @@ class SingleLineDataset(Dataset):
             length=length,
         )
 
+    def _validate_text(self, text: str) -> None:
+        text = self._normalize_spaces(text)
+        if not text:
+            raise ValueError("text must not be empty")
+        missing = sorted(set(text) - set(self.config.alphabet))
+        if missing:
+            raise ValueError(f"text contains chars outside alphabet: {missing}")
+
+    def _normalize_spaces(self, text: str) -> str:
+        return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
+
+    def _load_font_that_fits(self, text: str, rng: random.Random) -> ImageFont.FreeTypeFont:
+        max_width = self.config.image_width - 2 * self.config.horizontal_padding
+
+        for _ in range(100):
+            font = self._load_font(rng)
+            if sum(self._char_advances(text, font)) <= max_width:
+                return font
+
+        font = self._load_font(rng, size=self.config.font_size_min)
+        if sum(self._char_advances(text, font)) > max_width:
+            raise ValueError(
+                f"text does not fit image_width={self.config.image_width} "
+                f"with horizontal_padding={self.config.horizontal_padding}: {text!r}"
+            )
+        return font
+
     def _sample_seed(self, index: int) -> int | None:
         if self.config.seed is None:
             return None
@@ -252,7 +295,9 @@ class SingleLineDataset(Dataset):
 
         for _ in range(100):
             text_length = rng.randint(self.config.min_text_length, self.config.max_text_length)
-            text = "".join(rng.choice(self.sample_alphabet) for _ in range(text_length))
+            text = self._normalize_spaces("".join(rng.choice(self.sample_alphabet) for _ in range(text_length)))
+            if not text:
+                continue
             font = self._load_font(rng)
             advances = self._char_advances(text, font)
             last_candidate = (text, font)
