@@ -1,6 +1,8 @@
 
 # train.py
-from synth_generators.line_generator.dataset import SingleLineDatasetConfig, SingleLineDataset
+from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset
+from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig, SingleLineDataset
+from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 import argparse
 import math
 import time
@@ -70,7 +72,7 @@ def compute_loss(logits, targets, lengths, blank_idx, target_mode):
     return logreg_loss(logits, targets)
 
 
-def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None, log_every=0):
+def validate(model, loader, device, blank_idx, target_mode, max_batches=50, preview_saver=None, log_every=0, augmenter=None):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
@@ -84,12 +86,14 @@ def validate(model, loader, device, blank_idx, target_mode, max_batches=50, prev
             if batches >= max_batches:
                 break
 
-            if preview_saver is not None:
-                preview_saver.save_batch(imgs, targets, lengths)
-
             imgs = imgs.to(device)
             targets = targets.long().to(device)
             lengths = lengths.long().to(device)
+            if augmenter is not None:
+                imgs = augmenter(imgs)
+
+            if preview_saver is not None:
+                preview_saver.save_batch(imgs, targets, lengths)
 
             logits = model(imgs)
             if target_mode == "column":
@@ -129,6 +133,7 @@ def train_one_epoch(
     max_batches=None,
     preview_saver=None,
     log_every=0,
+    augmenter=None,
 ):
     model.train()
     total_loss = 0.0
@@ -141,12 +146,14 @@ def train_one_epoch(
         if max_batches is not None and batches >= max_batches:
             break
 
-        if preview_saver is not None:
-            preview_saver.save_batch(imgs, targets, lengths)
-
         imgs = imgs.to(device)
         targets = targets.long().to(device)
         lengths = lengths.long().to(device)
+        if augmenter is not None:
+            imgs = augmenter(imgs)
+
+        if preview_saver is not None:
+            preview_saver.save_batch(imgs, targets, lengths)
 
         logits = model(imgs)
         if target_mode == "column":
@@ -274,6 +281,11 @@ def parse_args():
         default="synth_generators/line_generator/example_config.yaml",
         help="Path to a SingleLineDataset YAML config.",
     )
+    parser.add_argument(
+        "--chunks-dir",
+        default=None,
+        help="Directory with pre-rendered uint8 torch chunks produced by materialize.py.",
+    )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train.")
     parser.add_argument("--batch-size", type=int, default=128, help="Training batch size.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate.")
@@ -288,20 +300,54 @@ def parse_args():
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of samples used for validation.")
     parser.add_argument("--preview-samples", type=int, default=0, help="Save N actual input images seen by train and val loops.")
     parser.add_argument("--preview-dir", default="input_previews", help="Directory for saved input previews.")
+    parser.add_argument(
+        "--gpu-augmentations",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply configured augmentations on the training device. Enabled by default.",
+    )
+    parser.add_argument(
+        "--gpu-augment-val",
+        action="store_true",
+        help="Also apply GPU augmentations during validation.",
+    )
     return parser.parse_args()
+
+
+def dataset_render_config(dataset_config):
+    config_data = dataset_config.model_dump()
+    config_data["noise_std"] = 0.0
+    config_data["blur_radius"] = 0.0
+    config_data["max_rotation_degrees"] = 0.0
+    config_data["augmentation_probabilities"] = {name: 0.0 for name in SUPPORTED_AUGMENTATIONS}
+    return SingleLineDatasetConfig.model_validate(config_data)
+
+
+def load_dataset_from_args(args):
+    if args.chunks_dir:
+        if args.target_mode:
+            raise ValueError("--target-mode cannot override a pre-rendered chunk dataset")
+        dataset = ChunkedLineDataset(args.chunks_dir)
+        dataset_config = dataset.config
+        config_data = dataset_config.model_dump()
+        print(f"Dataset source: chunks ({args.chunks_dir})")
+        return dataset, dataset_config, config_data
+
+    with open(args.config, "r") as f:
+        config_data = yaml.safe_load(f)
+    if args.target_mode:
+        config_data["target_mode"] = args.target_mode
+    dataset_config = SingleLineDatasetConfig.model_validate_with_paths(config_data, args.config)
+    render_config = dataset_render_config(dataset_config) if args.gpu_augmentations else dataset_config
+    dataset = SingleLineDataset(render_config)
+    print(f"Dataset source: online generator ({args.config})")
+    return dataset, dataset_config, config_data
 
 
 if __name__ == "__main__":
     args = parse_args()
-    config = args.config
     print("START!")
-    with open(config, "r") as f:
-        config_data = yaml.safe_load(f)
-        if args.target_mode:
-            config_data["target_mode"] = args.target_mode
-        dataset_config = SingleLineDatasetConfig.model_validate_with_paths(config_data, config)
-
-    dataset = SingleLineDataset(dataset_config)
+    dataset, dataset_config, config_data = load_dataset_from_args(args)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
     if not 0.0 < args.val_fraction < 1.0:
@@ -383,6 +429,11 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device ", device)
+    train_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augmentations else None
+    val_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augment_val else None
+    print("GPU augmentations: ", "train" if train_augmenter is not None else "off")
+    if val_augmenter is not None:
+        print("GPU validation augmentations: on")
 
     model = FullyConvTextRecognizer(
         in_channels=dataset_config.channels,
@@ -440,6 +491,7 @@ if __name__ == "__main__":
             args.max_train_batches,
             train_preview_saver,
             args.log_every,
+            train_augmenter,
         )
         train_loss = train_stats["loss"]
         train_losses.append(train_loss)
@@ -453,6 +505,7 @@ if __name__ == "__main__":
             args.max_val_batches,
             val_preview_saver,
             args.log_every,
+            val_augmenter,
         )
         val_loss = val_stats["loss"]
         val_losses.append(val_loss)

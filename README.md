@@ -102,10 +102,39 @@ python -m synth_generators.line_generator.preview \
   --output synthetic_line_preview.png
 ```
 
+Сохранить чистый датасет на диск в виде `uint8` torch-чанков:
+
+```bash
+python -m synth_generators.line_generator.materialize \
+  --config synth_generators/line_generator/example_config.yaml \
+  --output-dir data/line_chunks \
+  --chunk-size 1024 \
+  --overwrite
+```
+
+В каждом `chunk_*.pt` лежат `images` (`uint8`, `N x C x H x W`), `targets`,
+`lengths` и исходные `texts`; рядом пишется `manifest.pt`. Offline-генерация
+по умолчанию не применяет аугментации, но сохраняет их настройки в manifest,
+чтобы обучение могло применять их на GPU. Если всё же нужно запечь CPU-
+аугментации прямо в чанки, добавьте `--with-augmentations`.
+
 Запустить обучение на синтетике:
 
 ```bash
 python train.py --config synth_generators/line_generator/example_config.yaml
+```
+
+Запустить обучение из сохранённых чанков:
+
+```bash
+python train.py --chunks-dir data/line_chunks
+```
+
+По умолчанию `train.py` применяет настроенные аугментации на устройстве
+обучения (`cuda`, если доступна). Отключить это можно флагом:
+
+```bash
+python train.py --chunks-dir data/line_chunks --no-gpu-augmentations
 ```
 
 Обучение пишет компактный лог по эпохам в консоль и TSV-файл:

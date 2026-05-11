@@ -211,9 +211,12 @@ class SingleLineDataset(Dataset):
         return self.config.samples
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        rng = random.Random(self._sample_seed(index))
-        sample = self.generate_sample(rng)
+        sample = self.generate_sample_from_index(index)
         return sample.image, sample.target, torch.tensor(sample.length, dtype=torch.long)
+
+    def generate_sample_from_index(self, index: int) -> GeneratedLineSample:
+        rng = random.Random(self._sample_seed(index))
+        return self.generate_sample(rng)
 
     def generate_sample(self, rng: random.Random | None = None) -> GeneratedLineSample:
         rng = rng or random.Random()
