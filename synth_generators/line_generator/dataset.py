@@ -485,17 +485,19 @@ class SingleLineDataset(Dataset):
     def _missing_font_chars(cls, path: Path, alphabet: str) -> tuple[tuple[str, ...], str | None]:
         try:
             codepoints = cls._font_codepoints(path)
+            if codepoints is None:
+                return cls._missing_font_chars_with_pillow(path, alphabet), None
         except Exception as exc:
             return tuple(alphabet), f"{type(exc).__name__}: {exc}"
         missing_chars = tuple(char for char in alphabet if ord(char) not in codepoints)
         return missing_chars, None
 
     @staticmethod
-    def _font_codepoints(path: Path) -> set[int]:
+    def _font_codepoints(path: Path) -> set[int] | None:
         try:
             from fontTools.ttLib import TTFont
-        except ImportError as exc:
-            raise RuntimeError("fontTools is required for reliable font alphabet checks") from exc
+        except ImportError:
+            return None
 
         with TTFont(path, fontNumber=0, lazy=True) as font:
             if "cmap" not in font:
@@ -504,6 +506,35 @@ class SingleLineDataset(Dataset):
             for table in font["cmap"].tables:
                 codepoints.update(table.cmap.keys())
             return codepoints
+
+    @classmethod
+    def _missing_font_chars_with_pillow(cls, path: Path, alphabet: str) -> tuple[str, ...]:
+        font = ImageFont.truetype(str(path), 32)
+        missing_signatures = {
+            cls._glyph_signature(font, char)
+            for char in ("\ufffd", "\uffff")
+        }
+        missing_signatures.discard(None)
+
+        missing_chars = []
+        for char in alphabet:
+            if char == " ":
+                if font.getlength(char) <= 0:
+                    missing_chars.append(char)
+                continue
+
+            signature = cls._glyph_signature(font, char)
+            if signature is None or signature in missing_signatures:
+                missing_chars.append(char)
+        return tuple(missing_chars)
+
+    @staticmethod
+    def _glyph_signature(font: ImageFont.FreeTypeFont, char: str) -> tuple[tuple[int, int], tuple[int, int, int, int] | None, bytes] | None:
+        try:
+            mask = font.getmask(char)
+        except Exception:
+            return None
+        return mask.size, mask.getbbox(), bytes(mask)
 
     @classmethod
     def _print_font_report(

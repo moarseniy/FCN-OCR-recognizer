@@ -1,0 +1,28 @@
+sample_alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+space_char: " "
+samples: 100000
+output_dir: ../../../data/line_chunks
+chunk_size: 1024
+overwrite: false
+image_height: 48
+image_width: 256
+min_text_length: 4
+max_text_length: 16
+font_dir: ../fonts
+font_extensions:
+  - .ttf
+  - .otf
+  - .ttc
+  - .otc
+font_size_min: 24
+font_size_max: 34
+channels: 3
+seed: 42
+background_dir: ../backgrounds
+background_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .bmp
+  - .webp
+horizontal_padding: 8

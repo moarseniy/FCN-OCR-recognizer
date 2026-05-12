@@ -120,7 +120,7 @@ python -m synth_generators.line_generator.preview \
 Сохранить чистый датасет на диск в виде `uint8` torch-чанков:
 
 ```bash
-python -m synth_generators.line_generator.materialize \
+python -m synth_generators.line_generator.generate_dataset \
   --config synth_generators/line_generator/configs/example.yaml
 ```
 

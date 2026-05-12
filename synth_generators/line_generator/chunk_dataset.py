@@ -11,7 +11,7 @@ from .dataset import SingleLineDatasetConfig
 
 
 class ChunkedLineDataset(Dataset):
-    """Reads pre-rendered OCR line chunks saved by materialize.py."""
+    """Reads pre-rendered OCR line chunks saved by generate_dataset.py."""
 
     def __init__(self, root_dir: str | Path, cache_size: int = 2, config: SingleLineDatasetConfig | None = None):
         self.root_dir = Path(root_dir)
