@@ -48,8 +48,8 @@ class SingleLineDatasetConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
-    sample_alphabet: str | None = None
+    sample_alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
+    alphabet: str | None = None
     space_char: str = " "
     samples: int = Field(default=10_000, ge=1)
     image_height: int = Field(default=48, ge=16)
@@ -80,10 +80,15 @@ class SingleLineDatasetConfig(BaseModel):
 
     @classmethod
     def model_validate_with_paths(cls, data: Any, config_path: str | Path | None = None) -> "SingleLineDatasetConfig":
+        data = dict(data)
+        if data.get("sample_alphabet") is None and data.get("alphabet") is not None:
+            data["sample_alphabet"] = data["alphabet"]
+        if data.get("alphabet") is None and data.get("sample_alphabet") is not None:
+            data["alphabet"] = data["sample_alphabet"]
+
         if config_path is None:
             return cls.model_validate(data)
 
-        data = dict(data)
         config_dir = Path(config_path).resolve().parent
         data["font_paths"] = cls._resolve_relative_paths(data.get("font_paths"), config_dir)
 
@@ -117,24 +122,28 @@ class SingleLineDatasetConfig(BaseModel):
             resolved_paths.append(str(path_obj if path_obj.is_absolute() else base_dir / path_obj))
         return resolved_paths
 
+    @field_validator("sample_alphabet")
+    @classmethod
+    def sample_alphabet_must_be_unique(cls, value: str) -> str:
+        if not value:
+            raise ValueError("sample_alphabet must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("sample_alphabet must contain unique characters")
+        return value
+
     @field_validator("alphabet")
     @classmethod
-    def alphabet_must_be_unique(cls, value: str) -> str:
+    def alphabet_must_be_unique_and_cover_samples(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return value
         if not value:
             raise ValueError("alphabet must not be empty")
         if len(set(value)) != len(value):
             raise ValueError("alphabet must contain unique characters")
-        return value
-
-    @field_validator("sample_alphabet")
-    @classmethod
-    def sample_alphabet_must_match_alphabet(cls, value: str | None, info) -> str | None:
-        if value is None:
-            return value
-        alphabet = info.data.get("alphabet", "")
-        missing = sorted(set(value) - set(alphabet))
+        sample_alphabet = info.data.get("sample_alphabet", "")
+        missing = sorted(set(sample_alphabet) - set(value))
         if missing:
-            raise ValueError(f"sample_alphabet contains characters outside alphabet: {missing}")
+            raise ValueError(f"alphabet does not cover sample_alphabet chars: {missing}")
         return value
 
     @field_validator("space_char")
@@ -215,17 +224,18 @@ class SingleLineDataset(Dataset):
 
     def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
-        self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)}
+        self.alphabet = config.alphabet or config.sample_alphabet
+        self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
-            raise ValueError("space_char must be present in alphabet")
-        self.sample_alphabet = config.sample_alphabet or config.alphabet
+            raise ValueError("space_char must be present in sample_alphabet/alphabet")
+        self.sample_alphabet = config.sample_alphabet
         if not self.sample_alphabet:
             raise ValueError("sample_alphabet must not be empty")
         self.font_paths = self._resolve_font_paths(
             config.font_paths,
             config.font_dir,
             config.font_extensions,
-            config.alphabet,
+            self.sample_alphabet,
         )
         self.background_paths = self._resolve_background_paths(
             config.background_dir,
@@ -282,9 +292,9 @@ class SingleLineDataset(Dataset):
         text = self._normalize_spaces(text)
         if not text:
             raise ValueError("text must not be empty")
-        missing = sorted(set(text) - set(self.config.alphabet))
+        missing = sorted(set(text) - set(self.sample_alphabet))
         if missing:
-            raise ValueError(f"text contains chars outside alphabet: {missing}")
+            raise ValueError(f"text contains chars outside sample_alphabet: {missing}")
 
     def _normalize_spaces(self, text: str) -> str:
         return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
@@ -419,8 +429,8 @@ class SingleLineDataset(Dataset):
         if accepted:
             return accepted
         raise FileNotFoundError(
-            "No usable font files cover the configured alphabet. "
-            "Pass font_dir/font_paths with fonts that contain every alphabet character."
+            "No usable font files cover the configured sample_alphabet. "
+            "Pass font_dir/font_paths with fonts that contain every sample_alphabet character."
         )
 
     @classmethod
@@ -505,7 +515,7 @@ class SingleLineDataset(Dataset):
         alphabet: str,
     ) -> None:
         print("\nFonts check")
-        print(f"  alphabet length: {len(alphabet)}")
+        print(f"  sample_alphabet length: {len(alphabet)}")
         print(f"  candidates: {len(candidates)}")
         print(f"  accepted:   {len(accepted)}")
         print(f"  rejected:   {len(rejected)}")
