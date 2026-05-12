@@ -7,7 +7,7 @@ import shutil
 import torch
 import yaml
 
-from .dataset import SUPPORTED_AUGMENTATIONS, SingleLineDataset, SingleLineDatasetConfig
+from .dataset import SingleLineDataset, SingleLineDatasetConfig
 
 
 def image_to_uint8(image: torch.Tensor) -> torch.Tensor:
@@ -40,15 +40,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def without_augmentations(config_data: dict) -> dict:
-    render_config = dict(config_data)
-    render_config["noise_std"] = 0.0
-    render_config["blur_radius"] = 0.0
-    render_config["max_rotation_degrees"] = 0.0
-    render_config["augmentation_probabilities"] = {name: 0.0 for name in SUPPORTED_AUGMENTATIONS}
-    return render_config
-
-
 def main() -> None:
     args = parse_args()
     config_path = Path(args.config)
@@ -66,9 +57,7 @@ def main() -> None:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    render_config_data = config_data if generation_config.apply_augmentations else without_augmentations(config_data)
-    render_config = SingleLineDatasetConfig.model_validate_with_paths(render_config_data, config_path)
-    dataset = SingleLineDataset(render_config)
+    dataset = SingleLineDataset(generation_config)
 
     total = len(dataset)
     for chunk_idx, start in enumerate(range(0, total, generation_config.chunk_size)):

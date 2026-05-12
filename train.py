@@ -428,15 +428,6 @@ def dataset_config_from_training_config(config: TrainingConfig) -> SingleLineDat
     )
 
 
-def dataset_render_config(dataset_config):
-    config_data = dataset_config.model_dump()
-    config_data["noise_std"] = 0.0
-    config_data["blur_radius"] = 0.0
-    config_data["max_rotation_degrees"] = 0.0
-    config_data["augmentation_probabilities"] = {name: 0.0 for name in SUPPORTED_AUGMENTATIONS}
-    return SingleLineDatasetConfig.model_validate(config_data)
-
-
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
     dataset_config = dataset_config_from_training_config(config)
 
@@ -466,8 +457,7 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
         }
     )
 
-    render_config = dataset_render_config(generator_config) if config.gpu_augmentations else generator_config
-    dataset = SingleLineDataset(render_config)
+    dataset = SingleLineDataset(generator_config)
     print(f"Dataset source: online generator ({config.generator_config})")
     return dataset, generator_config
 
