@@ -19,6 +19,8 @@ DEFAULT_FONT_CANDIDATES = (
 )
 
 DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+DEFAULT_FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
+FONT_REPORT_LIMIT = 12
 
 SUPPORTED_AUGMENTATIONS = (
     "cycle_shift",
@@ -55,6 +57,8 @@ class SingleLineDatasetConfig(BaseModel):
     min_text_length: int = Field(default=4, ge=1)
     max_text_length: int = Field(default=16, ge=1)
     font_paths: list[str] | None = None
+    font_dir: str | None = None
+    font_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_FONT_EXTENSIONS))
     font_size_min: int = Field(default=24, ge=6)
     font_size_max: int = Field(default=34, ge=6)
     channels: int = Field(default=3, ge=1, le=3)
@@ -82,6 +86,12 @@ class SingleLineDatasetConfig(BaseModel):
         data = dict(data)
         config_dir = Path(config_path).resolve().parent
         data["font_paths"] = cls._resolve_relative_paths(data.get("font_paths"), config_dir)
+
+        font_dir = data.get("font_dir")
+        if font_dir:
+            font_path = Path(font_dir)
+            if not font_path.is_absolute():
+                data["font_dir"] = str(config_dir / font_path)
 
         background_dir = data.get("background_dir")
         if background_dir:
@@ -165,6 +175,13 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError("background_extensions must not be empty")
         return [extension if extension.startswith(".") else f".{extension}" for extension in value]
 
+    @field_validator("font_extensions")
+    @classmethod
+    def font_extensions_must_be_valid(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("font_extensions must not be empty")
+        return [extension if extension.startswith(".") else f".{extension}" for extension in value]
+
     @field_validator("augmentation_probabilities")
     @classmethod
     def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
@@ -204,7 +221,12 @@ class SingleLineDataset(Dataset):
         self.sample_alphabet = config.sample_alphabet or config.alphabet
         if not self.sample_alphabet:
             raise ValueError("sample_alphabet must not be empty")
-        self.font_paths = self._resolve_font_paths(config.font_paths)
+        self.font_paths = self._resolve_font_paths(
+            config.font_paths,
+            config.font_dir,
+            config.font_extensions,
+            config.alphabet,
+        )
         self.background_paths = self._resolve_background_paths(
             config.background_dir,
             config.background_extensions,
@@ -374,15 +396,176 @@ class SingleLineDataset(Dataset):
     def _char_advances(text: str, font: ImageFont.FreeTypeFont) -> list[float]:
         return [max(1.0, float(font.getlength(char))) for char in text]
 
-    @staticmethod
-    def _resolve_font_paths(configured_paths: Iterable[str] | None) -> list[str]:
-        paths = list(configured_paths or DEFAULT_FONT_CANDIDATES)
-        existing_paths = [str(Path(path)) for path in paths if Path(path).exists()]
-        if existing_paths:
-            return existing_paths
+    @classmethod
+    def _resolve_font_paths(
+        cls,
+        configured_paths: Iterable[str] | None,
+        font_dir: str | None,
+        extensions: Iterable[str],
+        alphabet: str,
+    ) -> list[str]:
+        candidates, missing_paths = cls._collect_font_candidates(configured_paths, font_dir, extensions)
+        accepted: list[str] = []
+        rejected: list[dict[str, Any]] = []
+
+        for path in candidates:
+            missing_chars, error = cls._missing_font_chars(path, alphabet)
+            if error is None and not missing_chars:
+                accepted.append(str(path))
+            else:
+                rejected.append({"path": str(path), "missing": missing_chars, "error": error})
+
+        cls._print_font_report(candidates, accepted, rejected, missing_paths, alphabet)
+        if accepted:
+            return accepted
         raise FileNotFoundError(
-            "No usable font files found. Pass font_paths in the dataset config."
+            "No usable font files cover the configured alphabet. "
+            "Pass font_dir/font_paths with fonts that contain every alphabet character."
         )
+
+    @classmethod
+    def _collect_font_candidates(
+        cls,
+        configured_paths: Iterable[str] | None,
+        font_dir: str | None,
+        extensions: Iterable[str],
+    ) -> tuple[list[Path], list[Path]]:
+        paths: list[Path] = []
+        missing_paths: list[Path] = []
+        normalized_extensions = {extension.lower() for extension in extensions}
+
+        if configured_paths is not None:
+            for path in configured_paths:
+                path_obj = Path(path)
+                if path_obj.exists() and path_obj.is_file():
+                    paths.append(path_obj)
+                else:
+                    missing_paths.append(path_obj)
+
+        if font_dir is not None:
+            root = Path(font_dir)
+            if not root.exists():
+                raise FileNotFoundError(f"font_dir does not exist: {root}")
+            if not root.is_dir():
+                raise NotADirectoryError(f"font_dir is not a directory: {root}")
+            paths.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in normalized_extensions
+            )
+
+        if configured_paths is None and font_dir is None:
+            paths.extend(Path(path) for path in DEFAULT_FONT_CANDIDATES)
+
+        deduplicated: list[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved not in seen:
+                deduplicated.append(path)
+                seen.add(resolved)
+
+        if not deduplicated:
+            raise FileNotFoundError(
+                "No font files found. Pass font_dir or font_paths in the dataset config."
+            )
+        return deduplicated, missing_paths
+
+    @classmethod
+    def _missing_font_chars(cls, path: Path, alphabet: str) -> tuple[tuple[str, ...], str | None]:
+        try:
+            codepoints = cls._font_codepoints(path)
+        except Exception as exc:
+            return tuple(alphabet), f"{type(exc).__name__}: {exc}"
+        missing_chars = tuple(char for char in alphabet if ord(char) not in codepoints)
+        return missing_chars, None
+
+    @staticmethod
+    def _font_codepoints(path: Path) -> set[int]:
+        try:
+            from fontTools.ttLib import TTFont
+        except ImportError as exc:
+            raise RuntimeError("fontTools is required for reliable font alphabet checks") from exc
+
+        with TTFont(path, fontNumber=0, lazy=True) as font:
+            if "cmap" not in font:
+                return set()
+            codepoints: set[int] = set()
+            for table in font["cmap"].tables:
+                codepoints.update(table.cmap.keys())
+            return codepoints
+
+    @classmethod
+    def _print_font_report(
+        cls,
+        candidates: list[Path],
+        accepted: list[str],
+        rejected: list[dict[str, Any]],
+        missing_paths: list[Path],
+        alphabet: str,
+    ) -> None:
+        print("\nFonts check")
+        print(f"  alphabet length: {len(alphabet)}")
+        print(f"  candidates: {len(candidates)}")
+        print(f"  accepted:   {len(accepted)}")
+        print(f"  rejected:   {len(rejected)}")
+        if missing_paths:
+            print(f"  missing configured paths: {len(missing_paths)}")
+
+        if accepted:
+            print("  accepted sample:")
+            for path in accepted[:FONT_REPORT_LIMIT]:
+                print(f"    + {Path(path).name}")
+            if len(accepted) > FONT_REPORT_LIMIT:
+                print(f"    ... and {len(accepted) - FONT_REPORT_LIMIT} more")
+
+        if rejected:
+            print("  rejected sample:")
+            for item in rejected[:FONT_REPORT_LIMIT]:
+                path = Path(item["path"]).name
+                if item["error"] is not None:
+                    print(f"    - {path}: {item['error']}")
+                    continue
+                missing = cls._format_chars(item["missing"], limit=20)
+                print(f"    - {path}: missing {missing}")
+            if len(rejected) > FONT_REPORT_LIMIT:
+                print(f"    ... and {len(rejected) - FONT_REPORT_LIMIT} more")
+
+            missing_counter: dict[str, int] = {}
+            for item in rejected:
+                if item["error"] is not None:
+                    continue
+                for char in item["missing"]:
+                    missing_counter[char] = missing_counter.get(char, 0) + 1
+            if missing_counter:
+                top_missing = sorted(missing_counter.items(), key=lambda item: (-item[1], item[0]))[:20]
+                summary = ", ".join(f"{cls._printable_char(char)}:{count}" for char, count in top_missing)
+                print(f"  most often missing chars: {summary}")
+
+        if missing_paths:
+            print("  missing configured paths sample:")
+            for path in missing_paths[:FONT_REPORT_LIMIT]:
+                print(f"    - {path}")
+            if len(missing_paths) > FONT_REPORT_LIMIT:
+                print(f"    ... and {len(missing_paths) - FONT_REPORT_LIMIT} more")
+
+    @classmethod
+    def _format_chars(cls, chars: Iterable[str], limit: int) -> str:
+        chars = list(chars)
+        rendered = ", ".join(cls._printable_char(char) for char in chars[:limit])
+        if len(chars) > limit:
+            rendered = f"{rendered}, ...(+{len(chars) - limit})"
+        return rendered or "none"
+
+    @staticmethod
+    def _printable_char(char: str) -> str:
+        if char == " ":
+            return "<space>"
+        if char == "\t":
+            return "<tab>"
+        if char == "\n":
+            return "<newline>"
+        return repr(char)
 
     @staticmethod
     def _resolve_background_paths(background_dir: str | None, extensions: Iterable[str]) -> list[str]:

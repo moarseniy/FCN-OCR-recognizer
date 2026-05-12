@@ -9,9 +9,12 @@ image_height: 48
 image_width: 256
 min_text_length: 4
 max_text_length: 16
-font_paths:
-  - /usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf
-  - /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+font_dir: ../fonts
+font_extensions:
+  - .ttf
+  - .otf
+  - .ttc
+  - .otc
 font_size_min: 24
 font_size_max: 34
 channels: 3
