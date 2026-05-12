@@ -1,4 +1,4 @@
-alphabet: " 0123456789abcdefghijklmnopqrstuvwxyz"
+alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 space_char: " "
 max_text_length: 64
 channels: 3
@@ -33,18 +33,18 @@ preview_dir: ../input_previews
 gpu_augmentations: true
 gpu_augment_val: false
 augmentation_probabilities:
-  cycle_shift: 0.05
-  strong_blur: 0.08
-  motion_blur: 0.08
+  cycle_shift: 0.1
+  strong_blur: 0.1
+  motion_blur: 0.2
   scale: 0.15
-  darkening: 0.2
+  darkening: 0.4
   noise: 0.75
-  projective: 0.12
+  projective: 0.15
   rotate: 0.8
-  crop_x: 0.08
-  crop_y: 0.05
-  morphology: 0.08
-  unsharp_mask: 0.12
+  crop_x: 0.4
+  crop_y: 0.4
+  morphology: 0.1
+  unsharp_mask: 0.2
   gaussian_blur: 0.0
   gaussian_noise: 0.0
   brightness: 0.3
@@ -52,10 +52,10 @@ augmentation_probabilities:
   invert: 0.0
 augmentations:
   cycle_shift:
-    max_x: 2
-    max_y: 1
+    max_x: 5
+    max_y: 4
   strong_blur:
-    radius_min: 0.8
+    radius_min: 0.7
     radius_max: 1.4
   motion_blur:
     size_min: 3
@@ -63,32 +63,32 @@ augmentations:
     angle_min: -8.0
     angle_max: 8.0
   scale:
-    factor_x_min: 0.95
-    factor_x_max: 1.05
-    factor_y_min: 0.9
-    factor_y_max: 1.08
+    factor_x_min: 0.85
+    factor_x_max: 1.1
+    factor_y_min: 0.85
+    factor_y_max: 1.1
     fillcolor: 255
   darkening:
-    factor_min: 0.55
-    factor_max: 0.9
+    factor_min: 0.45
+    factor_max: 0.95
   noise:
     kind: gaussian
     std_min: 0.0
-    std_max: 7.0
+    std_max: 7.5
   projective:
     max_dx: 4.0
-    max_dy: 2.0
+    max_dy: 3.0
     fillcolor: 255
   rotate:
-    max_degrees: 1.0
+    max_degrees: 7.0
     fillcolor: 255
   crop_x:
-    max_left: 2
-    max_right: 2
+    max_left: 4
+    max_right: 4
     fillcolor: 255
   crop_y:
-    max_top: 1
-    max_bottom: 1
+    max_top: 2
+    max_bottom: 2
     fillcolor: 255
   morphology:
     operation: random

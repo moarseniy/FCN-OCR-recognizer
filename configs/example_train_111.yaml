@@ -1,0 +1,113 @@
+alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+space_char: " "
+max_text_length: 64
+channels: 3
+image_height: 48
+image_width: 256
+background: 255
+
+chunks_dir: ../data/line_chunks
+generator_config: null
+
+epochs: 50
+batch_size: 128
+lr: 0.001
+checkpoint_dir: ../checkpoints
+max_train_batches: null
+max_val_batches: 50
+val_fraction: 0.1
+seed: 42
+resume: false
+
+num_workers: 0
+drop_last: false
+prefetch_factor: 2
+persistent_workers: true
+chunk_cache_size: 2
+chunk_aware_batches: true
+
+log_every: 1
+preview_samples: 0
+preview_dir: ../input_previews
+
+gpu_augmentations: true
+gpu_augment_val: false
+augmentation_probabilities:
+  cycle_shift: 0.1
+  strong_blur: 0.1
+  motion_blur: 0.2
+  scale: 0.15
+  darkening: 0.4
+  noise: 0.75
+  projective: 0.15
+  rotate: 0.8
+  crop_x: 0.4
+  crop_y: 0.4
+  morphology: 0.1
+  unsharp_mask: 0.2
+  gaussian_blur: 0.0
+  gaussian_noise: 0.0
+  brightness: 0.3
+  contrast: 0.3
+  invert: 0.0
+augmentations:
+  cycle_shift:
+    max_x: 5
+    max_y: 4
+  strong_blur:
+    radius_min: 0.7
+    radius_max: 1.4
+  motion_blur:
+    size_min: 3
+    size_max: 7
+    angle_min: -8.0
+    angle_max: 8.0
+  scale:
+    factor_x_min: 0.85
+    factor_x_max: 1.1
+    factor_y_min: 0.85
+    factor_y_max: 1.1
+    fillcolor: 255
+  darkening:
+    factor_min: 0.45
+    factor_max: 0.95
+  noise:
+    kind: gaussian
+    std_min: 0.0
+    std_max: 7.5
+  projective:
+    max_dx: 4.0
+    max_dy: 3.0
+    fillcolor: 255
+  rotate:
+    max_degrees: 7.0
+    fillcolor: 255
+  crop_x:
+    max_left: 4
+    max_right: 4
+    fillcolor: 255
+  crop_y:
+    max_top: 2
+    max_bottom: 2
+    fillcolor: 255
+  morphology:
+    operation: random
+    size: 3
+  unsharp_mask:
+    radius: 1.0
+    percent_min: 90
+    percent_max: 160
+    threshold: 3
+  gaussian_blur:
+    radius_min: 0.0
+    radius_max: 0.25
+  gaussian_noise:
+    std_min: 0.0
+    std_max: 5.0
+  brightness:
+    factor_min: 0.85
+    factor_max: 1.15
+  contrast:
+    factor_min: 0.85
+    factor_max: 1.2
+  invert: {}
