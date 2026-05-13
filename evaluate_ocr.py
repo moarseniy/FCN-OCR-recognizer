@@ -101,6 +101,8 @@ def evaluate(
     checkpoint_path: Path,
     output_csv: Path,
     device: str | None,
+    scale_x: float,
+    y_pad: float,
     batch_size: int,
     limit: int | None,
     log_every: int,
@@ -140,7 +142,13 @@ def evaluate(
         rows.append(row)
 
     started_at = time.perf_counter()
-    recognizer = TextRecognizer(checkpoint_path, device=device, verbose=True)
+    recognizer = TextRecognizer(
+        checkpoint_path,
+        device=device,
+        verbose=True,
+        scale_x=scale_x,
+        y_pad=y_pad,
+    )
     predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
     elapsed = time.perf_counter() - started_at
 
@@ -222,6 +230,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint.")
     parser.add_argument("--out", default="ocr_metrics.csv", help="Output CSV path.")
     parser.add_argument("--device", default=None, help="Device to use: cuda, cpu, or empty for auto.")
+    parser.add_argument("--scale-x", type=float, default=0.0, help="Normalized horizontal inference scale.")
+    parser.add_argument("--y-pad", type=float, default=0.0, help="Normalized vertical inference padding/crop.")
     parser.add_argument("--batch-size", type=int, default=32, help="Inference batch size.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
@@ -236,6 +246,8 @@ def main() -> None:
         checkpoint_path=Path(args.checkpoint),
         output_csv=Path(args.out),
         device=args.device,
+        scale_x=args.scale_x,
+        y_pad=args.y_pad,
         batch_size=args.batch_size,
         limit=args.limit,
         log_every=args.log_every,

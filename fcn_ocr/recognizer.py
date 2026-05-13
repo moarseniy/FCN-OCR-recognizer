@@ -6,7 +6,7 @@ import textwrap
 from typing import Any, Iterable
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import torch
 
 from model import FullyConvTextRecognizer, decode_greedy_batch_tensor
@@ -195,6 +195,10 @@ def save_debug_image(
         f"timesteps: {len(result.raw_indices)}",
         f"decoded symbols: {len(result.decoded_symbols)}",
     ]
+    if "scale_x" in metadata:
+        info_lines.append(f"scale_x: {float(metadata['scale_x']):+.4f}")
+    if "y_pad" in metadata:
+        info_lines.append(f"y_pad: {float(metadata['y_pad']):+.4f}")
     if "expected_text" in metadata:
         info_lines.append(f"expected text: {metadata['expected_text']!r}")
 
@@ -302,10 +306,24 @@ def save_debug_image(
 
 
 class TextRecognizer:
-    def __init__(self, checkpoint_path: str | Path, device: str | None = None, verbose: bool = False):
+    def __init__(
+        self,
+        checkpoint_path: str | Path,
+        device: str | None = None,
+        verbose: bool = False,
+        scale_x: float = 0.0,
+        y_pad: float = 0.0,
+    ):
+        if scale_x <= -0.95:
+            raise ValueError("scale_x must be > -0.95")
+        if y_pad <= -0.95:
+            raise ValueError("y_pad must be > -0.95")
+
         self.checkpoint_path = Path(checkpoint_path)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        self.scale_x = float(scale_x)
+        self.y_pad = float(y_pad)
 
         self.alphabet = self.checkpoint["alphabet"]
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
@@ -318,6 +336,7 @@ class TextRecognizer:
         self.space_char = checkpoint_config.get("space_char", " ")
         self.space_idx = self.alphabet.index(self.space_char) if self.space_char in self.alphabet else None
         self.image_height = int(checkpoint_config.get("image_height", 48))
+        self.preprocess_fill = int(checkpoint_config.get("background", 255))
 
         self.model = FullyConvTextRecognizer(
             in_channels=self.in_channels,
@@ -337,6 +356,8 @@ class TextRecognizer:
         print(f"Model loaded from epoch {epoch}{loss_text}")
         print(f"Alphabet size: {len(self.alphabet)}")
         print(f"Blank index: {self.blank_idx}")
+        print(f"Preprocess scale_x: {self.scale_x:+.4f}")
+        print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
 
     def class_label(self, index: int) -> str:
         if index == self.blank_idx:
@@ -348,10 +369,13 @@ class TextRecognizer:
 
     def _preprocess_pil_3d(self, image: Image.Image) -> torch.Tensor:
         image = image.convert("RGB" if self.in_channels == 3 else "L")
+        image = self._apply_y_pad(image)
 
         if image.height != self.image_height:
             new_width = max(1, round(image.width * self.image_height / image.height))
             image = image.resize((new_width, self.image_height), Image.Resampling.BICUBIC)
+
+        image = self._apply_scale_x(image)
 
         array = np.asarray(image, dtype=np.float32) / 255.0
         if self.in_channels == 1:
@@ -360,6 +384,41 @@ class TextRecognizer:
             tensor = torch.from_numpy(array).permute(2, 0, 1)
 
         return tensor.to(self.device)
+
+    def _apply_y_pad(self, image: Image.Image) -> Image.Image:
+        if self.y_pad == 0.0:
+            return image
+
+        delta = int(round(image.height * abs(self.y_pad)))
+        if delta <= 0:
+            return image
+
+        top = delta // 2
+        bottom = delta - top
+        if self.y_pad > 0.0:
+            return ImageOps.expand(image, border=(0, top, 0, bottom), fill=self._pil_fill_value(image.mode))
+
+        if delta >= image.height:
+            delta = image.height - 1
+            top = delta // 2
+            bottom = delta - top
+        return image.crop((0, top, image.width, image.height - bottom))
+
+    def _apply_scale_x(self, image: Image.Image) -> Image.Image:
+        if self.scale_x == 0.0:
+            return image
+
+        factor = 1.0 + self.scale_x
+        new_width = max(1, round(image.width * factor))
+        if new_width == image.width:
+            return image
+        return image.resize((new_width, image.height), Image.Resampling.BICUBIC)
+
+    def _pil_fill_value(self, mode: str) -> int | tuple[int, int, int]:
+        fill = max(0, min(255, self.preprocess_fill))
+        if mode == "RGB":
+            return (fill, fill, fill)
+        return fill
 
     def preprocess_image(self, image_path: str | Path) -> torch.Tensor:
         with Image.open(image_path) as image:

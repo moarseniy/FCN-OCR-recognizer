@@ -225,6 +225,8 @@ python inference.py --checkpoint checkpoints/best_model.pth --sample-index 0
 python inference.py \
   --checkpoint checkpoints/best_model.pth \
   --image path/to/line.png \
+  --scale-x 0.0 \
+  --y-pad 0.0 \
   --debug-image output/inference_debug.png \
   --debug-top-k 8
 ```
@@ -234,11 +236,21 @@ Python API для использования из других скриптов:
 ```python
 from fcn_ocr import TextRecognizer
 
-recognizer = TextRecognizer("checkpoints/best_model.pth", device="cuda")
+recognizer = TextRecognizer(
+    "checkpoints/best_model.pth",
+    device="cuda",
+    scale_x=0.0,
+    y_pad=0.0,
+)
 
 for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
     print(path, result.text)
 ```
+
+`scale_x` и `y_pad` — inference-only гиперпараметры предобработки. `scale_x:
+0.2` растягивает ширину на 20%, `scale_x: -0.2` сжимает на 20%. `y_pad: 0.2`
+добавляет вертикальный паддинг перед resize, `y_pad: -0.2` симметрично обрезает
+20% высоты перед resize.
 
 Если внешний скрипт лежит вне репозитория, добавьте корень проекта в
 `PYTHONPATH`:
@@ -255,5 +267,7 @@ python evaluate_ocr.py \
   --images path/to/images \
   --checkpoint checkpoints/best_model.pth \
   --out output/ocr_metrics.csv \
+  --scale-x 0.0 \
+  --y-pad 0.0 \
   --batch-size 32
 ```

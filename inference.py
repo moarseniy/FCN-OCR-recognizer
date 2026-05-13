@@ -70,6 +70,18 @@ def parse_args() -> argparse.Namespace:
         help="Where to save the generated sample image in --sample-index mode.",
     )
     parser.add_argument("--device", default=None, help="Device to use: cuda or cpu.")
+    parser.add_argument(
+        "--scale-x",
+        type=float,
+        default=0.0,
+        help="Normalized horizontal inference scale. 0.2 stretches width by 20%%, -0.2 squeezes by 20%%.",
+    )
+    parser.add_argument(
+        "--y-pad",
+        type=float,
+        default=0.0,
+        help="Normalized vertical inference padding/crop before resize. 0.2 pads, -0.2 crops.",
+    )
     parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     parser.add_argument(
         "--debug-image",
@@ -92,7 +104,13 @@ def main() -> None:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    recognizer = TextRecognizer(checkpoint_path, args.device, verbose=True)
+    recognizer = TextRecognizer(
+        checkpoint_path,
+        args.device,
+        verbose=True,
+        scale_x=args.scale_x,
+        y_pad=args.y_pad,
+    )
 
     if args.image:
         with Image.open(args.image) as image_file:
@@ -103,6 +121,8 @@ def main() -> None:
             "source": str(args.image),
             "checkpoint": str(checkpoint_path),
             "device": str(recognizer.device),
+            "scale_x": args.scale_x,
+            "y_pad": args.y_pad,
             "debug_top_k": args.debug_top_k,
         }
     else:
@@ -131,6 +151,8 @@ def main() -> None:
             "source": f"synthetic sample index {sample_index}",
             "checkpoint": str(checkpoint_path),
             "device": str(recognizer.device),
+            "scale_x": args.scale_x,
+            "y_pad": args.y_pad,
             "expected_text": sample.text,
             "debug_top_k": args.debug_top_k,
         }
