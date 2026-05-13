@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import torch
 from torch.utils.data import Dataset
 
@@ -78,14 +78,22 @@ class SingleLineDatasetConfig(BaseModel):
     chunk_size: int = Field(default=1024, ge=1)
     overwrite: bool = False
 
+    @model_validator(mode="before")
     @classmethod
-    def model_validate_with_paths(cls, data: Any, config_path: str | Path | None = None) -> "SingleLineDatasetConfig":
+    def fill_alphabet_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
         data = dict(data)
         if data.get("sample_alphabet") is None and data.get("alphabet") is not None:
             data["sample_alphabet"] = data["alphabet"]
         if data.get("alphabet") is None and data.get("sample_alphabet") is not None:
             data["alphabet"] = data["sample_alphabet"]
+        return data
 
+    @classmethod
+    def model_validate_with_paths(cls, data: Any, config_path: str | Path | None = None) -> "SingleLineDatasetConfig":
+        data = dict(data)
         if config_path is None:
             return cls.model_validate(data)
 

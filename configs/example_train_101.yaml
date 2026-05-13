@@ -27,8 +27,8 @@ chunk_cache_size: 2
 chunk_aware_batches: true
 
 log_every: 1
-preview_samples: 0
-preview_dir: ../input_previews
+preview_samples: 5
+preview_dir: ../output
 
 gpu_augmentations: true
 gpu_augment_val: false
