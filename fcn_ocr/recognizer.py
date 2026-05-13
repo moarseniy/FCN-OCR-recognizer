@@ -344,6 +344,9 @@ class TextRecognizer:
         return display_char(self.idx_to_char.get(index, f"<{index}>"))
 
     def preprocess_pil(self, image: Image.Image) -> torch.Tensor:
+        return self._preprocess_pil_3d(image).unsqueeze(0)
+
+    def _preprocess_pil_3d(self, image: Image.Image) -> torch.Tensor:
         image = image.convert("RGB" if self.in_channels == 3 else "L")
 
         if image.height != self.image_height:
@@ -356,15 +359,58 @@ class TextRecognizer:
         else:
             tensor = torch.from_numpy(array).permute(2, 0, 1)
 
-        return tensor.unsqueeze(0).to(self.device)
+        return tensor.to(self.device)
 
     def preprocess_image(self, image_path: str | Path) -> torch.Tensor:
         with Image.open(image_path) as image:
             return self.preprocess_pil(image)
 
     def decode_predictions(self, logits: torch.Tensor) -> tuple[str, list[int]]:
-        result = self.analyze_logits(logits, input_shape=())
-        return result.text, result.raw_indices
+        pred_ids = logits.argmax(dim=1)
+        return self.decode_pred_ids_batch(pred_ids)[0]
+
+    def decode_pred_ids_batch(
+        self,
+        pred_ids: torch.Tensor,
+        input_lengths: list[int] | torch.Tensor | None = None,
+    ) -> list[tuple[str, list[int]]]:
+        decoded: list[tuple[str, list[int]]] = []
+        if input_lengths is None:
+            lengths = [pred_ids.size(1)] * pred_ids.size(0)
+        elif isinstance(input_lengths, torch.Tensor):
+            lengths = [int(length) for length in input_lengths.detach().cpu().tolist()]
+        else:
+            lengths = [int(length) for length in input_lengths]
+
+        for row, length in zip(pred_ids, lengths):
+            raw_ids = row[: max(0, length)].detach().cpu().tolist()
+            collapsed_ids: list[int] = []
+            previous_id: int | None = None
+            for class_index in raw_ids:
+                if class_index != previous_id:
+                    collapsed_ids.append(class_index)
+                previous_id = class_index
+
+            text = "".join(
+                self.idx_to_char[class_index]
+                for class_index in collapsed_ids
+                if class_index != self.blank_idx and class_index in self.idx_to_char
+            )
+            decoded.append((text, raw_ids))
+        return decoded
+
+    def output_width_for_input_width(self, width: int) -> int:
+        output_width = int(width)
+        for module in self.model.modules():
+            if not isinstance(module, torch.nn.Conv2d):
+                continue
+
+            kernel = module.kernel_size[1]
+            stride = module.stride[1]
+            padding = module.padding[1]
+            dilation = module.dilation[1]
+            output_width = (output_width + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
+        return output_width
 
     def analyze_logits(self, logits: torch.Tensor, input_shape: tuple[int, ...], top_k: int = 8) -> RecognitionResult:
         probs = torch.softmax(logits, dim=1)
@@ -443,8 +489,15 @@ class TextRecognizer:
 
     @torch.no_grad()
     def recognize_tensor(self, image_tensor: torch.Tensor) -> tuple[str, list[int]]:
-        result = self.recognize_tensor_debug(image_tensor)
-        return result.text, result.raw_indices
+        if image_tensor.dim() == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+
+        image_tensor = image_tensor.to(self.device).float()
+        if image_tensor.max() > 1.0:
+            image_tensor = image_tensor / 255.0
+
+        logits = self.model(image_tensor)
+        return self.decode_predictions(logits)
 
     def recognize(self, image_path: str | Path) -> tuple[str, list[int]]:
         return self.recognize_tensor(self.preprocess_image(image_path))
@@ -457,4 +510,46 @@ class TextRecognizer:
         for image_path in image_paths:
             path = Path(image_path)
             results.append((path, self.recognize_image_debug(path, top_k=top_k)))
+        return results
+
+    @torch.no_grad()
+    def recognize_paths_text(
+        self,
+        image_paths: Iterable[str | Path],
+        batch_size: int = 32,
+    ) -> list[tuple[Path, str]]:
+        paths = [Path(image_path) for image_path in image_paths]
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
+        results: list[tuple[Path, str]] = []
+        for start in range(0, len(paths), batch_size):
+            batch_paths = paths[start : start + batch_size]
+            tensors: list[torch.Tensor] = []
+            output_lengths: list[int] = []
+            max_width = 0
+
+            for path in batch_paths:
+                with Image.open(path) as image:
+                    tensor = self._preprocess_pil_3d(image)
+                tensors.append(tensor)
+                max_width = max(max_width, tensor.size(2))
+                output_lengths.append(self.output_width_for_input_width(tensor.size(2)))
+
+            if not tensors:
+                continue
+
+            batch = torch.ones(
+                (len(tensors), self.in_channels, self.image_height, max_width),
+                dtype=tensors[0].dtype,
+                device=self.device,
+            )
+            for batch_index, tensor in enumerate(tensors):
+                batch[batch_index, :, :, : tensor.size(2)] = tensor
+
+            logits = self.model(batch)
+            pred_ids = logits.argmax(dim=1)
+            decoded = self.decode_pred_ids_batch(pred_ids, output_lengths)
+            results.extend((path, text) for path, (text, _) in zip(batch_paths, decoded))
+
         return results

@@ -246,3 +246,14 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 ```bash
 PYTHONPATH=/path/to/FCN-OCR-recognizer python my_script.py
 ```
+
+Оценка Label Studio export JSON из корня проекта:
+
+```bash
+python evaluate_ocr.py \
+  --json path/to/export.json \
+  --images path/to/images \
+  --checkpoint checkpoints/best_model.pth \
+  --out output/ocr_metrics.csv \
+  --batch-size 32
+```
