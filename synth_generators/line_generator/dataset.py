@@ -66,12 +66,14 @@ class SingleLineDatasetConfig(BaseModel):
     min_crop_text_length: int = Field(default=1, ge=1)
     font_paths: list[str] | None = None
     font_dir: str | None = None
+    font_check: bool = True
     font_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_FONT_EXTENSIONS))
     font_size_min: int = Field(default=24, ge=6)
     font_size_max: int = Field(default=34, ge=6)
     channels: int = Field(default=3, ge=1, le=3)
     seed: int | None = None
     background: int = Field(default=255, ge=0, le=255)
+    background_paths: list[str] | None = None
     background_dir: str | None = None
     background_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_BACKGROUND_EXTENSIONS))
     foreground_min: int = Field(default=0, ge=0, le=255)
@@ -84,6 +86,7 @@ class SingleLineDatasetConfig(BaseModel):
     horizontal_padding: int = Field(default=8, ge=0)
     output_dir: str | None = None
     chunk_size: int = Field(default=1024, ge=1)
+    num_workers: int = Field(default=0, ge=0)
     overwrite: bool = False
 
     @model_validator(mode="before")
@@ -107,6 +110,7 @@ class SingleLineDatasetConfig(BaseModel):
 
         config_dir = Path(config_path).resolve().parent
         data["font_paths"] = cls._resolve_relative_paths(data.get("font_paths"), config_dir)
+        data["background_paths"] = cls._resolve_relative_paths(data.get("background_paths"), config_dir)
 
         font_dir = data.get("font_dir")
         if font_dir:
@@ -263,13 +267,21 @@ class SingleLineDataset(Dataset):
         self.sample_alphabet = config.sample_alphabet
         if not self.sample_alphabet:
             raise ValueError("sample_alphabet must not be empty")
-        self.font_paths = self._resolve_font_paths(
-            config.font_paths,
-            config.font_dir,
-            config.font_extensions,
-            self.sample_alphabet,
-        )
+        if config.font_check:
+            self.font_paths = self._resolve_font_paths(
+                config.font_paths,
+                config.font_dir,
+                config.font_extensions,
+                self.sample_alphabet,
+            )
+        else:
+            self.font_paths = self._collect_unchecked_font_paths(
+                config.font_paths,
+                config.font_dir,
+                config.font_extensions,
+            )
         self.background_paths = self._resolve_background_paths(
+            config.background_paths,
             config.background_dir,
             config.background_extensions,
         )
@@ -645,6 +657,21 @@ class SingleLineDataset(Dataset):
         )
 
     @classmethod
+    def _collect_unchecked_font_paths(
+        cls,
+        configured_paths: Iterable[str] | None,
+        font_dir: str | None,
+        extensions: Iterable[str],
+    ) -> list[str]:
+        candidates, missing_paths = cls._collect_font_candidates(configured_paths, font_dir, extensions)
+        if missing_paths:
+            missing = ", ".join(str(path) for path in missing_paths[:FONT_REPORT_LIMIT])
+            if len(missing_paths) > FONT_REPORT_LIMIT:
+                missing = f"{missing}, ... and {len(missing_paths) - FONT_REPORT_LIMIT} more"
+            raise FileNotFoundError(f"Missing configured font paths: {missing}")
+        return [str(path) for path in candidates]
+
+    @classmethod
     def _collect_font_candidates(
         cls,
         configured_paths: Iterable[str] | None,
@@ -820,25 +847,53 @@ class SingleLineDataset(Dataset):
         return repr(char)
 
     @staticmethod
-    def _resolve_background_paths(background_dir: str | None, extensions: Iterable[str]) -> list[str]:
-        if background_dir is None:
-            return []
+    def _resolve_background_paths(
+        configured_paths: Iterable[str] | None,
+        background_dir: str | None,
+        extensions: Iterable[str],
+    ) -> list[str]:
+        paths: list[Path] = []
+        missing_paths: list[Path] = []
 
-        root = Path(background_dir)
-        if not root.exists():
-            raise FileNotFoundError(f"background_dir does not exist: {root}")
-        if not root.is_dir():
-            raise NotADirectoryError(f"background_dir is not a directory: {root}")
+        if configured_paths is not None:
+            for path in configured_paths:
+                path_obj = Path(path)
+                if path_obj.exists() and path_obj.is_file():
+                    paths.append(path_obj)
+                else:
+                    missing_paths.append(path_obj)
 
-        normalized_extensions = {extension.lower() for extension in extensions}
-        paths = [
-            str(path)
-            for path in root.rglob("*")
-            if path.is_file() and path.suffix.lower() in normalized_extensions
-        ]
-        if not paths:
+        if background_dir is not None:
+            root = Path(background_dir)
+            if not root.exists():
+                raise FileNotFoundError(f"background_dir does not exist: {root}")
+            if not root.is_dir():
+                raise NotADirectoryError(f"background_dir is not a directory: {root}")
+
+            normalized_extensions = {extension.lower() for extension in extensions}
+            paths.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in normalized_extensions
+            )
+
+        if missing_paths:
+            missing = ", ".join(str(path) for path in missing_paths[:FONT_REPORT_LIMIT])
+            if len(missing_paths) > FONT_REPORT_LIMIT:
+                missing = f"{missing}, ... and {len(missing_paths) - FONT_REPORT_LIMIT} more"
+            raise FileNotFoundError(f"Missing configured background paths: {missing}")
+
+        deduplicated: list[str] = []
+        seen: set[Path] = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved not in seen:
+                deduplicated.append(str(path))
+                seen.add(resolved)
+
+        if background_dir is not None and not deduplicated:
             raise FileNotFoundError(
                 f"No background images found in {root}. "
                 f"Supported extensions: {sorted(normalized_extensions)}"
             )
-        return paths
+        return deduplicated

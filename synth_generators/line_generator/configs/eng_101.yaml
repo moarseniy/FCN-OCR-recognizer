@@ -3,6 +3,7 @@ space_char: " "
 samples: 100000
 output_dir: ../../../data
 chunk_size: 1024
+num_workers: 4
 overwrite: false
 image_height: 32
 image_width: 64
