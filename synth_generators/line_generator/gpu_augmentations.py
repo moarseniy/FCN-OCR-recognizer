@@ -84,6 +84,8 @@ class GpuTextAugmenter:
     ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
         if name == "cycle_shift":
             return self._cycle_shift(images, params, collect_metadata)
+        if name == "preprocess_geometry":
+            return self._preprocess_geometry(images, params, collect_metadata)
         if name in {"strong_blur", "gaussian_blur"}:
             default = 1.2 if name == "strong_blur" else self.config.blur_radius
             return self._gaussian_blur(images, params, default, collect_metadata)
@@ -104,6 +106,8 @@ class GpuTextAugmenter:
             return self._crop_x(images, params, collect_metadata)
         if name == "crop_y":
             return self._crop_y(images, params, collect_metadata)
+        if name == "random_line":
+            return self._random_line(images, params, collect_metadata)
         if name == "morphology":
             return self._morphology(images, params, collect_metadata)
         if name == "unsharp_mask":
@@ -151,6 +155,39 @@ class GpuTextAugmenter:
             elif logs is not None:
                 logs.append(None)
         return output, logs
+
+    def _preprocess_geometry(
+        self,
+        images: torch.Tensor,
+        params: dict[str, Any],
+        collect_metadata: bool,
+    ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
+        scale_x = self._sample_tensor_range(params, "scale_x", 0.0, images.size(0), images.device, images.dtype)
+        y_pad = self._sample_tensor_range(params, "y_pad", 0.0, images.size(0), images.device, images.dtype)
+        scale_x = scale_x.clamp(min=-0.95)
+        y_pad = y_pad.clamp(min=-0.95)
+
+        if bool((scale_x == 0.0).all() and (y_pad == 0.0).all()):
+            return images, None
+
+        theta = images.new_zeros((images.size(0), 2, 3))
+        theta[:, 0, 0] = 1.0 / (1.0 + scale_x)
+        theta[:, 1, 1] = 1.0 + y_pad
+
+        logs = None
+        if collect_metadata:
+            logs = [
+                {
+                    "scale_x": float(sample_scale_x),
+                    "y_pad": float(sample_y_pad),
+                    "fillcolor": int(params.get("fillcolor", self.config.background)),
+                }
+                for sample_scale_x, sample_y_pad in zip(
+                    scale_x.detach().cpu().tolist(),
+                    y_pad.detach().cpu().tolist(),
+                )
+            ]
+        return self._warp_affine(images, theta, self._fill_value(params)), logs
 
     def _gaussian_blur(
         self,
@@ -395,6 +432,60 @@ class GpuTextAugmenter:
                     logs.append(None)
         return output, logs
 
+    def _random_line(
+        self,
+        images: torch.Tensor,
+        params: dict[str, Any],
+        collect_metadata: bool,
+    ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
+        _, _, height, width = images.shape
+        if height <= 0 or width <= 0:
+            return images, None
+
+        angle_degrees = self._sample_tensor_range(params, "angle_degrees", 0.0, images.size(0), images.device, images.dtype)
+        line_width = self._sample_tensor_range(params, "line_width", 1.0, images.size(0), images.device, images.dtype).clamp(min=0.25)
+        alpha = self._sample_tensor_range(params, "alpha", 1.0, images.size(0), images.device, images.dtype).clamp(0.0, 1.0)
+        value = self._sample_tensor_range(params, "value", 0.0, images.size(0), images.device, images.dtype).clamp(0.0, 255.0) / 255.0
+        y_position = self._sample_tensor_range(params, "y", 0.5, images.size(0), images.device, images.dtype).clamp(0.0, 1.0)
+
+        if bool((alpha <= 0.0).all()):
+            return images, None
+
+        x_coords = torch.arange(width, device=images.device, dtype=images.dtype).view(1, 1, width)
+        y_coords = torch.arange(height, device=images.device, dtype=images.dtype).view(1, height, 1)
+        x_center = (width - 1) * 0.5
+        y_center = y_position.view(-1, 1, 1) * max(height - 1, 1)
+        slope = torch.tan(angle_degrees.view(-1, 1, 1) * math.pi / 180.0)
+
+        distance = torch.abs((y_coords - y_center) - slope * (x_coords - x_center))
+        distance = distance / torch.sqrt(1.0 + slope * slope)
+        half_width = (line_width.view(-1, 1, 1) * 0.5).clamp(min=0.125)
+        mask = (half_width + 0.5 - distance).clamp(0.0, 1.0).unsqueeze(1)
+
+        blend = mask * alpha.view(-1, 1, 1, 1)
+        line_value = value.view(-1, 1, 1, 1)
+        output = images * (1.0 - blend) + line_value * blend
+
+        logs = None
+        if collect_metadata:
+            logs = [
+                {
+                    "angle_degrees": float(sample_angle),
+                    "line_width": float(sample_width),
+                    "alpha": float(sample_alpha),
+                    "value": float(sample_value),
+                    "y": float(sample_y),
+                }
+                for sample_angle, sample_width, sample_alpha, sample_value, sample_y in zip(
+                    angle_degrees.detach().cpu().tolist(),
+                    line_width.detach().cpu().tolist(),
+                    alpha.detach().cpu().tolist(),
+                    (value * 255.0).detach().cpu().tolist(),
+                    y_position.detach().cpu().tolist(),
+                )
+            ]
+        return output, logs
+
     def _morphology(
         self,
         images: torch.Tensor,
@@ -481,6 +572,29 @@ class GpuTextAugmenter:
             return random.uniform(low, high)
 
         return float(default)
+
+    @staticmethod
+    def _sample_tensor_range(
+        params: dict[str, Any],
+        name: str,
+        default: float,
+        count: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if name in params:
+            return torch.full((count,), float(params[name]), device=device, dtype=dtype)
+
+        min_name = f"{name}_min"
+        max_name = f"{name}_max"
+        if min_name in params or max_name in params:
+            low = float(params.get(min_name, default))
+            high = float(params.get(max_name, default))
+            if high < low:
+                low, high = high, low
+            return torch.empty((count,), device=device, dtype=dtype).uniform_(low, high)
+
+        return torch.full((count,), float(default), device=device, dtype=dtype)
 
     @staticmethod
     def _randint(low: int, high: int) -> int:

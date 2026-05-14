@@ -25,6 +25,7 @@ FONT_REPORT_LIMIT = 12
 
 SUPPORTED_AUGMENTATIONS = (
     "cycle_shift",
+    "preprocess_geometry",
     "strong_blur",
     "motion_blur",
     "scale",
@@ -34,6 +35,7 @@ SUPPORTED_AUGMENTATIONS = (
     "rotate",
     "crop_x",
     "crop_y",
+    "random_line",
     "morphology",
     "unsharp_mask",
     "gaussian_blur",

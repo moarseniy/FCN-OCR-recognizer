@@ -67,6 +67,7 @@ torch/GPU-пайплайном во время обучения:
 ```yaml
 augmentation_probabilities:
   cycle_shift: 0.05
+  preprocess_geometry: 0.3
   strong_blur: 0.08
   motion_blur: 0.08
   scale: 0.15
@@ -76,6 +77,7 @@ augmentation_probabilities:
   rotate: 0.8
   crop_x: 0.08
   crop_y: 0.05
+  random_line: 0.1
   morphology: 0.08
   unsharp_mask: 0.12
   gaussian_blur: 0.0
@@ -84,9 +86,26 @@ augmentation_probabilities:
   contrast: 0.3
   invert: 0.0
 augmentations:
+  preprocess_geometry:
+    scale_x_min: -0.15
+    scale_x_max: 0.15
+    y_pad_min: -0.25
+    y_pad_max: 0.10
+    fillcolor: 255
   rotate:
     max_degrees: 1.0
     fillcolor: 255
+  random_line:
+    angle_degrees_min: -4.0
+    angle_degrees_max: 4.0
+    line_width_min: 1.0
+    line_width_max: 2.5
+    alpha_min: 0.35
+    alpha_max: 0.9
+    value_min: 0.0
+    value_max: 80.0
+    y_min: 0.15
+    y_max: 0.9
   gaussian_blur:
     radius_min: 0.0
     radius_max: 0.25
@@ -104,10 +123,12 @@ augmentations:
 
 Вероятность `0.0` выключает преобразование, `1.0` применяет всегда.
 
-Доступные OCR-аугментации: `cycle_shift`, `strong_blur`, `motion_blur`,
-`scale`, `darkening`, `noise`, `projective`, `rotate`, `crop_x`, `crop_y`,
-`morphology`, `unsharp_mask`. Старые `gaussian_blur` и `gaussian_noise`
-оставлены как совместимые алиасы.
+Доступные OCR-аугментации: `cycle_shift`, `preprocess_geometry`,
+`strong_blur`, `motion_blur`, `scale`, `darkening`, `noise`, `projective`,
+`rotate`, `crop_x`, `crop_y`, `random_line`, `morphology`, `unsharp_mask`.
+`preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
+`random_line` добавляет почти горизонтальную линию под небольшим углом.
+Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 
 Сохранить один пример изображения:
 

@@ -33,6 +33,7 @@ gpu_augmentations: true
 gpu_augment_val: false
 augmentation_probabilities:
   cycle_shift: 0.15
+  preprocess_geometry: 0.65
   strong_blur: 0.18
   motion_blur: 0.28
   scale: 0.28
@@ -41,7 +42,8 @@ augmentation_probabilities:
   projective: 0.25
   rotate: 0.85
   crop_x: 0.45
-  crop_y: 0.35
+  crop_y: 0.15
+  random_line: 0.22
   morphology: 0.18
   unsharp_mask: 0.3
   gaussian_blur: 0.0
@@ -53,6 +55,12 @@ augmentations:
   cycle_shift:
     max_x: 8
     max_y: 5
+  preprocess_geometry:
+    scale_x_min: -0.18
+    scale_x_max: 0.18
+    y_pad_min: -0.30
+    y_pad_max: 0.08
+    fillcolor: 255
   strong_blur:
     radius_min: 0.8
     radius_max: 1.8
@@ -89,6 +97,17 @@ augmentations:
     max_top: 3
     max_bottom: 3
     fillcolor: 255
+  random_line:
+    angle_degrees_min: -4.0
+    angle_degrees_max: 4.0
+    line_width_min: 1.0
+    line_width_max: 2.5
+    alpha_min: 0.35
+    alpha_max: 0.9
+    value_min: 0.0
+    value_max: 80.0
+    y_min: 0.15
+    y_max: 0.9
   morphology:
     operation: random
     size: 3
