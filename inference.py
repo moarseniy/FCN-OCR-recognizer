@@ -115,7 +115,9 @@ def main() -> None:
     if args.image:
         with Image.open(args.image) as image_file:
             source_image = image_file.convert("RGB")
-        result = recognizer.recognize_image_debug(args.image, top_k=args.debug_top_k)
+        input_tensor = recognizer.preprocess_image(args.image)
+        network_input_image = tensor_to_pil(input_tensor)
+        result = recognizer.recognize_tensor_debug(input_tensor, top_k=args.debug_top_k)
         print(f"Image: {args.image}")
         debug_metadata = {
             "source": str(args.image),
@@ -143,7 +145,9 @@ def main() -> None:
         source_image = tensor_to_pil(sample.image)
         source_image.save(args.save_sample)
 
-        result = recognizer.recognize_tensor_debug(sample.image, top_k=args.debug_top_k)
+        input_tensor = recognizer.preprocess_pil(source_image)
+        network_input_image = tensor_to_pil(input_tensor)
+        result = recognizer.recognize_tensor_debug(input_tensor, top_k=args.debug_top_k)
         print(f"Synthetic sample index: {sample_index}")
         print(f"Saved sample image: {args.save_sample}")
         print(f"Expected text: '{sample.text}'")
@@ -160,7 +164,7 @@ def main() -> None:
     print(f"Recognized text: '{result.text}'")
 
     if args.debug_image:
-        save_debug_image(source_image, result, args.debug_image, debug_metadata)
+        save_debug_image(source_image, result, args.debug_image, debug_metadata, network_input_image=network_input_image)
         print(f"Saved debug image: {args.debug_image}")
 
     if args.show_raw:

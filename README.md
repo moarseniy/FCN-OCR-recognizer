@@ -218,8 +218,9 @@ resume: true
 python inference.py --checkpoint checkpoints/best_model.pth --sample-index 0
 ```
 
-Сохранить читаемую debug-картинку с исходным изображением, итоговым ответом,
-строками decoded-символов в порядке ответа и top-k парами `символ confidence`:
+Сохранить читаемую debug-картинку с исходным изображением, изображением после
+inference-preprocessing, итоговым ответом, строками decoded-символов в порядке
+ответа и top-k парами `символ confidence`:
 
 ```bash
 python inference.py \

@@ -101,6 +101,15 @@ def draw_wrapped_text(
     return y
 
 
+def resize_debug_image(image: Image.Image, max_width: int) -> Image.Image:
+    image = image.convert("RGB")
+    if image.width <= max_width:
+        return image
+
+    scale = max_width / image.width
+    return image.resize((max_width, max(1, round(image.height * scale))), Image.Resampling.BICUBIC)
+
+
 def display_char(char: str) -> str:
     if char == " ":
         return SPACE_SYMBOL
@@ -148,6 +157,7 @@ def save_debug_image(
     result: RecognitionResult,
     output_path: str | Path,
     metadata: dict[str, Any],
+    network_input_image: Image.Image | None = None,
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,13 +169,15 @@ def save_debug_image(
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     padding = 16
     min_report_width = 1280
-    canvas_width = max(min_report_width, source_image.width + padding * 2)
+    canvas_width = max(
+        min_report_width,
+        source_image.width + padding * 2,
+        (network_input_image.width + padding * 2) if network_input_image is not None else 0,
+    )
 
     max_image_width = canvas_width - padding * 2
-    image = source_image.convert("RGB")
-    if image.width > max_image_width:
-        scale = max_image_width / image.width
-        image = image.resize((max_image_width, max(1, round(image.height * scale))), Image.Resampling.BICUBIC)
+    image = resize_debug_image(source_image, max_image_width)
+    input_image = resize_debug_image(network_input_image, max_image_width) if network_input_image is not None else None
 
     table_width = canvas_width - padding * 2
     position_width = 56
@@ -225,13 +237,41 @@ def save_debug_image(
         + raw_height
         + padding
     )
-    canvas_height = padding + image.height + report_height
+    image_title_height = text_height(probe, small_font) + 6
+    images_height = image_title_height + image.height
+    if input_image is not None:
+        images_height += padding + image_title_height + input_image.height
+
+    canvas_height = padding + images_height + report_height
     canvas = Image.new("RGB", (canvas_width, canvas_height), color=(246, 246, 246))
     draw = ImageDraw.Draw(canvas)
 
+    y = padding
+    draw.text(
+        (padding, y),
+        f"original image ({source_image.width}x{source_image.height})",
+        fill=(55, 55, 55),
+        font=small_font,
+    )
+    y += image_title_height
     image_x = (canvas_width - image.width) // 2
-    canvas.paste(image, (image_x, padding))
-    y = padding + image.height + padding
+    canvas.paste(image, (image_x, y))
+    y += image.height
+
+    if input_image is not None:
+        y += padding
+        draw.text(
+            (padding, y),
+            f"network input image ({network_input_image.width}x{network_input_image.height})",
+            fill=(55, 55, 55),
+            font=small_font,
+        )
+        y += image_title_height
+        input_x = (canvas_width - input_image.width) // 2
+        canvas.paste(input_image, (input_x, y))
+        y += input_image.height
+
+    y += padding
 
     draw.text((padding, y), "OCR inference debug", fill=(20, 20, 20), font=title_font)
     y += text_height(draw, title_font) + 14
