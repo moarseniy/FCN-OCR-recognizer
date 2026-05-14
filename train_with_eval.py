@@ -15,11 +15,13 @@ from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 from train import (
     InputPreviewSaver,
     append_training_log,
+    create_scheduler,
     effective_training_config_data,
     load_dataset_from_config,
     load_training_config,
     make_data_loader,
     save_checkpoint,
+    step_scheduler,
     train_one_epoch,
     validate,
     validate_and_log_alphabet,
@@ -210,6 +212,13 @@ def main() -> None:
         num_classes=len(alphabet) + 1,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=train_config.lr)
+    scheduler = create_scheduler(optimizer, train_config)
+    print("LR scheduler: ", train_config.scheduler)
+    if train_config.scheduler == "reduce_on_plateau":
+        print(
+            f"  factor={train_config.scheduler_factor} patience={train_config.scheduler_patience} "
+            f"min_lr={train_config.scheduler_min_lr:g}"
+        )
 
     train_losses = []
     val_losses = []
@@ -223,6 +232,8 @@ def main() -> None:
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
         train_losses = checkpoint.get("train_losses", [])
         val_losses = checkpoint.get("val_losses", [])
@@ -268,7 +279,7 @@ def main() -> None:
         epoch_seconds = time.perf_counter() - epoch_started_at
         is_best_val = val_loss < best_val_loss
         is_best_train = train_loss < best_train_loss
-        lr = optimizer.param_groups[0]["lr"]
+        old_lr, lr = step_scheduler(scheduler, train_config, val_loss, optimizer)
 
         append_training_log(
             training_log_path,
@@ -295,6 +306,8 @@ def main() -> None:
             f"({val_stats['batches']} batches, {val_stats['samples']} samples, {val_stats['seconds']:.1f}s)"
         )
         print(f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s")
+        if lr != old_lr:
+            print(f"  scheduler changed lr: {old_lr:.3g} -> {lr:.3g}")
 
         checkpoint_path = Path(
             save_checkpoint(
@@ -308,6 +321,7 @@ def main() -> None:
                 train_losses,
                 val_losses,
                 str(checkpoint_dir),
+                scheduler=scheduler,
             )
         )
 

@@ -24,6 +24,9 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
+
+
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -42,6 +45,16 @@ class TrainingConfig(BaseModel):
     batch_size: int = Field(default=128, ge=1)
     batch_count: int | None = Field(default=None, ge=1)
     lr: float = Field(default=1e-3, gt=0.0)
+    scheduler: str = "reduce_on_plateau"
+    scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
+    scheduler_patience: int = Field(default=3, ge=0)
+    scheduler_min_lr: float = Field(default=1e-6, ge=0.0)
+    scheduler_threshold: float = Field(default=1e-4, ge=0.0)
+    scheduler_cooldown: int = Field(default=0, ge=0)
+    scheduler_t_max: int | None = Field(default=None, ge=1)
+    scheduler_eta_min: float = Field(default=1e-6, ge=0.0)
+    scheduler_step_size: int = Field(default=10, ge=1)
+    scheduler_gamma: float = Field(default=0.5, gt=0.0)
     checkpoint_dir: str = "checkpoints"
     max_train_batches: int | None = None
     max_val_batches: int | None = 50
@@ -88,6 +101,14 @@ class TrainingConfig(BaseModel):
             raise ValueError("alphabet must contain unique characters")
         return value
 
+    @field_validator("scheduler")
+    @classmethod
+    def scheduler_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_SCHEDULERS:
+            raise ValueError(f"scheduler must be one of {SUPPORTED_SCHEDULERS}")
+        return value
+
     @field_validator("augmentation_probabilities")
     @classmethod
     def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
@@ -118,6 +139,7 @@ def save_checkpoint(
     train_losses,
     val_losses,
     checkpoint_dir="checkpoints",
+    scheduler=None,
 ):
     """Сохраняет чекпоинт модели"""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -129,6 +151,7 @@ def save_checkpoint(
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
         'loss': loss,
         'val_loss': val_loss,
         'alphabet': alphabet,
@@ -151,6 +174,49 @@ def save_checkpoint(
     print(f"Latest checkpoint saved to {latest_path}")
 
     return checkpoint_path
+
+
+def create_scheduler(optimizer, config: TrainingConfig):
+    if config.scheduler == "none":
+        return None
+    if config.scheduler == "reduce_on_plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=config.scheduler_factor,
+            patience=config.scheduler_patience,
+            threshold=config.scheduler_threshold,
+            cooldown=config.scheduler_cooldown,
+            min_lr=config.scheduler_min_lr,
+        )
+    if config.scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=config.scheduler_t_max or config.epochs,
+            eta_min=config.scheduler_eta_min,
+        )
+    if config.scheduler == "step":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=config.scheduler_step_size,
+            gamma=config.scheduler_gamma,
+        )
+    raise ValueError(f"Unsupported scheduler: {config.scheduler}")
+
+
+def current_lr(optimizer) -> float:
+    return float(optimizer.param_groups[0]["lr"])
+
+
+def step_scheduler(scheduler, config: TrainingConfig, val_loss: float, optimizer) -> tuple[float, float]:
+    old_lr = current_lr(optimizer)
+    if scheduler is None:
+        return old_lr, old_lr
+    if config.scheduler == "reduce_on_plateau":
+        scheduler.step(val_loss)
+    else:
+        scheduler.step()
+    return old_lr, current_lr(optimizer)
 
 def compute_loss(logits, targets, lengths, blank_idx):
     return ctc_loss(logits, targets, lengths, blank_idx)
@@ -776,6 +842,13 @@ if __name__ == "__main__":
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = create_scheduler(optimizer, args)
+    print("LR scheduler: ", args.scheduler)
+    if args.scheduler == "reduce_on_plateau":
+        print(
+            f"  factor={args.scheduler_factor} patience={args.scheduler_patience} "
+            f"min_lr={args.scheduler_min_lr:g}"
+        )
 
     # Списки для хранения истории лоссов
     train_losses = []
@@ -792,6 +865,8 @@ if __name__ == "__main__":
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint['epoch'] + 1
 
         # Загружаем историю лоссов если она есть
@@ -840,7 +915,7 @@ if __name__ == "__main__":
 
         epoch_seconds = time.perf_counter() - epoch_started_at
         is_best_val = val_loss < best_val_loss
-        lr = optimizer.param_groups[0]["lr"]
+        old_lr, lr = step_scheduler(scheduler, args, val_loss, optimizer)
 
         append_training_log(
             log_path,
@@ -867,6 +942,8 @@ if __name__ == "__main__":
             f"({val_stats['batches']} batches, {val_stats['samples']} samples, {val_stats['seconds']:.1f}s)"
         )
         print(f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s")
+        if lr != old_lr:
+            print(f"  scheduler changed lr: {old_lr:.3g} -> {lr:.3g}")
 
         if train_loss < val_loss * 0.7:
             print("  warning: possible overfitting")
@@ -884,6 +961,7 @@ if __name__ == "__main__":
                 train_losses,
                 val_losses,
                 checkpoint_dir,
+                scheduler=scheduler,
             )
 
             # Сохраняем лучшую модель по валидационному лоссу
@@ -894,6 +972,7 @@ if __name__ == "__main__":
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
                 'loss': train_loss,
                 'val_loss': val_loss,
                 'alphabet': alphabet,
@@ -917,6 +996,7 @@ if __name__ == "__main__":
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
                 'loss': train_loss,
                 'val_loss': val_loss,
                 'alphabet': alphabet,

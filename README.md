@@ -195,6 +195,24 @@ drop_last: true
 log_every: 10
 ```
 
+Learning rate scheduler задаётся в training-конфиге. По умолчанию используется
+`ReduceLROnPlateau`: если validation loss несколько эпох не улучшается, lr
+уменьшается.
+
+```yaml
+lr: 0.001
+scheduler: reduce_on_plateau
+scheduler_factor: 0.5
+scheduler_patience: 3
+scheduler_min_lr: 0.000001
+scheduler_threshold: 0.0001
+scheduler_cooldown: 0
+```
+
+Также поддерживаются `scheduler: none`, `scheduler: cosine` и
+`scheduler: step`. Состояние scheduler сохраняется в checkpoint и
+восстанавливается при `resume: true`.
+
 `batch_count` ограничивает train-эпоху фиксированным числом случайно выбранных
 batch-ей. Если `batch_count: null`, эпоха проходит весь train split. Для
 offline-чанков sampled-batch режим выбирает каждый batch из одного `chunk_*.pt`,

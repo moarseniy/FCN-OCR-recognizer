@@ -302,6 +302,7 @@ def optimize_preprocess(
         import optuna
     except ImportError as exc:
         raise RuntimeError("Optuna is not installed. Install it with: pip install optuna") from exc
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
 
     if trials < 1:
         raise ValueError("trials must be >= 1")
