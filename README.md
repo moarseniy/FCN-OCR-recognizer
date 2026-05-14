@@ -182,10 +182,16 @@ checkpoints/training_log.tsv
 
 ```yaml
 batch_size: 128
+batch_count: 500
 num_workers: 4
 drop_last: true
 log_every: 10
 ```
+
+`batch_count` ограничивает train-эпоху фиксированным числом случайно выбранных
+batch-ей. Если `batch_count: null`, эпоха проходит весь train split. Для
+offline-чанков sampled-batch режим выбирает каждый batch из одного `chunk_*.pt`,
+чтобы чтение с диска оставалось локальным и быстрым.
 
 При старте печатаются размеры train/validation split, batch size, количество
 батчей и лимиты `max_train_batches` / `max_val_batches`, если они заданы.

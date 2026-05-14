@@ -11,6 +11,7 @@ generator_config: null
 
 epochs: 50
 batch_size: 128
+batch_count: null
 lr: 0.001
 checkpoint_dir: ../checkpoints
 max_train_batches: null

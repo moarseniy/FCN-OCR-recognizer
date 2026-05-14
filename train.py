@@ -40,6 +40,7 @@ class TrainingConfig(BaseModel):
 
     epochs: int = Field(default=50, ge=1)
     batch_size: int = Field(default=128, ge=1)
+    batch_count: int | None = Field(default=None, ge=1)
     lr: float = Field(default=1e-3, gt=0.0)
     checkpoint_dir: str = "checkpoints"
     max_train_batches: int | None = None
@@ -345,20 +346,64 @@ def append_training_log(log_path, row):
         )
 
 
+class RandomFixedBatchSampler(Sampler):
+    def __init__(self, dataset, batch_size, batch_count, seed=0):
+        if len(dataset) <= 0:
+            raise ValueError("dataset must not be empty")
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        if batch_count < 1:
+            raise ValueError("batch_count must be >= 1")
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.batch_count = batch_count
+        self.seed = seed
+        self.epoch = 0
+
+    def __iter__(self):
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        self.epoch += 1
+        dataset_size = len(self.dataset)
+        for _ in range(self.batch_count):
+            yield torch.randint(
+                dataset_size,
+                (self.batch_size,),
+                generator=generator,
+                dtype=torch.long,
+            ).tolist()
+
+    def __len__(self):
+        return self.batch_count
+
+
 class ChunkBatchSampler(Sampler):
-    def __init__(self, subset, base_dataset, batch_size, drop_last, shuffle, seed=0):
+    def __init__(self, subset, base_dataset, batch_size, drop_last, shuffle, seed=0, batch_count=None):
         self.subset = subset
         self.base_dataset = base_dataset
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.shuffle = shuffle
         self.seed = seed
+        self.batch_count = batch_count
         self.epoch = 0
         self.groups = self._group_subset_positions_by_chunk()
+        self.chunk_ids = list(self.groups)
+        self.chunk_weights = torch.tensor(
+            [len(self.groups[chunk_id]) for chunk_id in self.chunk_ids],
+            dtype=torch.double,
+        )
+        if self.batch_count is not None and self.batch_count < 1:
+            raise ValueError("batch_count must be >= 1")
+        if not self.chunk_ids:
+            raise ValueError("chunk batch sampler got an empty subset")
 
     def __iter__(self):
         generator = torch.Generator().manual_seed(self.seed + self.epoch)
         self.epoch += 1
+
+        if self.batch_count is not None:
+            yield from self._iter_sampled_batches(generator)
+            return
 
         chunk_ids = list(self.groups)
         if self.shuffle:
@@ -377,6 +422,9 @@ class ChunkBatchSampler(Sampler):
                     yield batch
 
     def __len__(self):
+        if self.batch_count is not None:
+            return self.batch_count
+
         total = 0
         for positions in self.groups.values():
             if self.drop_last:
@@ -392,6 +440,31 @@ class ChunkBatchSampler(Sampler):
             chunk_id = self.base_dataset.chunk_index_for_sample(sample_index)
             groups.setdefault(chunk_id, []).append(subset_position)
         return groups
+
+    def _iter_sampled_batches(self, generator):
+        sampled_group_indices = torch.multinomial(
+            self.chunk_weights,
+            num_samples=self.batch_count,
+            replacement=True,
+            generator=generator,
+        ).tolist()
+
+        for group_index in sampled_group_indices:
+            chunk_id = self.chunk_ids[group_index]
+            positions = self.groups[chunk_id]
+            if len(positions) >= self.batch_size:
+                sampled_position_indices = torch.randperm(
+                    len(positions),
+                    generator=generator,
+                )[: self.batch_size].tolist()
+            else:
+                sampled_position_indices = torch.randint(
+                    len(positions),
+                    (self.batch_size,),
+                    generator=generator,
+                    dtype=torch.long,
+                ).tolist()
+            yield [positions[position_index] for position_index in sampled_position_indices]
 
     def _sample_index(self, subset_position):
         if isinstance(self.subset, Subset):
@@ -462,7 +535,7 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
     return dataset, generator_config
 
 
-def make_data_loader(dataset, split_dataset, args, shuffle, seed):
+def make_data_loader(dataset, split_dataset, args, shuffle, seed, batch_count=None):
     common_kwargs = {
         "num_workers": args.num_workers,
         "pin_memory": torch.cuda.is_available(),
@@ -480,6 +553,19 @@ def make_data_loader(dataset, split_dataset, args, shuffle, seed):
                 args.batch_size,
                 args.drop_last,
                 shuffle,
+                seed,
+                batch_count=batch_count,
+            ),
+            **common_kwargs,
+        )
+
+    if batch_count is not None:
+        return DataLoader(
+            split_dataset,
+            batch_sampler=RandomFixedBatchSampler(
+                split_dataset,
+                args.batch_size,
+                batch_count,
                 seed,
             ),
             **common_kwargs,
@@ -599,7 +685,14 @@ if __name__ == "__main__":
     print("Alphabet length: ", len(alphabet))
     print("Blank index: ", blank_idx)
 
-    train_loader = make_data_loader(dataset, train_dataset, args, shuffle=True, seed=dataset_config.seed or 0)
+    train_loader = make_data_loader(
+        dataset,
+        train_dataset,
+        args,
+        shuffle=True,
+        seed=dataset_config.seed or 0,
+        batch_count=args.batch_count,
+    )
     val_loader = make_data_loader(dataset, val_dataset, args, shuffle=False, seed=(dataset_config.seed or 0) + 100_000)
 
     train_batches = len(train_loader)
@@ -611,6 +704,8 @@ if __name__ == "__main__":
     print(f"  Batch size:      {args.batch_size}")
     print(f"  Drop last:       {args.drop_last}")
     print(f"  Num workers:     {args.num_workers}")
+    if args.batch_count is not None:
+        print(f"  Batch count:     {args.batch_count} sampled train batches/epoch")
     if isinstance(dataset, ChunkedLineDataset):
         print(f"  Chunk batching:  {args.chunk_aware_batches}")
         print(f"  Chunk cache:     {args.chunk_cache_size} files/worker")
