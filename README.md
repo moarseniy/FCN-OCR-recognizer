@@ -285,3 +285,42 @@ python evaluate_ocr.py \
   --y-pad 0.0 \
   --batch-size 32
 ```
+
+Подбор inference-preprocessing через Optuna:
+
+```bash
+python evaluate_ocr.py \
+  --json path/to/export.json \
+  --images path/to/images \
+  --checkpoint checkpoints/best_model.pth \
+  --out output/ocr_metrics.csv \
+  --optuna-trials 30 \
+  --optuna-scale-x-min -0.25 \
+  --optuna-scale-x-max 0.25 \
+  --optuna-y-pad-min -0.25 \
+  --optuna-y-pad-max 0.25 \
+  --optuna-metric global_char_accuracy \
+  --optuna-trials-out output/optuna_trials.tsv
+```
+
+Если Optuna не установлена:
+
+```bash
+pip install optuna
+```
+
+Обучение с оценкой OCR после каждой эпохи:
+
+```bash
+python train_with_eval.py \
+  --train-config configs/eng_train_101.yaml \
+  --eval-json path/to/export.json \
+  --eval-images path/to/images \
+  --eval-out-dir output/train_eval \
+  --eval-batch-size 32 \
+  --eval-log-every 0
+```
+
+После каждой эпохи сохраняется текущий чекпоинт, запускается `evaluate_ocr`,
+пишется per-epoch CSV и общий `eval_summary.tsv`. Для подбора `scale_x/y_pad`
+на каждой эпохе добавьте, например, `--optuna-trials 20`.

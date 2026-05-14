@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from copy import deepcopy
 import json
 import time
 from pathlib import Path
@@ -95,21 +96,11 @@ def recognize_images(
     return predictions, errors
 
 
-def evaluate(
+def build_rows_and_jobs(
     json_path: Path,
     images_dir: Path,
-    checkpoint_path: Path,
-    output_csv: Path,
-    device: str | None,
-    scale_x: float,
-    y_pad: float,
-    batch_size: int,
     limit: int | None,
-    log_every: int,
-) -> None:
-    if batch_size < 1:
-        raise ValueError("batch_size must be >= 1")
-
+) -> tuple[list[dict[str, Any]], list[tuple[int, Path]]]:
     with json_path.open("r", encoding="utf-8") as file:
         tasks = json.load(file)
 
@@ -141,22 +132,10 @@ def evaluate(
             row["error"] = f"image_not_found: {image_path}"
         rows.append(row)
 
-    started_at = time.perf_counter()
-    recognizer = TextRecognizer(
-        checkpoint_path,
-        device=device,
-        verbose=True,
-        scale_x=scale_x,
-        y_pad=y_pad,
-    )
-    predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
-    elapsed = time.perf_counter() - started_at
+    return rows, jobs
 
-    for row_index, prediction in predictions.items():
-        rows[row_index]["pred"] = prediction
-    for row_index, error in errors.items():
-        rows[row_index]["error"] = error
 
+def compute_metrics(rows: list[dict[str, Any]], elapsed: float) -> dict[str, Any]:
     total = 0
     exact_ok = 0
     total_lev = 0
@@ -182,6 +161,22 @@ def evaluate(
         total_gt_chars += len(gt)
         total_char_acc += c_acc
 
+    recognized = sum(1 for row in rows if not row["error"])
+    return {
+        "total_samples": total,
+        "recognized_samples": recognized,
+        "exact_matches": exact_ok,
+        "line_accuracy": exact_ok / total if total else 0.0,
+        "average_char_accuracy": total_char_acc / total if total else 0.0,
+        "global_char_accuracy": max(0.0, 1.0 - total_lev / total_gt_chars) if total_gt_chars else 0.0,
+        "average_levenshtein": total_lev / total if total else 0.0,
+        "total_levenshtein": total_lev,
+        "elapsed": elapsed,
+        "speed": recognized / elapsed if elapsed > 0 else 0.0,
+    }
+
+
+def write_rows_csv(rows: list[dict[str, Any]], output_csv: Path) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(
@@ -202,25 +197,204 @@ def evaluate(
         writer.writeheader()
         writer.writerows(rows)
 
-    line_accuracy = exact_ok / total if total else 0.0
-    avg_char_accuracy = total_char_acc / total if total else 0.0
-    normalized_char_accuracy = max(0.0, 1.0 - total_lev / total_gt_chars) if total_gt_chars else 0.0
-    avg_levenshtein = total_lev / total if total else 0.0
-    recognized = sum(1 for row in rows if not row["error"])
-    speed = recognized / elapsed if elapsed > 0 else 0.0
 
+def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> None:
     print("=== OCR evaluation ===")
-    print(f"Total samples:              {total}")
-    print(f"Recognized samples:         {recognized}")
-    print(f"Exact line matches:         {exact_ok}")
-    print(f"Line accuracy:              {line_accuracy:.4f}")
-    print(f"Average char accuracy:      {avg_char_accuracy:.4f}")
-    print(f"Global char accuracy:       {normalized_char_accuracy:.4f}")
-    print(f"Average Levenshtein:        {avg_levenshtein:.4f}")
-    print(f"Total Levenshtein:          {total_lev}")
-    print(f"Elapsed:                    {elapsed:.2f}s")
-    print(f"Speed:                      {speed:.2f} img/s")
-    print(f"CSV saved to:               {output_csv}")
+    print(f"Total samples:              {metrics['total_samples']}")
+    print(f"Recognized samples:         {metrics['recognized_samples']}")
+    print(f"Exact line matches:         {metrics['exact_matches']}")
+    print(f"Line accuracy:              {metrics['line_accuracy']:.4f}")
+    print(f"Average char accuracy:      {metrics['average_char_accuracy']:.4f}")
+    print(f"Global char accuracy:       {metrics['global_char_accuracy']:.4f}")
+    print(f"Average Levenshtein:        {metrics['average_levenshtein']:.4f}")
+    print(f"Total Levenshtein:          {metrics['total_levenshtein']}")
+    print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
+    print(f"Speed:                      {metrics['speed']:.2f} img/s")
+    print(f"scale_x:                    {metrics['scale_x']:+.5f}")
+    print(f"y_pad:                      {metrics['y_pad']:+.5f}")
+    if output_csv is not None:
+        print(f"CSV saved to:               {output_csv}")
+
+
+def evaluate_prepared(
+    base_rows: list[dict[str, Any]],
+    jobs: list[tuple[int, Path]],
+    checkpoint_path: Path,
+    output_csv: Path | None,
+    device: str | None,
+    scale_x: float,
+    y_pad: float,
+    batch_size: int,
+    log_every: int,
+    verbose: bool,
+) -> dict[str, Any]:
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+
+    rows = deepcopy(base_rows)
+    started_at = time.perf_counter()
+    recognizer = TextRecognizer(
+        checkpoint_path,
+        device=device,
+        verbose=verbose,
+        scale_x=scale_x,
+        y_pad=y_pad,
+    )
+    predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
+    elapsed = time.perf_counter() - started_at
+
+    for row_index, prediction in predictions.items():
+        rows[row_index]["pred"] = prediction
+    for row_index, error in errors.items():
+        rows[row_index]["error"] = error
+
+    metrics = compute_metrics(rows, elapsed)
+    metrics["scale_x"] = float(scale_x)
+    metrics["y_pad"] = float(y_pad)
+
+    if output_csv is not None:
+        write_rows_csv(rows, output_csv)
+
+    if verbose:
+        print_metrics(metrics, output_csv)
+
+    return metrics
+
+
+def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], metric_name: str) -> None:
+    is_new_file = not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        if is_new_file:
+            file.write(
+                "trial\tscale_x\ty_pad\tmetric\tline_accuracy\taverage_char_accuracy\t"
+                "global_char_accuracy\taverage_levenshtein\ttotal_levenshtein\tspeed\n"
+            )
+        file.write(
+            f"{trial_number}\t{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t"
+            f"{metrics[metric_name]:.8f}\t{metrics['line_accuracy']:.8f}\t"
+            f"{metrics['average_char_accuracy']:.8f}\t{metrics['global_char_accuracy']:.8f}\t"
+            f"{metrics['average_levenshtein']:.8f}\t{metrics['total_levenshtein']}\t"
+            f"{metrics['speed']:.6f}\n"
+        )
+
+
+def optimize_preprocess(
+    json_path: Path,
+    images_dir: Path,
+    checkpoint_path: Path,
+    output_csv: Path,
+    device: str | None,
+    batch_size: int,
+    limit: int | None,
+    trials: int,
+    scale_x_min: float,
+    scale_x_max: float,
+    y_pad_min: float,
+    y_pad_max: float,
+    metric_name: str,
+    log_every: int,
+    trials_output: Path | None,
+    study_name: str | None = None,
+    storage: str | None = None,
+) -> dict[str, Any]:
+    try:
+        import optuna
+    except ImportError as exc:
+        raise RuntimeError("Optuna is not installed. Install it with: pip install optuna") from exc
+
+    if trials < 1:
+        raise ValueError("trials must be >= 1")
+
+    base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
+    direction = "minimize" if metric_name in {"average_levenshtein", "total_levenshtein"} else "maximize"
+    study = optuna.create_study(
+        direction=direction,
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=bool(storage and study_name),
+    )
+
+    def objective(trial) -> float:
+        scale_x = trial.suggest_float("scale_x", scale_x_min, scale_x_max)
+        y_pad = trial.suggest_float("y_pad", y_pad_min, y_pad_max)
+        metrics = evaluate_prepared(
+            base_rows,
+            jobs,
+            checkpoint_path=checkpoint_path,
+            output_csv=None,
+            device=device,
+            scale_x=scale_x,
+            y_pad=y_pad,
+            batch_size=batch_size,
+            log_every=0,
+            verbose=False,
+        )
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                trial.set_user_attr(key, value)
+        if trials_output is not None:
+            append_trial_log(trials_output, trial.number, metrics, metric_name)
+        return float(metrics[metric_name])
+
+    print(
+        "Optuna preprocess search: "
+        f"trials={trials}, metric={metric_name}, "
+        f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}]"
+    )
+    study.optimize(objective, n_trials=trials)
+
+    best_scale_x = float(study.best_params["scale_x"])
+    best_y_pad = float(study.best_params["y_pad"])
+    print(
+        f"Best Optuna params: scale_x={best_scale_x:+.5f}, "
+        f"y_pad={best_y_pad:+.5f}, {metric_name}={study.best_value:.8f}"
+    )
+
+    final_metrics = evaluate_prepared(
+        base_rows,
+        jobs,
+        checkpoint_path=checkpoint_path,
+        output_csv=output_csv,
+        device=device,
+        scale_x=best_scale_x,
+        y_pad=best_y_pad,
+        batch_size=batch_size,
+        log_every=log_every,
+        verbose=True,
+    )
+    final_metrics["optuna_trials"] = trials
+    final_metrics["optuna_metric"] = metric_name
+    final_metrics["optuna_best_value"] = float(study.best_value)
+    return final_metrics
+
+
+def evaluate(
+    json_path: Path,
+    images_dir: Path,
+    checkpoint_path: Path,
+    output_csv: Path,
+    device: str | None,
+    scale_x: float,
+    y_pad: float,
+    batch_size: int,
+    limit: int | None,
+    log_every: int,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
+    return evaluate_prepared(
+        base_rows,
+        jobs,
+        checkpoint_path=checkpoint_path,
+        output_csv=output_csv,
+        device=device,
+        scale_x=scale_x,
+        y_pad=y_pad,
+        batch_size=batch_size,
+        log_every=log_every,
+        verbose=verbose,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,23 +409,63 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32, help="Inference batch size.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
+    parser.add_argument("--optuna-trials", type=int, default=0, help="If > 0, tune scale_x and y_pad with Optuna before final evaluation.")
+    parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
+    parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
+    parser.add_argument("--optuna-y-pad-min", type=float, default=-0.25)
+    parser.add_argument("--optuna-y-pad-max", type=float, default=0.25)
+    parser.add_argument(
+        "--optuna-metric",
+        default="global_char_accuracy",
+        choices=[
+            "line_accuracy",
+            "average_char_accuracy",
+            "global_char_accuracy",
+            "average_levenshtein",
+            "total_levenshtein",
+        ],
+    )
+    parser.add_argument("--optuna-trials-out", default=None, help="Optional TSV file with Optuna trial metrics.")
+    parser.add_argument("--optuna-study-name", default=None)
+    parser.add_argument("--optuna-storage", default=None, help="Optional Optuna storage URL, e.g. sqlite:///study.db.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    evaluate(
-        json_path=Path(args.json),
-        images_dir=Path(args.images),
-        checkpoint_path=Path(args.checkpoint),
-        output_csv=Path(args.out),
-        device=args.device,
-        scale_x=args.scale_x,
-        y_pad=args.y_pad,
-        batch_size=args.batch_size,
-        limit=args.limit,
-        log_every=args.log_every,
-    )
+    if args.optuna_trials > 0:
+        optimize_preprocess(
+            json_path=Path(args.json),
+            images_dir=Path(args.images),
+            checkpoint_path=Path(args.checkpoint),
+            output_csv=Path(args.out),
+            device=args.device,
+            batch_size=args.batch_size,
+            limit=args.limit,
+            trials=args.optuna_trials,
+            scale_x_min=args.optuna_scale_x_min,
+            scale_x_max=args.optuna_scale_x_max,
+            y_pad_min=args.optuna_y_pad_min,
+            y_pad_max=args.optuna_y_pad_max,
+            metric_name=args.optuna_metric,
+            log_every=args.log_every,
+            trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
+            study_name=args.optuna_study_name,
+            storage=args.optuna_storage,
+        )
+    else:
+        evaluate(
+            json_path=Path(args.json),
+            images_dir=Path(args.images),
+            checkpoint_path=Path(args.checkpoint),
+            output_csv=Path(args.out),
+            device=args.device,
+            scale_x=args.scale_x,
+            y_pad=args.y_pad,
+            batch_size=args.batch_size,
+            limit=args.limit,
+            log_every=args.log_every,
+        )
 
 
 if __name__ == "__main__":
