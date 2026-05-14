@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import random
 from typing import Any, Iterable
@@ -56,6 +57,13 @@ class SingleLineDatasetConfig(BaseModel):
     image_width: int = Field(default=256, ge=32)
     min_text_length: int = Field(default=4, ge=1)
     max_text_length: int = Field(default=16, ge=1)
+    line_crops: bool = False
+    word_count_min: int = Field(default=2, ge=1)
+    word_count_max: int = Field(default=8, ge=1)
+    word_length_min: int = Field(default=2, ge=1)
+    word_length_max: int = Field(default=8, ge=1)
+    crop_stride: int | None = Field(default=None, ge=1)
+    min_crop_text_length: int = Field(default=1, ge=1)
     font_paths: list[str] | None = None
     font_dir: str | None = None
     font_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_FONT_EXTENSIONS))
@@ -169,6 +177,22 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError("max_text_length must be >= min_text_length")
         return value
 
+    @field_validator("word_count_max")
+    @classmethod
+    def max_word_count_must_be_valid(cls, value: int, info) -> int:
+        min_count = info.data.get("word_count_min")
+        if min_count is not None and value < min_count:
+            raise ValueError("word_count_max must be >= word_count_min")
+        return value
+
+    @field_validator("word_length_max")
+    @classmethod
+    def max_word_length_must_be_valid(cls, value: int, info) -> int:
+        min_length = info.data.get("word_length_min")
+        if min_length is not None and value < min_length:
+            raise ValueError("word_length_max must be >= word_length_min")
+        return value
+
     @field_validator("font_size_max")
     @classmethod
     def max_font_size_must_be_valid(cls, value: int, info) -> int:
@@ -258,13 +282,41 @@ class SingleLineDataset(Dataset):
         return sample.image, sample.target, torch.tensor(sample.length, dtype=torch.long)
 
     def generate_sample_from_index(self, index: int) -> GeneratedLineSample:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+
+        if self.config.line_crops:
+            for sample_index, sample in enumerate(self.iter_generated_samples()):
+                if sample_index == index:
+                    return sample
+            raise IndexError(index)
+
         rng = random.Random(self._sample_seed(index))
         return self.generate_sample(rng)
 
     def generate_sample(self, rng: random.Random | None = None) -> GeneratedLineSample:
         rng = rng or random.Random()
+        if self.config.line_crops:
+            return next(self._iter_line_crop_samples(rng))
+
         text, font = self._make_text_that_fits(rng)
         return self.generate_text_sample(text, rng, font)
+
+    def iter_generated_samples(self) -> Iterable[GeneratedLineSample]:
+        if not self.config.line_crops:
+            for index in range(len(self)):
+                yield self.generate_sample_from_index(index)
+            return
+
+        rng = random.Random(self.config.seed)
+        produced = 0
+        for sample in self._iter_line_crop_samples(rng):
+            yield sample
+            produced += 1
+            if produced >= self.config.samples:
+                return
 
     def generate_text_sample(
         self,
@@ -279,6 +331,214 @@ class SingleLineDataset(Dataset):
             raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
         font = font or self._load_font_that_fits(text, rng)
         image = self._render_text(text, font, rng)
+        return self._make_sample(image, text)
+
+    def _validate_text(self, text: str) -> None:
+        text = self._normalize_spaces(text)
+        if not text:
+            raise ValueError("text must not be empty")
+        missing = sorted(set(text) - set(self.sample_alphabet))
+        if missing:
+            raise ValueError(f"text contains chars outside sample_alphabet: {missing}")
+
+    def _normalize_spaces(self, text: str) -> str:
+        return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
+
+    def _load_font_that_fits(self, text: str, rng: random.Random) -> ImageFont.FreeTypeFont:
+        for _ in range(100):
+            font = self._load_font(rng)
+            if self._text_fits(text, font):
+                return font
+
+        font_paths = list(self.font_paths)
+        rng.shuffle(font_paths)
+        for path in font_paths:
+            font = ImageFont.truetype(path, self.config.font_size_min)
+            if self._text_fits(text, font):
+                return font
+
+        raise ValueError(
+            f"text does not fit image_width={self.config.image_width} "
+            f"with horizontal_padding={self.config.horizontal_padding} "
+            f"and font_size_min={self.config.font_size_min}: {text!r}"
+        )
+
+    def _sample_seed(self, index: int) -> int | None:
+        if self.config.seed is None:
+            return None
+        return self.config.seed + index
+
+    def _iter_line_crop_samples(self, rng: random.Random) -> Iterable[GeneratedLineSample]:
+        while True:
+            crops = self._generate_line_crop_samples(rng)
+            for sample in crops:
+                yield sample
+
+    def _generate_line_crop_samples(self, rng: random.Random) -> list[GeneratedLineSample]:
+        for _ in range(100):
+            text = self._make_line_text(rng)
+            font = self._load_font_for_line(text, rng)
+            image, spans = self._render_long_text(text, font, rng)
+            samples = self._slice_line_image(image, spans)
+            if samples:
+                return samples
+
+        raise RuntimeError("failed to generate non-empty line crops")
+
+    def _make_line_text(self, rng: random.Random) -> str:
+        chars = [char for char in self.sample_alphabet if char != self.config.space_char]
+        if not chars:
+            raise ValueError("sample_alphabet must contain at least one non-space character for line_crops")
+
+        word_count = rng.randint(self.config.word_count_min, self.config.word_count_max)
+        words = []
+        for _ in range(word_count):
+            word_length = rng.randint(self.config.word_length_min, self.config.word_length_max)
+            words.append("".join(rng.choice(chars) for _ in range(word_length)))
+        return self.config.space_char.join(words)
+
+    def _load_font_for_line(self, text: str, rng: random.Random) -> ImageFont.FreeTypeFont:
+        for _ in range(100):
+            font = self._load_font(rng)
+            if self._text_height_fits(text, font):
+                return font
+
+        font_paths = list(self.font_paths)
+        rng.shuffle(font_paths)
+        for path in font_paths:
+            font = ImageFont.truetype(path, self.config.font_size_min)
+            if self._text_height_fits(text, font):
+                return font
+
+        raise ValueError(
+            f"line text does not fit image_height={self.config.image_height} "
+            f"with font_size_min={self.config.font_size_min}: {text!r}"
+        )
+
+    def _make_text_that_fits(self, rng: random.Random) -> tuple[str, ImageFont.FreeTypeFont]:
+        last_error: Exception | None = None
+
+        for _ in range(1000):
+            text_length = rng.randint(self.config.min_text_length, self.config.max_text_length)
+            text = self._normalize_spaces("".join(rng.choice(self.sample_alphabet) for _ in range(text_length)))
+            if not text:
+                continue
+            try:
+                font = self._load_font_that_fits(text, rng)
+                return text, font
+            except ValueError as exc:
+                last_error = exc
+
+        details = f" Last fit error: {last_error}" if last_error is not None else ""
+        raise RuntimeError(
+            "failed to create a text sample that fits the configured image width. "
+            "Decrease min_text_length/max_text_length/font_size_min, "
+            "decrease horizontal_padding, or increase image_width."
+            f"{details}"
+        )
+
+    def _render_text(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        rng: random.Random,
+    ) -> Image.Image:
+        cfg = self.config
+        image = self._make_background(rng)
+        draw = ImageDraw.Draw(image)
+
+        bbox = self._text_bbox(text, font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        x_min = cfg.horizontal_padding - bbox[0]
+        x_max = cfg.image_width - cfg.horizontal_padding - bbox[2]
+        free_x = max(0, x_max - x_min)
+        x = x_min + rng.randint(0, free_x)
+        y_jitter = rng.randint(-2, 2)
+        y_min = -bbox[1]
+        y_max = cfg.image_height - bbox[3]
+        y = (cfg.image_height - text_height) // 2 - bbox[1] + y_jitter
+        y = min(max(y, y_min), y_max)
+        fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
+
+        draw.text((x, y), text, font=font, fill=fill)
+
+        return image
+
+    def _render_long_text(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        rng: random.Random,
+    ) -> tuple[Image.Image, list[tuple[str, float, float]]]:
+        cfg = self.config
+        bbox = self._text_bbox(text, font)
+        text_width = bbox[2] - bbox[0]
+        text_advance = max(1.0, float(font.getlength(text)))
+        x = cfg.horizontal_padding - bbox[0]
+        crop_width = cfg.image_width
+        stride = cfg.crop_stride or crop_width
+        content_right = max(
+            cfg.horizontal_padding + text_width,
+            x + text_advance,
+        )
+        content_width = math.ceil(content_right + cfg.horizontal_padding)
+        crop_count = max(1, math.ceil(max(0, content_width - crop_width) / stride) + 1)
+        line_width = (crop_count - 1) * stride + crop_width
+
+        image = self._make_background(rng, width=line_width, height=cfg.image_height)
+        draw = ImageDraw.Draw(image)
+
+        text_height = bbox[3] - bbox[1]
+        y_jitter = rng.randint(-2, 2)
+        y_min = -bbox[1]
+        y_max = cfg.image_height - bbox[3]
+        y = (cfg.image_height - text_height) // 2 - bbox[1] + y_jitter
+        y = min(max(y, y_min), y_max)
+        fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
+
+        draw.text((x, y), text, font=font, fill=fill)
+
+        spans: list[tuple[str, float, float]] = []
+        for char_index, char in enumerate(text):
+            start = float(x) + float(font.getlength(text[:char_index]))
+            end = float(x) + float(font.getlength(text[: char_index + 1]))
+            if end <= start:
+                end = start + max(1.0, float(font.getlength(char)))
+            spans.append((char, start, end))
+
+        return image, spans
+
+    def _slice_line_image(
+        self,
+        image: Image.Image,
+        spans: list[tuple[str, float, float]],
+    ) -> list[GeneratedLineSample]:
+        cfg = self.config
+        stride = cfg.crop_stride or cfg.image_width
+        samples: list[GeneratedLineSample] = []
+
+        for left in range(0, image.width - cfg.image_width + 1, stride):
+            right = left + cfg.image_width
+            text = self._crop_text(spans, left, right)
+            if len(text) < cfg.min_crop_text_length:
+                continue
+            if len(text) > cfg.max_text_length:
+                continue
+            crop = image.crop((left, 0, right, cfg.image_height))
+            samples.append(self._make_sample(crop, text))
+
+        return samples
+
+    def _crop_text(self, spans: list[tuple[str, float, float]], left: int, right: int) -> str:
+        chars = []
+        for char, start, end in spans:
+            center = (start + end) * 0.5
+            if left <= center < right:
+                chars.append(char)
+        return self._normalize_spaces("".join(chars))
+
+    def _make_sample(self, image: Image.Image, text: str) -> GeneratedLineSample:
         target = self._encode_text(text)
         length = len(text)
 
@@ -296,83 +556,6 @@ class SingleLineDataset(Dataset):
             length=length,
         )
 
-    def _validate_text(self, text: str) -> None:
-        text = self._normalize_spaces(text)
-        if not text:
-            raise ValueError("text must not be empty")
-        missing = sorted(set(text) - set(self.sample_alphabet))
-        if missing:
-            raise ValueError(f"text contains chars outside sample_alphabet: {missing}")
-
-    def _normalize_spaces(self, text: str) -> str:
-        return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
-
-    def _load_font_that_fits(self, text: str, rng: random.Random) -> ImageFont.FreeTypeFont:
-        max_width = self.config.image_width - 2 * self.config.horizontal_padding
-
-        for _ in range(100):
-            font = self._load_font(rng)
-            if sum(self._char_advances(text, font)) <= max_width:
-                return font
-
-        font = self._load_font(rng, size=self.config.font_size_min)
-        if sum(self._char_advances(text, font)) > max_width:
-            raise ValueError(
-                f"text does not fit image_width={self.config.image_width} "
-                f"with horizontal_padding={self.config.horizontal_padding}: {text!r}"
-            )
-        return font
-
-    def _sample_seed(self, index: int) -> int | None:
-        if self.config.seed is None:
-            return None
-        return self.config.seed + index
-
-    def _make_text_that_fits(self, rng: random.Random) -> tuple[str, ImageFont.FreeTypeFont]:
-        max_width = self.config.image_width - 2 * self.config.horizontal_padding
-        last_candidate: tuple[str, ImageFont.FreeTypeFont] | None = None
-
-        for _ in range(100):
-            text_length = rng.randint(self.config.min_text_length, self.config.max_text_length)
-            text = self._normalize_spaces("".join(rng.choice(self.sample_alphabet) for _ in range(text_length)))
-            if not text:
-                continue
-            font = self._load_font(rng)
-            advances = self._char_advances(text, font)
-            last_candidate = (text, font)
-            if sum(advances) <= max_width:
-                return text, font
-
-        if last_candidate is None:
-            raise RuntimeError("failed to create a text sample")
-
-        text, _ = last_candidate
-        smaller_font = self._load_font(rng, size=self.config.font_size_min)
-        return text, smaller_font
-
-    def _render_text(
-        self,
-        text: str,
-        font: ImageFont.FreeTypeFont,
-        rng: random.Random,
-    ) -> Image.Image:
-        cfg = self.config
-        image = self._make_background(rng)
-        draw = ImageDraw.Draw(image)
-
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        free_x = max(0, cfg.image_width - text_width - 2 * cfg.horizontal_padding)
-        x = cfg.horizontal_padding + rng.randint(0, free_x)
-        y_jitter = rng.randint(-2, 2)
-        y = max(0, (cfg.image_height - text_height) // 2 - bbox[1] + y_jitter)
-        fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
-
-        draw.text((x, y), text, font=font, fill=fill)
-
-        return image
-
     def _encode_text(self, text: str) -> torch.Tensor:
         target = torch.zeros(self.config.max_text_length, dtype=torch.long)
         encoded = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
@@ -384,21 +567,25 @@ class SingleLineDataset(Dataset):
         path = rng.choice(self.font_paths)
         return ImageFont.truetype(path, font_size)
 
-    def _make_background(self, rng: random.Random) -> Image.Image:
+    def _make_background(self, rng: random.Random, width: int | None = None, height: int | None = None) -> Image.Image:
         cfg = self.config
+        width = width or cfg.image_width
+        height = height or cfg.image_height
         if not self.background_paths:
-            return Image.new("L", (cfg.image_width, cfg.image_height), color=cfg.background)
+            return Image.new("L", (width, height), color=cfg.background)
 
         path = rng.choice(self.background_paths)
         with Image.open(path) as background_image:
             background_image = background_image.convert("L")
-            return self._random_crop_or_resize_background(background_image, rng)
+            return self._random_crop_or_resize_background(background_image, rng, width, height)
 
-    def _random_crop_or_resize_background(self, image: Image.Image, rng: random.Random) -> Image.Image:
-        cfg = self.config
-        target_width = cfg.image_width
-        target_height = cfg.image_height
-
+    def _random_crop_or_resize_background(
+        self,
+        image: Image.Image,
+        rng: random.Random,
+        target_width: int,
+        target_height: int,
+    ) -> Image.Image:
         scale = max(target_width / image.width, target_height / image.height)
         resized_width = max(target_width, int(round(image.width * scale)))
         resized_height = max(target_height, int(round(image.height * scale)))
@@ -413,6 +600,22 @@ class SingleLineDataset(Dataset):
     @staticmethod
     def _char_advances(text: str, font: ImageFont.FreeTypeFont) -> list[float]:
         return [max(1.0, float(font.getlength(char))) for char in text]
+
+    def _text_fits(self, text: str, font: ImageFont.FreeTypeFont) -> bool:
+        bbox = self._text_bbox(text, font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        max_width = self.config.image_width - 2 * self.config.horizontal_padding
+        return text_width <= max_width and text_height <= self.config.image_height
+
+    def _text_height_fits(self, text: str, font: ImageFont.FreeTypeFont) -> bool:
+        bbox = self._text_bbox(text, font)
+        return bbox[3] - bbox[1] <= self.config.image_height
+
+    @staticmethod
+    def _text_bbox(text: str, font: ImageFont.FreeTypeFont) -> tuple[int, int, int, int]:
+        draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+        return draw.textbbox((0, 0), text, font=font)
 
     @classmethod
     def _resolve_font_paths(

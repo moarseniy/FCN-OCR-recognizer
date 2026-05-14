@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from itertools import islice
 from pathlib import Path
 import shutil
 
@@ -15,14 +16,16 @@ def image_to_uint8(image: torch.Tensor) -> torch.Tensor:
     return (image.detach().cpu().clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)
 
 
-def save_chunk(dataset: SingleLineDataset, start: int, end: int, output_dir: Path, chunk_idx: int) -> dict:
+def save_chunk(samples, output_dir: Path, chunk_idx: int) -> dict:
     images = []
     texts = []
 
-    for index in range(start, end):
-        sample = dataset.generate_sample_from_index(index)
+    for sample in samples:
         images.append(image_to_uint8(sample.image))
         texts.append(sample.text)
+
+    if not images:
+        raise ValueError("cannot save an empty chunk")
 
     filename = f"chunk_{chunk_idx:06d}.pt"
     torch.save(
@@ -32,7 +35,7 @@ def save_chunk(dataset: SingleLineDataset, start: int, end: int, output_dir: Pat
         },
         output_dir / filename,
     )
-    return {"file": filename, "samples": end - start}
+    return {"file": filename, "samples": len(images)}
 
 
 def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
@@ -49,6 +52,13 @@ def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
         "background": config.background,
         "min_text_length": config.min_text_length,
         "max_text_length": config.max_text_length,
+        "line_crops": config.line_crops,
+        "word_count_min": config.word_count_min,
+        "word_count_max": config.word_count_max,
+        "word_length_min": config.word_length_min,
+        "word_length_max": config.word_length_max,
+        "crop_stride": config.crop_stride,
+        "min_crop_text_length": config.min_crop_text_length,
         "dtype": "uint8",
         "chunk_size": config.chunk_size,
         "chunk_count": len(chunks),
@@ -90,11 +100,20 @@ def main() -> None:
 
     total = len(dataset)
     chunks = []
-    for chunk_idx, start in enumerate(range(0, total, generation_config.chunk_size)):
-        end = min(start + generation_config.chunk_size, total)
-        chunk = save_chunk(dataset, start, end, output_dir, chunk_idx)
+    sample_iter = dataset.iter_generated_samples()
+    saved = 0
+    chunk_idx = 0
+    while saved < total:
+        chunk_samples = list(islice(sample_iter, min(generation_config.chunk_size, total - saved)))
+        if not chunk_samples:
+            raise RuntimeError(f"Generator stopped after {saved} samples, expected {total}")
+
+        chunk = save_chunk(chunk_samples, output_dir, chunk_idx)
         chunks.append(chunk)
-        print(f"saved {chunk['file']} [{start}:{end}]")
+        start = saved
+        saved += chunk["samples"]
+        print(f"saved {chunk['file']} [{start}:{saved}]")
+        chunk_idx += 1
     save_metadata(generation_config, chunks, output_dir)
     print(f"Saved {total} samples to {output_dir}")
 
