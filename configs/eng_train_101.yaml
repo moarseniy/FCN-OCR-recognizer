@@ -2,8 +2,8 @@ chunks_dir: ../data/eng_101
 generator_config: null
 
 epochs: 50
-batch_size: 128
-batch_count: null
+batch_size: 1024
+batch_count: 100
 lr: 0.001
 checkpoint_dir: ../checkpoints
 max_train_batches: null
@@ -52,9 +52,9 @@ augmentations:
     radius_max: 1.8
   motion_blur:
     size_min: 3
-    size_max: 9
-    angle_min: -15.0
-    angle_max: 15.0
+    size_max: 8
+    angle_min: -10.0
+    angle_max: 10.0
   scale:
     factor_x_min: 0.8
     factor_x_max: 1.15
