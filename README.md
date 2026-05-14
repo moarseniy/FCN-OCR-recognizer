@@ -125,10 +125,12 @@ python -m synth_generators.line_generator.generate_dataset \
 ```
 
 В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
-`N x C x H x W`) и исходные `texts` как текстовая разметка. Конфиг, алфавит,
-настройки обучения и настройки аугментаций в offline-датасет не сохраняются.
-`output_dir`, `chunk_size` и `overwrite` задаются в generation-конфиге.
-Offline-генерация сохраняет чистые строки без аугментаций.
+`N x C x H x W`) и исходные `texts` как текстовая разметка. Рядом создается
+`metadata.yaml` с параметрами датасета: алфавитом, `space_char`, размерами
+картинок, числом каналов и максимальной длиной текста. Настройки обучения и
+настройки аугментаций в offline-датасет не сохраняются. `output_dir`,
+`chunk_size` и `overwrite` задаются в generation-конфиге. Offline-генерация
+сохраняет чистые строки без аугментаций.
 
 Посмотреть пример из чанка с теми же аугментациями, которые использует
 обучение:
@@ -147,10 +149,13 @@ python synth_generators/line_generator/render_text.py \
 python train.py --config configs/example_train_001.yaml
 ```
 
-В training-конфиге задаются `chunks_dir` или `generator_config`, алфавит,
-learning rate, batch size, workers, checkpoint path, preview-настройки и
-GPU-аугментации. При старте обучения `train.py` читает `texts` из датасета,
-сравнивает символы с training-алфавитом и сохраняет статистику в:
+В training-конфиге задаются `chunks_dir` или `generator_config`, learning rate,
+batch size, workers, checkpoint path, preview-настройки и GPU-аугментации.
+Алфавит, размеры картинок, число каналов и `max_text_length` берутся из
+`metadata.yaml` в папке чанков или из `generator_config`. При необходимости эти
+поля можно явно указать в training-конфиге как override. При старте обучения
+`train.py` читает `texts` из датасета, сравнивает символы с effective-алфавитом
+и сохраняет статистику в:
 
 ```text
 checkpoints/alphabet_stats.tsv

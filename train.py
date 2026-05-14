@@ -1,6 +1,6 @@
 
 # train.py
-from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset
+from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset, load_chunk_metadata
 from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig, SingleLineDataset
 from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 import argparse
@@ -27,13 +27,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
-    space_char: str = " "
-    max_text_length: int = Field(default=64, ge=1)
-    channels: int = Field(default=3, ge=1, le=3)
-    image_height: int = Field(default=48, ge=16)
-    image_width: int = Field(default=256, ge=32)
-    background: int = Field(default=255, ge=0, le=255)
+    alphabet: str | None = None
+    space_char: str | None = None
+    max_text_length: int | None = Field(default=None, ge=1)
+    channels: int | None = Field(default=None, ge=1, le=3)
+    image_height: int | None = Field(default=None, ge=16)
+    image_width: int | None = Field(default=None, ge=32)
+    background: int | None = Field(default=None, ge=0, le=255)
 
     chunks_dir: str | None = None
     generator_config: str | None = None
@@ -79,7 +79,9 @@ class TrainingConfig(BaseModel):
 
     @field_validator("alphabet")
     @classmethod
-    def alphabet_must_be_unique(cls, value: str) -> str:
+    def alphabet_must_be_unique(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
         if not value:
             raise ValueError("alphabet must not be empty")
         if len(set(value)) != len(value):
@@ -484,29 +486,69 @@ def load_training_config(config_path: str | Path) -> tuple[TrainingConfig, dict]
     return TrainingConfig.model_validate_with_paths(config_data, config_path), config_data
 
 
-def dataset_config_from_training_config(config: TrainingConfig) -> SingleLineDatasetConfig:
-    return SingleLineDatasetConfig.model_validate(
+DATASET_CONFIG_OVERRIDE_FIELDS = (
+    "alphabet",
+    "space_char",
+    "max_text_length",
+    "channels",
+    "image_height",
+    "image_width",
+    "background",
+)
+
+
+def dataset_config_from_training_config(
+    config: TrainingConfig,
+    base_data: dict[str, Any] | None = None,
+) -> SingleLineDatasetConfig:
+    data = dict(base_data or {})
+
+    for field_name in DATASET_CONFIG_OVERRIDE_FIELDS:
+        value = getattr(config, field_name)
+        if field_name in config.model_fields_set and value is not None:
+            data[field_name] = value
+
+    data.update(
         {
-            "alphabet": config.alphabet,
-            "space_char": config.space_char,
-            "max_text_length": config.max_text_length,
-            "channels": config.channels,
-            "image_height": config.image_height,
-            "image_width": config.image_width,
-            "background": config.background,
             "seed": config.seed,
             "augmentation_probabilities": config.augmentation_probabilities,
             "augmentations": config.augmentations,
         }
     )
 
+    dataset_config = SingleLineDatasetConfig.model_validate(data)
+    if dataset_config.alphabet is None:
+        dataset_config = dataset_config.model_copy(update={"alphabet": dataset_config.sample_alphabet})
+    return dataset_config
+
+
+def effective_training_config_data(config: TrainingConfig, dataset_config: SingleLineDatasetConfig) -> dict:
+    data = config.model_dump()
+    data.update(
+        {
+            "alphabet": dataset_config.alphabet,
+            "sample_alphabet": dataset_config.sample_alphabet,
+            "space_char": dataset_config.space_char,
+            "max_text_length": dataset_config.max_text_length,
+            "channels": dataset_config.channels,
+            "image_height": dataset_config.image_height,
+            "image_width": dataset_config.image_width,
+            "background": dataset_config.background,
+        }
+    )
+    return data
+
 
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
-    dataset_config = dataset_config_from_training_config(config)
-
     if config.chunks_dir:
+        metadata = load_chunk_metadata(config.chunks_dir)
+        dataset_config = dataset_config_from_training_config(config, metadata)
         dataset = ChunkedLineDataset(config.chunks_dir, cache_size=config.chunk_cache_size, config=dataset_config)
         print(f"Dataset source: chunks ({config.chunks_dir})")
+        if metadata:
+            print(f"Dataset metadata: {Path(config.chunks_dir) / 'metadata.yaml'}")
+        else:
+            print("Dataset metadata: not found; using training config/defaults")
         return dataset, dataset_config
 
     if not config.generator_config:
@@ -515,20 +557,7 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
     with Path(config.generator_config).open("r") as file:
         generator_data = yaml.safe_load(file)
     generator_config = SingleLineDatasetConfig.model_validate_with_paths(generator_data, config.generator_config)
-    generator_config = generator_config.model_copy(
-        update={
-            "alphabet": config.alphabet,
-            "space_char": config.space_char,
-            "max_text_length": config.max_text_length,
-            "channels": config.channels,
-            "image_height": config.image_height,
-            "image_width": config.image_width,
-            "background": config.background,
-            "seed": config.seed,
-            "augmentation_probabilities": config.augmentation_probabilities,
-            "augmentations": config.augmentations,
-        }
-    )
+    generator_config = dataset_config_from_training_config(config, generator_config.model_dump())
 
     dataset = SingleLineDataset(generator_config)
     print(f"Dataset source: online generator ({config.generator_config})")
@@ -652,15 +681,15 @@ def validate_and_log_alphabet(dataset, alphabet: str, max_text_length: int, chec
 if __name__ == "__main__":
     cli_args = parse_args()
     args, _ = load_training_config(cli_args.config)
-    config_data = args.model_dump()
     print("START!")
     dataset, dataset_config = load_dataset_from_config(args)
+    config_data = effective_training_config_data(args, dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
     checkpoint_dir = args.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
     log_path = Path(checkpoint_dir) / "training_log.tsv"
-    validate_and_log_alphabet(dataset, args.alphabet, args.max_text_length, checkpoint_dir)
+    validate_and_log_alphabet(dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir)
 
     if not 0.0 < args.val_fraction < 1.0:
         raise ValueError("--val-fraction must be between 0 and 1")

@@ -13,9 +13,11 @@ import torch
 import yaml
 
 try:
+    from .chunk_dataset import load_chunk_metadata
     from .dataset import SingleLineDataset, SingleLineDatasetConfig
     from .gpu_augmentations import GpuTextAugmenter
 except ImportError:
+    from chunk_dataset import load_chunk_metadata
     from dataset import SingleLineDataset, SingleLineDatasetConfig
     from gpu_augmentations import GpuTextAugmenter
 
@@ -57,10 +59,18 @@ def tensor_to_float_image(sample_tensor: torch.Tensor) -> torch.Tensor:
     raise ValueError(f"Unsupported image tensor shape: {tuple(tensor.shape)}")
 
 
-def load_config(config_path: Path) -> SingleLineDatasetConfig:
+def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLineDatasetConfig:
     with config_path.open("r") as file:
         raw_config = yaml.safe_load(file) or {}
-    return SingleLineDatasetConfig.model_validate_with_paths(raw_config, config_path)
+
+    config_data = {}
+    if chunks_dir is not None:
+        config_data.update(load_chunk_metadata(chunks_dir))
+    config_data.update(raw_config)
+    config = SingleLineDatasetConfig.model_validate_with_paths(config_data, config_path)
+    if config.alphabet is None:
+        config = config.model_copy(update={"alphabet": config.sample_alphabet})
+    return config
 
 
 def resolve_device(device_name: str) -> torch.device:
@@ -123,6 +133,10 @@ def load_torch_chunk(path: Path) -> dict[str, Any]:
         return torch.load(path, map_location="cpu", weights_only=False)
 
 
+def normalize_text(text: str, config: SingleLineDatasetConfig) -> str:
+    return config.space_char.join(part for part in text.split(config.space_char) if part)
+
+
 def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     lines = [
         f"source: {metadata['source']}",
@@ -179,7 +193,7 @@ def main() -> None:
     parser.add_argument("--index", type=int, default=0, help="Sample index for --chunks-dir.")
     parser.add_argument(
         "--config",
-        default="synth_generators/line_generator/configs/example.yaml",
+        default="synth_generators/line_generator/configs/example_001.yaml",
         help="Path to line generator YAML config.",
     )
     parser.add_argument("--output", default="rendered_text.png", help="Output image path.")
@@ -198,8 +212,9 @@ def main() -> None:
         parser.error("Pass exactly one of --text or --chunks-dir.")
 
     config_path = Path(args.config)
-    config = load_config(config_path)
-    dataset = SingleLineDataset(config)
+    chunks_dir = Path(args.chunks_dir) if args.chunks_dir else None
+    config = load_config(config_path, chunks_dir)
+    dataset = None if chunks_dir else SingleLineDataset(config)
     rng = random.Random(args.seed)
     if args.seed is not None:
         random.seed(args.seed)
@@ -209,9 +224,9 @@ def main() -> None:
     device = resolve_device(args.device)
 
     source_metadata: dict[str, Any] = {}
-    if args.chunks_dir:
-        image_tensor, text, source_metadata = load_chunk_sample(Path(args.chunks_dir), args.index)
-        text = dataset._normalize_spaces(text)
+    if chunks_dir:
+        image_tensor, text, source_metadata = load_chunk_sample(chunks_dir, args.index)
+        text = normalize_text(text, config)
         image_tensor, augmentations = apply_augmentations(
             image_tensor,
             config,
@@ -220,6 +235,8 @@ def main() -> None:
         )
         source = "chunk"
     else:
+        if dataset is None:
+            raise RuntimeError("dataset must be initialized for text rendering")
         sample = dataset.generate_text_sample(args.text, rng)
         text = sample.text
         image_tensor, augmentations = apply_augmentations(

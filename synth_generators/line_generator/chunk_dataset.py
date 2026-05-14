@@ -6,8 +6,28 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
+import yaml
 
-from .dataset import SingleLineDatasetConfig
+try:
+    from .dataset import SingleLineDatasetConfig
+except ImportError:
+    from dataset import SingleLineDatasetConfig
+
+
+CHUNK_METADATA_FILENAME = "metadata.yaml"
+
+
+def load_chunk_metadata(root_dir: str | Path) -> dict:
+    metadata_path = Path(root_dir) / CHUNK_METADATA_FILENAME
+    if not metadata_path.exists():
+        return {}
+
+    with metadata_path.open("r", encoding="utf-8") as file:
+        metadata = yaml.safe_load(file) or {}
+
+    if not isinstance(metadata, dict):
+        raise ValueError(f"Chunk metadata must be a mapping: {metadata_path}")
+    return metadata
 
 
 class ChunkedLineDataset(Dataset):
@@ -17,6 +37,7 @@ class ChunkedLineDataset(Dataset):
         self.root_dir = Path(root_dir)
         self.cache_size = max(1, cache_size)
         self.config = config
+        self.metadata = load_chunk_metadata(self.root_dir)
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)} if config else {}
         chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
         if not chunk_paths:
