@@ -1,7 +1,7 @@
 sample_alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 space_char: " "
 samples: 100000
-output_dir: ../../../data/line_chunks
+output_dir: ../../../data
 chunk_size: 1024
 overwrite: false
 image_height: 32

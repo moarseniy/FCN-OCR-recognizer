@@ -129,15 +129,16 @@ python -m synth_generators.line_generator.generate_dataset \
 `metadata.yaml` с параметрами датасета: алфавитом, `space_char`, размерами
 картинок, числом каналов и максимальной длиной текста. Настройки обучения и
 настройки аугментаций в offline-датасет не сохраняются. `output_dir`,
-`chunk_size` и `overwrite` задаются в generation-конфиге. Offline-генерация
-сохраняет чистые строки без аугментаций.
+`chunk_size` и `overwrite` задаются в generation-конфиге. Датасет сохраняется
+в подпапку с именем generation-конфига, например `data/example_001`.
+Offline-генерация сохраняет чистые строки без аугментаций.
 
 Посмотреть пример из чанка с теми же аугментациями, которые использует
 обучение:
 
 ```bash
 python synth_generators/line_generator/render_text.py \
-  --chunks-dir data/line_chunks \
+  --chunks-dir data/example_001 \
   --index 0 \
   --config configs/example_train_001.yaml \
   --output output/render_chunk.png

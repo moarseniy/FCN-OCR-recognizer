@@ -1,4 +1,4 @@
-chunks_dir: ../data/line_chunks
+chunks_dir: ../data/example_101
 generator_config: null
 
 epochs: 50

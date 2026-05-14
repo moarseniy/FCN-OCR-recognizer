@@ -79,6 +79,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_output_dir(config_path: Path, configured_output_dir: str) -> Path:
+    output_root = Path(configured_output_dir)
+    dataset_name = config_path.stem
+    if output_root.name == dataset_name:
+        return output_root
+    if output_root.name == "line_chunks":
+        return output_root.parent / dataset_name
+    return output_root / dataset_name
+
+
 def main() -> None:
     args = parse_args()
     config_path = Path(args.config)
@@ -89,7 +99,7 @@ def main() -> None:
     if generation_config.output_dir is None:
         raise ValueError("Generation config must contain output_dir")
 
-    output_dir = Path(generation_config.output_dir)
+    output_dir = resolve_output_dir(config_path, generation_config.output_dir)
     if output_dir.exists():
         if not generation_config.overwrite:
             raise FileExistsError(f"Output dir already exists: {output_dir}. Set overwrite: true to replace it.")

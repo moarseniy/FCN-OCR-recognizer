@@ -43,31 +43,6 @@ def tensor_to_image(sample_tensor: torch.Tensor) -> Image.Image:
     return Image.fromarray(array)
 
 
-def scale_preview_image(
-    image: Image.Image,
-    min_width: int,
-    max_width: int,
-) -> tuple[Image.Image, float]:
-    if image.width <= 0:
-        return image, 1.0
-
-    scale = 1.0
-    if min_width > 0 and image.width < min_width:
-        scale = min_width / image.width
-    if max_width > 0 and image.width * scale > max_width:
-        scale = max_width / image.width
-
-    if scale == 1.0:
-        return image, scale
-
-    new_size = (
-        max(1, round(image.width * scale)),
-        max(1, round(image.height * scale)),
-    )
-    resampling = Image.Resampling.NEAREST if scale > 1.0 else Image.Resampling.BICUBIC
-    return image.resize(new_size, resampling), scale
-
-
 def tensor_to_float_image(sample_tensor: torch.Tensor) -> torch.Tensor:
     tensor = sample_tensor.detach().cpu()
     if tensor.dtype == torch.uint8:
@@ -167,7 +142,6 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
         f"source: {metadata['source']}",
         f"text: {metadata['text']!r}",
         f"image: {metadata['image_size'][0]}x{metadata['image_size'][1]}",
-        f"preview: {metadata['preview_size'][0]}x{metadata['preview_size'][1]} scale={metadata['preview_scale']:.3f}",
         f"seed: {metadata['seed']}",
         f"device: {metadata['device']}",
     ]
@@ -186,11 +160,14 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     return lines
 
 
-def annotate_image(image: Image.Image, metadata: dict[str, Any]) -> Image.Image:
+def annotate_image(image: Image.Image, metadata: dict[str, Any], canvas_width: int) -> Image.Image:
     font = ImageFont.load_default()
     draw_probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    padding = 12
+    image_width = image.width + padding * 2
+    canvas_width = max(canvas_width, image_width)
     char_width = max(1, draw_probe.textbbox((0, 0), "M", font=font)[2])
-    max_chars = max(16, (image.width - 16) // char_width)
+    max_chars = max(24, (canvas_width - padding * 2) // char_width)
     wrapped_lines: list[str] = []
     for line in annotation_lines(metadata):
         wrapped = textwrap.wrap(line, width=max_chars, subsequent_indent="    ") or [line]
@@ -198,15 +175,19 @@ def annotate_image(image: Image.Image, metadata: dict[str, Any]) -> Image.Image:
 
     text_bbox = draw_probe.textbbox((0, 0), "Ag", font=font)
     line_height = int(text_bbox[3] - text_bbox[1]) + 5
-    padding = 8
+    image_band_height = image.height + padding * 2
     panel_height = padding * 2 + line_height * len(wrapped_lines)
 
-    canvas = Image.new("RGB", (image.width, image.height + panel_height), color=(245, 245, 245))
-    canvas.paste(image.convert("RGB"), (0, 0))
+    canvas = Image.new("RGB", (canvas_width, image_band_height + panel_height), color=(245, 245, 245))
+    canvas.paste(image.convert("RGB"), (padding, padding))
     draw = ImageDraw.Draw(canvas)
-    draw.rectangle((0, image.height, image.width, image.height + panel_height), fill=(245, 245, 245))
+    draw.rectangle(
+        (padding - 1, padding - 1, padding + image.width, padding + image.height),
+        outline=(180, 180, 180),
+    )
+    draw.rectangle((0, image_band_height, canvas_width, image_band_height + panel_height), fill=(245, 245, 245))
 
-    y = image.height + padding
+    y = image_band_height + padding
     for line in wrapped_lines:
         draw.text((padding, y), line, fill=(20, 20, 20), font=font)
         y += line_height
@@ -231,8 +212,7 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for render/augmentation sampling.")
     parser.add_argument("--device", default="auto", help="Augmentation device: auto, cpu, cuda, cuda:0, ...")
-    parser.add_argument("--preview-min-width", type=int, default=512, help="Scale rendered preview up to this width; 0 disables.")
-    parser.add_argument("--preview-max-width", type=int, default=1280, help="Scale rendered preview down to this width; 0 disables.")
+    parser.add_argument("--canvas-width", type=int, default=900, help="Annotated output width without scaling the source crop.")
     parser.add_argument("--annotate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--no-augmentations", action="store_true", help="Disable render-time augmentations.")
     args = parser.parse_args()
@@ -276,18 +256,11 @@ def main() -> None:
         )
         source = "text"
     image = tensor_to_image(image_tensor)
-    preview_image, preview_scale = scale_preview_image(
-        image,
-        min_width=args.preview_min_width,
-        max_width=args.preview_max_width,
-    )
 
     metadata = {
         "source": source,
         "text": text,
         "image_size": [image.width, image.height],
-        "preview_size": [preview_image.width, preview_image.height],
-        "preview_scale": preview_scale,
         "seed": args.seed,
         "config": str(config_path),
         "device": str(device),
@@ -297,7 +270,8 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_image = annotate_image(preview_image, metadata) if args.annotate else preview_image
+    output_image = annotate_image(image, metadata, args.canvas_width) if args.annotate else image
+    metadata["output_size"] = [output_image.width, output_image.height]
     output_image.save(output_path)
 
     metadata_path = Path(args.metadata_output) if args.metadata_output else output_path.with_suffix(".json")
@@ -309,7 +283,7 @@ def main() -> None:
     print(f"Saved metadata: {metadata_path}")
     print(f"Text: {text!r}")
     print(f"Image size: {image.width}x{image.height}")
-    print(f"Preview size: {preview_image.width}x{preview_image.height} (scale {preview_scale:.3f})")
+    print(f"Output size: {output_image.width}x{output_image.height}")
     print(f"Augmentations: {len(augmentations)}")
 
 
