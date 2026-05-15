@@ -6,9 +6,10 @@ from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 import argparse
 from collections import Counter
 import math
+import shutil
 import time
 import yaml
-from typing import Any
+from typing import Any, Callable
 from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
@@ -147,7 +148,43 @@ def save_checkpoint(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}_{timestamp}.pth')
 
-    checkpoint = {
+    checkpoint = build_checkpoint(
+        model,
+        optimizer,
+        epoch,
+        loss,
+        val_loss,
+        alphabet,
+        config,
+        train_losses,
+        val_losses,
+        scheduler=scheduler,
+    )
+
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint saved to {checkpoint_path}")
+
+    # Сохраняем также последнюю модель
+    latest_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+    torch.save(checkpoint, latest_path)
+    print(f"Latest checkpoint saved to {latest_path}")
+
+    return checkpoint_path
+
+
+def build_checkpoint(
+    model,
+    optimizer,
+    epoch,
+    loss,
+    val_loss,
+    alphabet,
+    config,
+    train_losses,
+    val_losses,
+    scheduler=None,
+):
+    return {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
@@ -165,15 +202,38 @@ def save_checkpoint(
         'val_losses': val_losses,
     }
 
-    torch.save(checkpoint, checkpoint_path)
-    print(f"Checkpoint saved to {checkpoint_path}")
 
-    # Сохраняем также последнюю модель
-    latest_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
-    torch.save(checkpoint, latest_path)
-    print(f"Latest checkpoint saved to {latest_path}")
-
-    return checkpoint_path
+def save_named_checkpoint(
+    path: str | Path,
+    model,
+    optimizer,
+    epoch,
+    loss,
+    val_loss,
+    alphabet,
+    config,
+    train_losses,
+    val_losses,
+    scheduler=None,
+) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        build_checkpoint(
+            model,
+            optimizer,
+            epoch,
+            loss,
+            val_loss,
+            alphabet,
+            config,
+            train_losses,
+            val_losses,
+            scheduler=scheduler,
+        ),
+        path,
+    )
+    return path
 
 
 def create_scheduler(optimizer, config: TrainingConfig):
@@ -392,11 +452,6 @@ class InputPreviewSaver:
             self.labels_file.close()
             self.labels_file = None
             print(f"Saved {self.saved} input previews to {self.output_path}")
-
-def batch_count(sample_count, batch_size, drop_last):
-    if drop_last:
-        return sample_count // batch_size
-    return math.ceil(sample_count / batch_size)
 
 def append_training_log(log_path, row):
     is_new_file = not log_path.exists()
@@ -744,21 +799,29 @@ def validate_and_log_alphabet(dataset, alphabet: str, max_text_length: int, chec
         raise ValueError(f"Training alphabet is missing data chars: {printable}")
 
 
-if __name__ == "__main__":
-    cli_args = parse_args()
-    args, _ = load_training_config(cli_args.config)
+EpochCallback = Callable[[dict[str, Any]], None]
+
+
+def run_training(
+    config_path: str | Path,
+    after_epoch: EpochCallback | None = None,
+    checkpoint_every: int | None = 5,
+    banner: str = "Starting training...",
+    completion_title: str = "Training completed!",
+) -> dict[str, Any]:
+    args, _ = load_training_config(config_path)
     print("START!")
     dataset, dataset_config = load_dataset_from_config(args)
     config_data = effective_training_config_data(args, dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
-    checkpoint_dir = args.checkpoint_dir
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    log_path = Path(checkpoint_dir) / "training_log.tsv"
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    log_path = checkpoint_dir / "training_log.tsv"
     validate_and_log_alphabet(dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir)
 
     if not 0.0 < args.val_fraction < 1.0:
-        raise ValueError("--val-fraction must be between 0 and 1")
+        raise ValueError("val_fraction must be between 0 and 1")
 
     val_size = max(1, int(len(dataset) * args.val_fraction))
     train_size = len(dataset) - val_size
@@ -788,7 +851,13 @@ if __name__ == "__main__":
         seed=dataset_config.seed or 0,
         batch_count=args.batch_count,
     )
-    val_loader = make_data_loader(dataset, val_dataset, args, shuffle=False, seed=(dataset_config.seed or 0) + 100_000)
+    val_loader = make_data_loader(
+        dataset,
+        val_dataset,
+        args,
+        shuffle=False,
+        seed=(dataset_config.seed or 0) + 100_000,
+    )
 
     train_batches = len(train_loader)
     val_batches = len(val_loader)
@@ -838,7 +907,7 @@ if __name__ == "__main__":
 
     model = FullyConvTextRecognizer(
         in_channels=dataset_config.channels,
-        num_classes=len(alphabet) + 1
+        num_classes=len(alphabet) + 1,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -850,177 +919,217 @@ if __name__ == "__main__":
             f"min_lr={args.scheduler_min_lr:g}"
         )
 
-    # Списки для хранения истории лоссов
     train_losses = []
     val_losses = []
-
     start_epoch = 0
-    best_val_loss = float('inf')
-    best_train_loss = float('inf')
+    best_val_loss = float("inf")
+    best_train_loss = float("inf")
 
-    # Можно загрузить последний чекпоинт если нужно продолжить обучение
-    latest_checkpoint = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
-    if args.resume and os.path.exists(latest_checkpoint):
+    latest_checkpoint = checkpoint_dir / "latest_checkpoint.pth"
+    if args.resume and latest_checkpoint.exists():
         print("Found latest checkpoint, loading...")
         checkpoint = torch.load(latest_checkpoint, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        start_epoch = checkpoint['epoch'] + 1
-
-        # Загружаем историю лоссов если она есть
-        if 'train_losses' in checkpoint:
-            train_losses = checkpoint['train_losses']
-            val_losses = checkpoint['val_losses']
-            best_val_loss = min(val_losses) if val_losses else float('inf')
-            best_train_loss = min(train_losses) if train_losses else float('inf')
-
+        start_epoch = checkpoint["epoch"] + 1
+        train_losses = checkpoint.get("train_losses", [])
+        val_losses = checkpoint.get("val_losses", [])
+        best_val_loss = min(val_losses) if val_losses else float("inf")
+        best_train_loss = min(train_losses) if train_losses else float("inf")
         print(f"Resuming from epoch {start_epoch}")
 
-    print("\n" + "="*60)
-    print("Starting training...")
-    print("="*60 + "\n")
+    print("\n" + "=" * 60)
+    print(banner)
+    print("=" * 60 + "\n")
 
-    for epoch in range(start_epoch, args.epochs):
-        epoch_started_at = time.perf_counter()
-        print(f"\nEpoch {epoch + 1}/{args.epochs}")
+    try:
+        for epoch in range(start_epoch, args.epochs):
+            epoch_started_at = time.perf_counter()
+            print(f"\nEpoch {epoch + 1}/{args.epochs}")
 
-        train_stats = train_one_epoch(
-            model,
-            train_loader,
-            optimizer,
-            device,
-            blank_idx,
-            args.max_train_batches,
-            train_preview_saver,
-            args.log_every,
-            train_augmenter,
-        )
-        train_loss = train_stats["loss"]
-        train_losses.append(train_loss)
-
-        val_stats = validate(
-            model,
-            val_loader,
-            device,
-            blank_idx,
-            args.max_val_batches,
-            val_preview_saver,
-            args.log_every,
-            val_augmenter,
-        )
-        val_loss = val_stats["loss"]
-        val_losses.append(val_loss)
-
-        epoch_seconds = time.perf_counter() - epoch_started_at
-        is_best_val = val_loss < best_val_loss
-        old_lr, lr = step_scheduler(scheduler, args, val_loss, optimizer)
-
-        append_training_log(
-            log_path,
-            {
-                "epoch": epoch,
-                "train_loss": train_loss,
-                "val_loss": val_loss,
-                "train_batches": train_stats["batches"],
-                "val_batches": val_stats["batches"],
-                "train_samples": train_stats["samples"],
-                "val_samples": val_stats["samples"],
-                "lr": lr,
-                "epoch_seconds": epoch_seconds,
-                "is_best": is_best_val,
-            },
-        )
-
-        print(
-            f"  train loss={train_loss:.6f} "
-            f"({train_stats['batches']} batches, {train_stats['samples']} samples, {train_stats['seconds']:.1f}s)"
-        )
-        print(
-            f"  val   loss={val_loss:.6f} "
-            f"({val_stats['batches']} batches, {val_stats['samples']} samples, {val_stats['seconds']:.1f}s)"
-        )
-        print(f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s")
-        if lr != old_lr:
-            print(f"  scheduler changed lr: {old_lr:.3g} -> {lr:.3g}")
-
-        if train_loss < val_loss * 0.7:
-            print("  warning: possible overfitting")
-
-        # Сохраняем чекпоинт каждые 5 эпох
-        if epoch % 5 == 0:
-            save_checkpoint(
+            train_stats = train_one_epoch(
                 model,
+                train_loader,
                 optimizer,
-                epoch,
-                train_loss,
-                val_loss,
-                alphabet,
-                config_data,
-                train_losses,
-                val_losses,
-                checkpoint_dir,
-                scheduler=scheduler,
+                device,
+                blank_idx,
+                args.max_train_batches,
+                train_preview_saver,
+                args.log_every,
+                train_augmenter,
+            )
+            train_loss = train_stats["loss"]
+            train_losses.append(train_loss)
+
+            val_stats = validate(
+                model,
+                val_loader,
+                device,
+                blank_idx,
+                args.max_val_batches,
+                val_preview_saver,
+                args.log_every,
+                val_augmenter,
+            )
+            val_loss = val_stats["loss"]
+            val_losses.append(val_loss)
+
+            epoch_seconds = time.perf_counter() - epoch_started_at
+            is_best_val = val_loss < best_val_loss
+            is_best_train = train_loss < best_train_loss
+            old_lr, lr = step_scheduler(scheduler, args, val_loss, optimizer)
+
+            append_training_log(
+                log_path,
+                {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "train_batches": train_stats["batches"],
+                    "val_batches": val_stats["batches"],
+                    "train_samples": train_stats["samples"],
+                    "val_samples": val_stats["samples"],
+                    "lr": lr,
+                    "epoch_seconds": epoch_seconds,
+                    "is_best": is_best_val,
+                },
             )
 
-            # Сохраняем лучшую модель по валидационному лоссу
-        if is_best_val:
-            best_val_loss = val_loss
-            best_checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-                'loss': train_loss,
-                'val_loss': val_loss,
-                'alphabet': alphabet,
-                'config': config_data,
-                'model_config': {
-                    'in_channels': dataset_config.channels,
-                    'num_classes': len(alphabet) + 1,
-                    'blank_idx': blank_idx,
-                },
-                'train_losses': train_losses,
-                'val_losses': val_losses
-            }
-            torch.save(checkpoint, best_checkpoint_path)
-            print(f"  best model saved: {best_checkpoint_path}")
+            print(
+                f"  train loss={train_loss:.6f} "
+                f"({train_stats['batches']} batches, {train_stats['samples']} samples, {train_stats['seconds']:.1f}s)"
+            )
+            print(
+                f"  val   loss={val_loss:.6f} "
+                f"({val_stats['batches']} batches, {val_stats['samples']} samples, {val_stats['seconds']:.1f}s)"
+            )
+            print(f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s")
+            if lr != old_lr:
+                print(f"  scheduler changed lr: {old_lr:.3g} -> {lr:.3g}")
 
-        # Сохраняем лучшую модель по тренировочному лоссу (для сравнения)
-        if train_loss < best_train_loss:
-            best_train_loss = train_loss
-            best_train_checkpoint_path = os.path.join(checkpoint_dir, 'best_train_model.pth')
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-                'loss': train_loss,
-                'val_loss': val_loss,
-                'alphabet': alphabet,
-                'config': config_data,
-                'model_config': {
-                    'in_channels': dataset_config.channels,
-                    'num_classes': len(alphabet) + 1,
-                    'blank_idx': blank_idx,
-                },
-                'train_losses': train_losses,
-                'val_losses': val_losses
-            }
-            torch.save(checkpoint, best_train_checkpoint_path)
+            if train_loss < val_loss * 0.7:
+                print("  warning: possible overfitting")
 
-        print("-" * 60)
+            checkpoint_path: Path | None = None
+            if checkpoint_every is not None and epoch % checkpoint_every == 0:
+                checkpoint_path = Path(
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        epoch,
+                        train_loss,
+                        val_loss,
+                        alphabet,
+                        config_data,
+                        train_losses,
+                        val_losses,
+                        checkpoint_dir,
+                        scheduler=scheduler,
+                    )
+                )
 
-    if train_preview_saver is not None:
-        train_preview_saver.close()
-    if val_preview_saver is not None:
-        val_preview_saver.close()
+            if is_best_val:
+                best_val_loss = val_loss
+                best_checkpoint_path = checkpoint_dir / "best_model.pth"
+                if checkpoint_path is not None:
+                    shutil.copy2(checkpoint_path, best_checkpoint_path)
+                else:
+                    save_named_checkpoint(
+                        best_checkpoint_path,
+                        model,
+                        optimizer,
+                        epoch,
+                        train_loss,
+                        val_loss,
+                        alphabet,
+                        config_data,
+                        train_losses,
+                        val_losses,
+                        scheduler=scheduler,
+                    )
+                print(f"  best model saved: {best_checkpoint_path}")
 
-    print("\n" + "="*60)
-    print("Training completed!")
+            if is_best_train:
+                best_train_loss = train_loss
+                best_train_checkpoint_path = checkpoint_dir / "best_train_model.pth"
+                if checkpoint_path is not None:
+                    shutil.copy2(checkpoint_path, best_train_checkpoint_path)
+                else:
+                    save_named_checkpoint(
+                        best_train_checkpoint_path,
+                        model,
+                        optimizer,
+                        epoch,
+                        train_loss,
+                        val_loss,
+                        alphabet,
+                        config_data,
+                        train_losses,
+                        val_losses,
+                        scheduler=scheduler,
+                    )
+
+            if after_epoch is not None:
+                if checkpoint_path is None:
+                    checkpoint_path = Path(
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            epoch,
+                            train_loss,
+                            val_loss,
+                            alphabet,
+                            config_data,
+                            train_losses,
+                            val_losses,
+                            checkpoint_dir,
+                            scheduler=scheduler,
+                        )
+                    )
+                after_epoch(
+                    {
+                        "epoch": epoch,
+                        "checkpoint_path": checkpoint_path,
+                        "checkpoint_dir": checkpoint_dir,
+                        "training_log_path": log_path,
+                        "train_loss": train_loss,
+                        "val_loss": val_loss,
+                        "train_stats": train_stats,
+                        "val_stats": val_stats,
+                        "lr": lr,
+                        "epoch_seconds": epoch_seconds,
+                        "is_best_val": is_best_val,
+                        "is_best_train": is_best_train,
+                    }
+                )
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("-" * 60)
+    finally:
+        if train_preview_saver is not None:
+            train_preview_saver.close()
+        if val_preview_saver is not None:
+            val_preview_saver.close()
+
+    print("\n" + "=" * 60)
+    print(completion_title)
     print(f"Best validation loss: {best_val_loss:.8f}")
     print(f"Best training loss:   {best_train_loss:.8f}")
     print(f"Training log: {log_path}")
-    print("="*60)
+    print("=" * 60)
+
+    return {
+        "best_val_loss": best_val_loss,
+        "best_train_loss": best_train_loss,
+        "training_log_path": log_path,
+        "checkpoint_dir": checkpoint_dir,
+    }
+
+
+if __name__ == "__main__":
+    cli_args = parse_args()
+    run_training(cli_args.config)

@@ -130,10 +130,11 @@ augmentations:
 `random_line` добавляет почти горизонтальную линию под небольшим углом.
 Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 
-Сохранить один пример изображения:
+Сохранить один пример изображения по указанному тексту:
 
 ```bash
-python -m synth_generators.line_generator.preview \
+python synth_generators/line_generator/render_text.py \
+  --text "ABC 123" \
   --config synth_generators/line_generator/configs/eng_001.yaml \
   --output synthetic_line_preview.png
 ```
@@ -267,7 +268,10 @@ resume: true
 Инференс на синтетическом примере:
 
 ```bash
-python inference.py --checkpoint checkpoints/best_model.pth --sample-index 0
+python inference.py \
+  --checkpoint checkpoints/best_model.pth \
+  --sample-index 0 \
+  --config synth_generators/line_generator/configs/eng_001.yaml
 ```
 
 Сохранить читаемую debug-картинку с исходным изображением, изображением после

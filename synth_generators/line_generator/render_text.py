@@ -201,7 +201,7 @@ def main() -> None:
     parser.add_argument("--index", type=int, default=0, help="Sample index for --chunks-dir.")
     parser.add_argument(
         "--config",
-        default="synth_generators/line_generator/configs/example_001.yaml",
+        required=True,
         help="Path to line generator YAML config.",
     )
     parser.add_argument("--output", default="rendered_text.png", help="Output image path.")

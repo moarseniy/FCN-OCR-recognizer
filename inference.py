@@ -18,7 +18,6 @@ from fcn_ocr import (
 from synth_generators.line_generator.dataset import SingleLineDataset, SingleLineDatasetConfig
 
 
-DEFAULT_CONFIG = "synth_generators/line_generator/configs/example_001.yaml"
 __all__ = [
     "ClassConfidence",
     "DecodedSymbol",
@@ -32,22 +31,13 @@ __all__ = [
 
 
 def load_dataset_config(
-    config_path: str | Path | None,
-    checkpoint_config: dict | None = None,
+    config_path: str | Path,
 ) -> SingleLineDatasetConfig:
-    if config_path:
-        path = Path(config_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Dataset config not found: {path}")
-        with path.open("r") as file:
-            return SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), path)
-
-    if checkpoint_config:
-        return SingleLineDatasetConfig.model_validate(checkpoint_config)
-
-    default_path = Path(DEFAULT_CONFIG)
-    with default_path.open("r") as file:
-        return SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), default_path)
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset config not found: {path}")
+    with path.open("r") as file:
+        return SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         default=None,
-        help="Dataset config for --sample-index mode. Defaults to checkpoint config, then example config.",
+        help="Dataset config for --sample-index mode.",
     )
     parser.add_argument(
         "--sample-index",
@@ -167,8 +157,10 @@ def main() -> None:
         if preprocess_debug is not None:
             debug_metadata.update(preprocess_debug.metadata)
     else:
+        if args.config is None:
+            raise ValueError("--config is required when using --sample-index mode")
         sample_index = args.sample_index if args.sample_index is not None else 0
-        dataset_config = load_dataset_config(args.config, recognizer.checkpoint.get("config"))
+        dataset_config = load_dataset_config(args.config)
         dataset_config = dataset_config.model_copy(
             update={
                 "alphabet": recognizer.alphabet,

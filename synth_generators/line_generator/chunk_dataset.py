@@ -71,15 +71,9 @@ class ChunkedLineDataset(Dataset):
 
         image = chunk["images"][local_idx]
 
-        if self.config is not None and "texts" in chunk:
-            return self._make_target_from_text(image, chunk["texts"][local_idx])
-
-        if "targets" not in chunk or "lengths" not in chunk:
-            raise KeyError("Chunk does not contain targets/lengths. Pass a training config to encode labels from texts.")
-
-        target = chunk["targets"][local_idx]
-        length = chunk["lengths"][local_idx]
-        return image, target, length
+        if self.config is None:
+            raise RuntimeError("config is required to encode chunk texts into CTC targets")
+        return self._make_target_from_text(image, chunk["texts"][local_idx])
 
     def iter_texts(self):
         for chunk_idx in range(len(self.chunks)):
