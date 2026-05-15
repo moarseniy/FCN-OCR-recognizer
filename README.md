@@ -280,6 +280,7 @@ python inference.py \
   --image path/to/line.png \
   --scale-x 0.0 \
   --y-pad 0.0 \
+  --baseline-crop \
   --debug-image output/inference_debug.png \
   --debug-top-k 8
 ```
@@ -294,6 +295,7 @@ recognizer = TextRecognizer(
     device="cuda",
     scale_x=0.0,
     y_pad=0.0,
+    baseline_crop=True,
 )
 
 for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
@@ -304,6 +306,12 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 0.2` растягивает ширину на 20%, `scale_x: -0.2` сжимает на 20%. `y_pad: 0.2`
 добавляет вертикальный паддинг перед resize, `y_pad: -0.2` симметрично обрезает
 20% высоты перед resize.
+
+`baseline_crop` перед этим пытается найти базовую линию текста, убрать небольшой
+наклон, вертикально обрезать строку относительно этой линии и только потом
+применить `y_pad`/resize. Для настройки доступны `baseline_top_pad`,
+`baseline_bottom_pad`, `baseline_deskew` и `baseline_max_angle`; в
+`--debug-image` дополнительно попадают маска, найденная линия и кроп.
 
 Если внешний скрипт лежит вне репозитория, добавьте корень проекта в
 `PYTHONPATH`:
@@ -322,6 +330,7 @@ python evaluate_ocr.py \
   --out output/ocr_metrics.csv \
   --scale-x 0.0 \
   --y-pad 0.0 \
+  --baseline-crop \
   --batch-size 32
 ```
 
@@ -339,6 +348,7 @@ python evaluate_ocr.py \
   --optuna-y-pad-min -0.25 \
   --optuna-y-pad-max 0.25 \
   --optuna-metric global_char_accuracy \
+  --baseline-crop \
   --optuna-trials-out output/optuna_trials.tsv
 ```
 

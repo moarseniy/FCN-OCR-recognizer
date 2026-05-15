@@ -82,6 +82,34 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Normalized vertical inference padding/crop before resize. 0.2 pads, -0.2 crops.",
     )
+    parser.add_argument(
+        "--baseline-crop",
+        action="store_true",
+        help="Detect a text baseline, deskew/crop vertically by it, then apply y-pad and resize.",
+    )
+    parser.add_argument(
+        "--baseline-top-pad",
+        type=float,
+        default=0.12,
+        help="Extra top margin for --baseline-crop as a fraction of text height above the baseline.",
+    )
+    parser.add_argument(
+        "--baseline-bottom-pad",
+        type=float,
+        default=0.18,
+        help="Extra bottom margin for --baseline-crop as a fraction of text height above the baseline.",
+    )
+    parser.add_argument(
+        "--no-baseline-deskew",
+        action="store_true",
+        help="Disable baseline-based deskew while keeping baseline crop enabled.",
+    )
+    parser.add_argument(
+        "--baseline-max-angle",
+        type=float,
+        default=12.0,
+        help="Reject baseline crop if the detected baseline angle is larger than this many degrees.",
+    )
     parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     parser.add_argument(
         "--debug-image",
@@ -110,12 +138,21 @@ def main() -> None:
         verbose=True,
         scale_x=args.scale_x,
         y_pad=args.y_pad,
+        baseline_crop=args.baseline_crop,
+        baseline_top_pad=args.baseline_top_pad,
+        baseline_bottom_pad=args.baseline_bottom_pad,
+        baseline_deskew=not args.no_baseline_deskew,
+        baseline_max_angle=args.baseline_max_angle,
     )
 
     if args.image:
         with Image.open(args.image) as image_file:
             source_image = image_file.convert("RGB")
-        input_tensor = recognizer.preprocess_image(args.image)
+        if args.debug_image:
+            input_tensor, preprocess_debug = recognizer.preprocess_image_debug(args.image)
+        else:
+            input_tensor = recognizer.preprocess_image(args.image)
+            preprocess_debug = None
         network_input_image = tensor_to_pil(input_tensor)
         result = recognizer.recognize_tensor_debug(input_tensor, top_k=args.debug_top_k)
         print(f"Image: {args.image}")
@@ -127,6 +164,8 @@ def main() -> None:
             "y_pad": args.y_pad,
             "debug_top_k": args.debug_top_k,
         }
+        if preprocess_debug is not None:
+            debug_metadata.update(preprocess_debug.metadata)
     else:
         sample_index = args.sample_index if args.sample_index is not None else 0
         dataset_config = load_dataset_config(args.config, recognizer.checkpoint.get("config"))
@@ -145,7 +184,11 @@ def main() -> None:
         source_image = tensor_to_pil(sample.image)
         source_image.save(args.save_sample)
 
-        input_tensor = recognizer.preprocess_pil(source_image)
+        if args.debug_image:
+            input_tensor, preprocess_debug = recognizer.preprocess_pil_debug(source_image)
+        else:
+            input_tensor = recognizer.preprocess_pil(source_image)
+            preprocess_debug = None
         network_input_image = tensor_to_pil(input_tensor)
         result = recognizer.recognize_tensor_debug(input_tensor, top_k=args.debug_top_k)
         print(f"Synthetic sample index: {sample_index}")
@@ -160,11 +203,20 @@ def main() -> None:
             "expected_text": sample.text,
             "debug_top_k": args.debug_top_k,
         }
+        if preprocess_debug is not None:
+            debug_metadata.update(preprocess_debug.metadata)
 
     print(f"Recognized text: '{result.text}'")
 
     if args.debug_image:
-        save_debug_image(source_image, result, args.debug_image, debug_metadata, network_input_image=network_input_image)
+        save_debug_image(
+            source_image,
+            result,
+            args.debug_image,
+            debug_metadata,
+            network_input_image=network_input_image,
+            preprocess_images=preprocess_debug.images if preprocess_debug is not None else None,
+        )
         print(f"Saved debug image: {args.debug_image}")
 
     if args.show_raw:

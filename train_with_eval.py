@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-log-every", type=int, default=0)
     parser.add_argument("--scale-x", type=float, default=0.0)
     parser.add_argument("--y-pad", type=float, default=0.0)
+    parser.add_argument("--baseline-crop", action="store_true")
+    parser.add_argument("--baseline-top-pad", type=float, default=0.12)
+    parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
+    parser.add_argument("--no-baseline-deskew", action="store_true")
+    parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
     parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
@@ -71,7 +76,7 @@ def append_eval_summary(log_path: Path, row: dict) -> None:
     with log_path.open("a", encoding="utf-8") as file:
         if is_new_file:
             file.write(
-                "epoch\tcheckpoint\tcsv\tscale_x\ty_pad\tline_accuracy\t"
+                "epoch\tcheckpoint\tcsv\tscale_x\ty_pad\tbaseline_crop\tline_accuracy\t"
                 "average_char_accuracy\tglobal_char_accuracy\taverage_levenshtein\t"
                 "total_levenshtein\trecognized_samples\ttotal_samples\tspeed\t"
                 "optuna_trials\toptuna_metric\n"
@@ -79,6 +84,7 @@ def append_eval_summary(log_path: Path, row: dict) -> None:
         file.write(
             f"{row['epoch']}\t{row['checkpoint']}\t{row['csv']}\t"
             f"{row['scale_x']:.8f}\t{row['y_pad']:.8f}\t"
+            f"{row.get('baseline_crop', False)}\t"
             f"{row['line_accuracy']:.8f}\t{row['average_char_accuracy']:.8f}\t"
             f"{row['global_char_accuracy']:.8f}\t{row['average_levenshtein']:.8f}\t"
             f"{row['total_levenshtein']}\t{row['recognized_samples']}\t"
@@ -111,6 +117,11 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             trials_output=trials_output,
             study_name=cli_args.optuna_study_name,
             storage=cli_args.optuna_storage,
+            baseline_crop=cli_args.baseline_crop,
+            baseline_top_pad=cli_args.baseline_top_pad,
+            baseline_bottom_pad=cli_args.baseline_bottom_pad,
+            baseline_deskew=not cli_args.no_baseline_deskew,
+            baseline_max_angle=cli_args.baseline_max_angle,
         )
     else:
         metrics = evaluate(
@@ -124,6 +135,11 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             batch_size=cli_args.eval_batch_size,
             limit=cli_args.eval_limit,
             log_every=cli_args.eval_log_every,
+            baseline_crop=cli_args.baseline_crop,
+            baseline_top_pad=cli_args.baseline_top_pad,
+            baseline_bottom_pad=cli_args.baseline_bottom_pad,
+            baseline_deskew=not cli_args.no_baseline_deskew,
+            baseline_max_angle=cli_args.baseline_max_angle,
         )
 
     metrics["csv"] = str(output_csv)

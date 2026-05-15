@@ -1,6 +1,7 @@
 from .recognizer import (
     ClassConfidence,
     DecodedSymbol,
+    PreprocessDebug,
     RecognitionResult,
     TextRecognizer,
     save_debug_image,
@@ -10,6 +11,7 @@ from .recognizer import (
 __all__ = [
     "ClassConfidence",
     "DecodedSymbol",
+    "PreprocessDebug",
     "RecognitionResult",
     "TextRecognizer",
     "save_debug_image",

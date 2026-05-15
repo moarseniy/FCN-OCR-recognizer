@@ -212,6 +212,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
     print(f"scale_x:                    {metrics['scale_x']:+.5f}")
     print(f"y_pad:                      {metrics['y_pad']:+.5f}")
+    if "baseline_crop" in metrics:
+        print(f"Baseline crop:              {metrics['baseline_crop']}")
     if output_csv is not None:
         print(f"CSV saved to:               {output_csv}")
 
@@ -227,6 +229,11 @@ def evaluate_prepared(
     batch_size: int,
     log_every: int,
     verbose: bool,
+    baseline_crop: bool = False,
+    baseline_top_pad: float = 0.12,
+    baseline_bottom_pad: float = 0.18,
+    baseline_deskew: bool = True,
+    baseline_max_angle: float = 12.0,
 ) -> dict[str, Any]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
@@ -239,6 +246,11 @@ def evaluate_prepared(
         verbose=verbose,
         scale_x=scale_x,
         y_pad=y_pad,
+        baseline_crop=baseline_crop,
+        baseline_top_pad=baseline_top_pad,
+        baseline_bottom_pad=baseline_bottom_pad,
+        baseline_deskew=baseline_deskew,
+        baseline_max_angle=baseline_max_angle,
     )
     predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
     elapsed = time.perf_counter() - started_at
@@ -251,6 +263,7 @@ def evaluate_prepared(
     metrics = compute_metrics(rows, elapsed)
     metrics["scale_x"] = float(scale_x)
     metrics["y_pad"] = float(y_pad)
+    metrics["baseline_crop"] = bool(baseline_crop)
 
     if output_csv is not None:
         write_rows_csv(rows, output_csv)
@@ -297,6 +310,11 @@ def optimize_preprocess(
     trials_output: Path | None,
     study_name: str | None = None,
     storage: str | None = None,
+    baseline_crop: bool = False,
+    baseline_top_pad: float = 0.12,
+    baseline_bottom_pad: float = 0.18,
+    baseline_deskew: bool = True,
+    baseline_max_angle: float = 12.0,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -330,6 +348,11 @@ def optimize_preprocess(
             batch_size=batch_size,
             log_every=0,
             verbose=False,
+            baseline_crop=baseline_crop,
+            baseline_top_pad=baseline_top_pad,
+            baseline_bottom_pad=baseline_bottom_pad,
+            baseline_deskew=baseline_deskew,
+            baseline_max_angle=baseline_max_angle,
         )
         for key, value in metrics.items():
             if isinstance(value, (int, float)):
@@ -341,7 +364,8 @@ def optimize_preprocess(
     print(
         "Optuna preprocess search: "
         f"trials={trials}, metric={metric_name}, "
-        f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}]"
+        f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
+        f"baseline_crop={baseline_crop}"
     )
     study.optimize(objective, n_trials=trials)
 
@@ -363,6 +387,11 @@ def optimize_preprocess(
         batch_size=batch_size,
         log_every=log_every,
         verbose=True,
+        baseline_crop=baseline_crop,
+        baseline_top_pad=baseline_top_pad,
+        baseline_bottom_pad=baseline_bottom_pad,
+        baseline_deskew=baseline_deskew,
+        baseline_max_angle=baseline_max_angle,
     )
     final_metrics["optuna_trials"] = trials
     final_metrics["optuna_metric"] = metric_name
@@ -382,6 +411,11 @@ def evaluate(
     limit: int | None,
     log_every: int,
     verbose: bool = True,
+    baseline_crop: bool = False,
+    baseline_top_pad: float = 0.12,
+    baseline_bottom_pad: float = 0.18,
+    baseline_deskew: bool = True,
+    baseline_max_angle: float = 12.0,
 ) -> dict[str, Any]:
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     return evaluate_prepared(
@@ -395,6 +429,11 @@ def evaluate(
         batch_size=batch_size,
         log_every=log_every,
         verbose=verbose,
+        baseline_crop=baseline_crop,
+        baseline_top_pad=baseline_top_pad,
+        baseline_bottom_pad=baseline_bottom_pad,
+        baseline_deskew=baseline_deskew,
+        baseline_max_angle=baseline_max_angle,
     )
 
 
@@ -407,6 +446,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None, help="Device to use: cuda, cpu, or empty for auto.")
     parser.add_argument("--scale-x", type=float, default=0.0, help="Normalized horizontal inference scale.")
     parser.add_argument("--y-pad", type=float, default=0.0, help="Normalized vertical inference padding/crop.")
+    parser.add_argument("--baseline-crop", action="store_true", help="Use baseline detection/crop before y-pad and resize.")
+    parser.add_argument("--baseline-top-pad", type=float, default=0.12)
+    parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
+    parser.add_argument("--no-baseline-deskew", action="store_true")
+    parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--batch-size", type=int, default=32, help="Inference batch size.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
@@ -453,6 +497,11 @@ def main() -> None:
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
+            baseline_crop=args.baseline_crop,
+            baseline_top_pad=args.baseline_top_pad,
+            baseline_bottom_pad=args.baseline_bottom_pad,
+            baseline_deskew=not args.no_baseline_deskew,
+            baseline_max_angle=args.baseline_max_angle,
         )
     else:
         evaluate(
@@ -466,6 +515,11 @@ def main() -> None:
             batch_size=args.batch_size,
             limit=args.limit,
             log_every=args.log_every,
+            baseline_crop=args.baseline_crop,
+            baseline_top_pad=args.baseline_top_pad,
+            baseline_bottom_pad=args.baseline_bottom_pad,
+            baseline_deskew=not args.no_baseline_deskew,
+            baseline_max_angle=args.baseline_max_angle,
         )
 
 
