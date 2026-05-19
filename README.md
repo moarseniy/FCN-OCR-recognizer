@@ -138,6 +138,8 @@ augmentations:
 `strong_blur`, `motion_blur`, `scale`, `darkening`, `noise`, `projective`,
 `rotate`, `crop_x`, `crop_y`, `random_line`, `morphology`, `unsharp_mask`.
 `preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
+`crop_x` и `crop_y` обрезают края, а затем ресайзят результат обратно в
+исходный размер тензора.
 `random_line` добавляет почти горизонтальную линию под небольшим углом.
 Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 

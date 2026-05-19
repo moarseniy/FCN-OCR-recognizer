@@ -381,21 +381,27 @@ class GpuTextAugmenter:
         if max_left <= 0 and max_right <= 0:
             return images, None
         output = images.clone()
-        fill = self._fill_value(params)
         logs: list[AugmentationParams] | None = [] if collect_metadata else None
+        _, _, height, width = images.shape
         for index in range(images.size(0)):
             left = self._randint(0, max(0, max_left))
             right = self._randint(0, max(0, max_right))
-            if left > 0:
-                output[index, :, :, :left] = fill
-            if right > 0:
-                output[index, :, :, images.size(-1) - right :] = fill
+            if left + right >= width:
+                right = max(0, width - left - 1)
+            if left + right > 0:
+                cropped = images[index : index + 1, :, :, left : width - right]
+                output[index : index + 1] = F.interpolate(
+                    cropped,
+                    size=(height, width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
             if logs is not None:
                 if left > 0 or right > 0:
                     logs.append({
                         "crop_left": left,
                         "crop_right": right,
-                        "fillcolor": int(params.get("fillcolor", self.config.background)),
+                        "resize_to_width": width,
                     })
                 else:
                     logs.append(None)
@@ -412,21 +418,27 @@ class GpuTextAugmenter:
         if max_top <= 0 and max_bottom <= 0:
             return images, None
         output = images.clone()
-        fill = self._fill_value(params)
         logs: list[AugmentationParams] | None = [] if collect_metadata else None
+        _, _, height, width = images.shape
         for index in range(images.size(0)):
             top = self._randint(0, max(0, max_top))
             bottom = self._randint(0, max(0, max_bottom))
-            if top > 0:
-                output[index, :, :top, :] = fill
-            if bottom > 0:
-                output[index, :, images.size(-2) - bottom :, :] = fill
+            if top + bottom >= height:
+                bottom = max(0, height - top - 1)
+            if top + bottom > 0:
+                cropped = images[index : index + 1, :, top : height - bottom, :]
+                output[index : index + 1] = F.interpolate(
+                    cropped,
+                    size=(height, width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
             if logs is not None:
                 if top > 0 or bottom > 0:
                     logs.append({
                         "crop_top": top,
                         "crop_bottom": bottom,
-                        "fillcolor": int(params.get("fillcolor", self.config.background)),
+                        "resize_to_height": height,
                     })
                 else:
                     logs.append(None)
