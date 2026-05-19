@@ -5,6 +5,8 @@ epochs: 50
 batch_size: 128
 batch_count: null
 lr: 0.001
+optimizer: adam
+weight_decay: 0.0
 scheduler: reduce_on_plateau
 scheduler_factor: 0.5
 scheduler_patience: 3

@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
+SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
 SUPPORTED_LOSS_MODES = ("ctc", "legacy_logreg")
 SUPPORTED_LEGACY_TARGET_MODES = ("uniform_text", "dense_symbols")
 
@@ -48,6 +49,16 @@ class TrainingConfig(BaseModel):
     batch_size: int = Field(default=128, ge=1)
     batch_count: int | None = Field(default=None, ge=1)
     lr: float = Field(default=1e-3, gt=0.0)
+    optimizer: str = "adam"
+    weight_decay: float = Field(default=0.0, ge=0.0)
+    adam_beta1: float = Field(default=0.9, ge=0.0, lt=1.0)
+    adam_beta2: float = Field(default=0.999, ge=0.0, lt=1.0)
+    adam_eps: float = Field(default=1e-8, gt=0.0)
+    sgd_momentum: float = Field(default=0.9, ge=0.0)
+    sgd_nesterov: bool = False
+    rmsprop_alpha: float = Field(default=0.99, gt=0.0, lt=1.0)
+    rmsprop_momentum: float = Field(default=0.0, ge=0.0)
+    rmsprop_eps: float = Field(default=1e-8, gt=0.0)
     loss_mode: str = "ctc"
     legacy_target_mode: str = "uniform_text"
     legacy_crop_left: int = Field(default=6, ge=0)
@@ -115,6 +126,14 @@ class TrainingConfig(BaseModel):
         value = value.lower()
         if value not in SUPPORTED_SCHEDULERS:
             raise ValueError(f"scheduler must be one of {SUPPORTED_SCHEDULERS}")
+        return value
+
+    @field_validator("optimizer")
+    @classmethod
+    def optimizer_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_OPTIMIZERS:
+            raise ValueError(f"optimizer must be one of {SUPPORTED_OPTIMIZERS}")
         return value
 
     @field_validator("loss_mode")
@@ -273,6 +292,63 @@ def save_named_checkpoint(
         path,
     )
     return path
+
+
+def create_optimizer(model, config: TrainingConfig):
+    parameters = model.parameters()
+    if config.optimizer == "adam":
+        return torch.optim.Adam(
+            parameters,
+            lr=config.lr,
+            betas=(config.adam_beta1, config.adam_beta2),
+            eps=config.adam_eps,
+            weight_decay=config.weight_decay,
+        )
+    if config.optimizer == "adamw":
+        return torch.optim.AdamW(
+            parameters,
+            lr=config.lr,
+            betas=(config.adam_beta1, config.adam_beta2),
+            eps=config.adam_eps,
+            weight_decay=config.weight_decay,
+        )
+    if config.optimizer == "sgd":
+        if config.sgd_nesterov and config.sgd_momentum <= 0.0:
+            raise ValueError("sgd_nesterov requires sgd_momentum > 0")
+        return torch.optim.SGD(
+            parameters,
+            lr=config.lr,
+            momentum=config.sgd_momentum,
+            weight_decay=config.weight_decay,
+            nesterov=config.sgd_nesterov,
+        )
+    if config.optimizer == "rmsprop":
+        return torch.optim.RMSprop(
+            parameters,
+            lr=config.lr,
+            alpha=config.rmsprop_alpha,
+            eps=config.rmsprop_eps,
+            weight_decay=config.weight_decay,
+            momentum=config.rmsprop_momentum,
+        )
+    raise ValueError(f"Unsupported optimizer: {config.optimizer}")
+
+
+def print_optimizer_summary(config: TrainingConfig) -> None:
+    print("Optimizer: ", config.optimizer)
+    print(f"  lr={config.lr:g} weight_decay={config.weight_decay:g}")
+    if config.optimizer in {"adam", "adamw"}:
+        print(
+            f"  betas=({config.adam_beta1:g}, {config.adam_beta2:g}) "
+            f"eps={config.adam_eps:g}"
+        )
+    elif config.optimizer == "sgd":
+        print(f"  momentum={config.sgd_momentum:g} nesterov={config.sgd_nesterov}")
+    elif config.optimizer == "rmsprop":
+        print(
+            f"  alpha={config.rmsprop_alpha:g} momentum={config.rmsprop_momentum:g} "
+            f"eps={config.rmsprop_eps:g}"
+        )
 
 
 def create_scheduler(optimizer, config: TrainingConfig):
@@ -1041,7 +1117,8 @@ def run_training(
         num_classes=num_classes,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = create_optimizer(model, args)
+    print_optimizer_summary(args)
     scheduler = create_scheduler(optimizer, args)
     print("LR scheduler: ", args.scheduler)
     if args.scheduler == "reduce_on_plateau":

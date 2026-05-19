@@ -203,8 +203,9 @@ legacy_crop_left: 6
 legacy_crop_right: 5
 ```
 
-В training-конфиге задаются `chunks_dir` или `generator_config`, learning rate,
-batch size, workers, checkpoint path, preview-настройки и GPU-аугментации.
+В training-конфиге задаются `chunks_dir` или `generator_config`, optimizer,
+learning rate, batch size, workers, checkpoint path, preview-настройки и
+GPU-аугментации.
 Алфавит, размеры картинок, число каналов и `max_text_length` берутся из
 `metadata.yaml` в папке чанков или из `generator_config`. При необходимости эти
 поля можно явно указать в training-конфиге как override. При старте обучения
@@ -253,12 +254,34 @@ Learning rate scheduler задаётся в training-конфиге. По умо
 
 ```yaml
 lr: 0.001
+optimizer: adam
+weight_decay: 0.0
 scheduler: reduce_on_plateau
 scheduler_factor: 0.5
 scheduler_patience: 3
 scheduler_min_lr: 0.000001
 scheduler_threshold: 0.0001
 scheduler_cooldown: 0
+```
+
+Поддерживаются оптимизаторы:
+
+```yaml
+optimizer: adam   # adam, adamw, sgd, rmsprop
+
+# adam/adamw
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_eps: 0.00000001
+
+# sgd
+sgd_momentum: 0.9
+sgd_nesterov: false
+
+# rmsprop
+rmsprop_alpha: 0.99
+rmsprop_momentum: 0.0
+rmsprop_eps: 0.00000001
 ```
 
 Также поддерживаются `scheduler: none`, `scheduler: cosine` и
