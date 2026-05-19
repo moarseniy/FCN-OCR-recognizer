@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
 SUPPORTED_LOSS_MODES = ("ctc", "legacy_logreg")
-SUPPORTED_LEGACY_TARGET_MODES = ("uniform_text", "dense_symbols")
+SUPPORTED_LEGACY_TARGET_MODES = ("uniform_text", "dense_symbols", "binary_gaps")
 
 
 class TrainingConfig(BaseModel):
@@ -172,11 +172,13 @@ class TrainingConfig(BaseModel):
         return value
 
 
-def model_num_classes(alphabet: str, loss_mode: str) -> int:
+def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "uniform_text") -> int:
     loss_mode = loss_mode.lower()
     if loss_mode == "ctc":
         return len(alphabet) + 1
     if loss_mode == "legacy_logreg":
+        if legacy_target_mode.lower() == "binary_gaps":
+            return 2
         return len(alphabet)
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
@@ -241,6 +243,7 @@ def build_checkpoint(
     scheduler=None,
 ):
     loss_mode = str(config.get("loss_mode", "ctc")).lower()
+    legacy_target_mode = str(config.get("legacy_target_mode", "uniform_text")).lower()
     return {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -252,9 +255,10 @@ def build_checkpoint(
         'config': config,
         'model_config': {
             'in_channels': config.get('channels', 3),
-            'num_classes': model_num_classes(alphabet, loss_mode),
+            'num_classes': model_num_classes(alphabet, loss_mode, legacy_target_mode),
             'blank_idx': blank_index_for_loss(alphabet, loss_mode),
             'loss_mode': loss_mode,
+            'legacy_target_mode': legacy_target_mode,
         },
         'train_losses': train_losses,
         'val_losses': val_losses,
@@ -593,6 +597,9 @@ def tensor_to_pil(image_tensor):
 
 def decode_target_for_preview(target, length, alphabet):
     if int(length) < 0:
+        unique_values = set(target.detach().cpu().unique().tolist())
+        if unique_values.issubset({0, 1}):
+            return f"<binary_gaps positives={int(target.sum().item())}/{target.numel()}>"
         return "<dense_symbols>"
     return "".join(alphabet[idx] for idx in target[:length].tolist())
 
@@ -842,9 +849,10 @@ def effective_training_config_data(config: TrainingConfig, dataset_config: Singl
 
 
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
-    target_format = "dense_symbols" if (
-        config.loss_mode == "legacy_logreg" and config.legacy_target_mode == "dense_symbols"
-    ) else "text"
+    if config.loss_mode == "legacy_logreg" and config.legacy_target_mode in {"dense_symbols", "binary_gaps"}:
+        target_format = config.legacy_target_mode
+    else:
+        target_format = "text"
 
     if config.chunks_dir:
         metadata = load_chunk_metadata(config.chunks_dir)
@@ -853,6 +861,11 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
             raise ValueError(
                 "Training config requests legacy_target_mode=dense_symbols, but chunk metadata says "
                 "dense_targets are absent. Regenerate the dataset with save_dense_targets: true."
+            )
+        if target_format == "binary_gaps" and not metadata.get("binary_gap_targets", False):
+            raise ValueError(
+                "Training config requests legacy_target_mode=binary_gaps, but chunk metadata says "
+                "binary_gap_targets are absent. Regenerate the dataset with save_binary_gap_targets: true."
             )
         dataset = ChunkedLineDataset(
             config.chunks_dir,
@@ -1034,7 +1047,7 @@ def run_training(
 
     alphabet = dataset_config.alphabet
     blank_idx = blank_index_for_loss(alphabet, args.loss_mode)
-    num_classes = model_num_classes(alphabet, args.loss_mode)
+    num_classes = model_num_classes(alphabet, args.loss_mode, args.legacy_target_mode)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
     print("Loss mode: ", args.loss_mode)
@@ -1047,6 +1060,9 @@ def run_training(
         if args.legacy_target_mode == "dense_symbols":
             print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
             print("Batch targets: dense symbol labels from generator/chunks")
+        elif args.legacy_target_mode == "binary_gaps":
+            print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
+            print("Batch targets: binary gap labels from generator/chunks")
         else:
             print("Legacy text alignment: uniform projection over model output width")
 

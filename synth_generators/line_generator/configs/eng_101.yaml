@@ -6,6 +6,10 @@ chunk_size: 1024
 num_workers: 4
 overwrite: false
 save_dense_targets: true
+save_binary_gap_targets: true
+binary_gap_min_width: 1
+binary_gap_include_spaces: true
+binary_gap_include_margins: false
 image_height: 48
 image_width: 64
 min_text_length: 4

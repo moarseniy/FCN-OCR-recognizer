@@ -138,6 +138,30 @@ def legacy_dense_symbols_to_labels(
     return labels[:, crop_left:right].long()
 
 
+def legacy_binary_gaps_to_labels(
+    targets: torch.Tensor,
+    crop_left: int = 6,
+    crop_right: int = 5,
+) -> torch.Tensor:
+    """
+    Binary vertical-segmentation targets.
+
+    Expected input:
+      - (B, W), values 0 for non-gap and 1 for gap columns.
+    """
+    if crop_left < 0 or crop_right < 0:
+        raise ValueError("crop_left and crop_right must be non-negative")
+    if targets.dim() != 2:
+        raise ValueError(f"binary gap targets must have shape (B, W), got {tuple(targets.shape)}")
+
+    labels = targets.long().clamp(0, 1)
+    width = labels.size(1)
+    right = width - crop_right if crop_right else width
+    if crop_left >= right:
+        raise ValueError(f"binary gap crop [{crop_left}, -{crop_right}] is empty for label width {width}")
+    return labels[:, crop_left:right]
+
+
 def _align_logits_and_labels(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -191,6 +215,7 @@ def legacy_logreg_loss(
       - "uniform_text": current text targets are projected uniformly over T.
       - "dense_symbols": targets are old-style symbol maps and are aligned by
         maxpool + cropX([crop_left, -crop_right]).
+      - "binary_gaps": targets are 0/1 column labels for vertical gaps.
     """
     target_mode = target_mode.lower()
     if target_mode == "uniform_text":
@@ -208,8 +233,14 @@ def legacy_logreg_loss(
             crop_left=crop_left,
             crop_right=crop_right,
         )
+    elif target_mode == "binary_gaps":
+        labels = legacy_binary_gaps_to_labels(
+            targets.to(device=logits.device),
+            crop_left=crop_left,
+            crop_right=crop_right,
+        )
     else:
-        raise ValueError("target_mode must be 'uniform_text' or 'dense_symbols'")
+        raise ValueError("target_mode must be 'uniform_text', 'dense_symbols', or 'binary_gaps'")
 
     logits, labels = _align_logits_and_labels(logits, labels, strict_width=strict_width)
     return F.cross_entropy(logits, labels.to(device=logits.device), ignore_index=ignore_index)

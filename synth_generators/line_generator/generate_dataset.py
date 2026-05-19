@@ -27,6 +27,7 @@ def save_chunk(
     images = []
     texts = []
     dense_targets = []
+    binary_gap_targets = []
 
     for sample in samples:
         images.append(image_to_uint8(sample.image))
@@ -35,6 +36,8 @@ def save_chunk(
             if sample.dense_target is None:
                 raise RuntimeError("sample does not contain dense_target")
             dense_targets.append(sample.dense_target.detach().cpu().to(torch.int16))
+        if sample.binary_gap_target is not None:
+            binary_gap_targets.append(sample.binary_gap_target.detach().cpu().to(torch.uint8))
 
     if not images:
         raise ValueError("cannot save an empty chunk")
@@ -46,6 +49,10 @@ def save_chunk(
     }
     if save_dense_targets:
         chunk["dense_targets"] = torch.stack(dense_targets, dim=0).contiguous()
+    if binary_gap_targets:
+        if len(binary_gap_targets) != len(images):
+            raise RuntimeError("only some samples contain binary_gap_target")
+        chunk["binary_gap_targets"] = torch.stack(binary_gap_targets, dim=0).contiguous()
 
     torch.save(chunk, output_dir / filename)
     return {"file": filename, "samples": len(images)}
@@ -123,10 +130,14 @@ def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
         "word_length_max": config.word_length_max,
         "crop_stride": config.crop_stride,
         "min_crop_text_length": config.min_crop_text_length,
+        "dense_targets": config.save_dense_targets,
+        "binary_gap_targets": config.save_binary_gap_targets,
+        "binary_gap_min_width": config.binary_gap_min_width,
+        "binary_gap_include_spaces": config.binary_gap_include_spaces,
+        "binary_gap_include_margins": config.binary_gap_include_margins,
         "dtype": "uint8",
         "chunk_size": config.chunk_size,
         "chunk_count": len(chunks),
-        "dense_targets": config.save_dense_targets,
         "chunks": chunks,
     }
 

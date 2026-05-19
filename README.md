@@ -17,15 +17,17 @@
 поэтому `num_classes = len(alphabet) + 1`.
 
 Для экспериментов со старой схемой `final -> softmax -> logreg` есть
-`loss_mode: legacy_logreg`. В этом режиме `final` имеет ровно
+`loss_mode: legacy_logreg`. В этом режиме `final` обычно имеет ровно
 `len(alphabet)` выходов, без `blank`. Если в данных есть плотная symbol-map
 разметка, можно выбрать `legacy_target_mode: dense_symbols`: таргет будет
 выравниваться как в старом графе через `max_pool2d(kernel=(4, 1),
-stride=(4, 1), padding=(1, 0))` и `cropX=[6, -5]`. Для текущих текстовых
-чанков доступен `legacy_target_mode: uniform_text`, который равномерно
-раскладывает строку по выходной ширине модели. Это удобный режим для проверки
-идеи, но CTC остается более корректным для строк переменной длины и повторов
-одинаковых символов.
+stride=(4, 1), padding=(1, 0))` и `cropX=[6, -5]`. Для вертикального
+сегментатора есть `legacy_target_mode: binary_gaps`: `final` имеет 2 выхода,
+а таргет содержит 0/1 по X-колонкам, где `1` означает промежуток между
+символами. Для текущих текстовых чанков доступен
+`legacy_target_mode: uniform_text`, который равномерно раскладывает строку по
+выходной ширине модели. Это удобный режим для проверки идеи, но CTC остается более корректным
+для строк переменной длины и повторов одинаковых символов.
 
 В generation-конфиге `sample_alphabet` задает символы, из которых синтезируются
 строки. В training-конфиге `alphabet` задает классы модели. В примерах оба
@@ -165,11 +167,17 @@ python -m synth_generators.line_generator.generate_dataset \
 
 ```yaml
 save_dense_targets: true
+save_binary_gap_targets: true
+binary_gap_min_width: 1
+binary_gap_include_spaces: true
+binary_gap_include_margins: false
 ```
 
 Тогда в чанки также попадет `dense_targets` (`N x W`) — класс символа для
-каждой X-колонки исходного кропа. При обучении loss делает legacy-crop и
-пересэмплирует эту разметку к выходной ширине сети `T`. Рядом создается
+каждой X-колонки исходного кропа. Если включен `save_binary_gap_targets`, в
+чанки попадет `binary_gap_targets` (`N x W`) — бинарная разметка промежутков
+между символами. При обучении loss делает legacy-crop и пересэмплирует эту
+разметку к выходной ширине сети `T`. Рядом создается
 `metadata.yaml` с параметрами
 датасета: алфавитом, `space_char`, размерами картинок, числом каналов и
 максимальной длиной текста. Настройки обучения и настройки аугментаций в
@@ -204,6 +212,17 @@ legacy_target_mode: dense_symbols
 legacy_crop_left: 6
 legacy_crop_right: 5
 ```
+
+Для обучения вертикального сегментатора на `binary_gap_targets`:
+
+```yaml
+loss_mode: legacy_logreg
+legacy_target_mode: binary_gaps
+legacy_crop_left: 6
+legacy_crop_right: 5
+```
+
+Пример конфига: `configs/eng_train_101_gaps.yaml`.
 
 В training-конфиге задаются `chunks_dir` или `generator_config`, optimizer,
 learning rate, batch size, workers, checkpoint path, preview-настройки и

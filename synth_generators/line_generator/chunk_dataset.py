@@ -44,8 +44,8 @@ class ChunkedLineDataset(Dataset):
         self.cache_size = max(1, cache_size)
         self.config = config
         self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols"}:
-            raise ValueError("target_format must be 'text' or 'dense_symbols'")
+        if self.target_format not in {"text", "dense_symbols", "binary_gaps"}:
+            raise ValueError("target_format must be 'text', 'dense_symbols', or 'binary_gaps'")
         self.metadata = load_chunk_metadata(self.root_dir)
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)} if config else {}
         chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
@@ -84,6 +84,8 @@ class ChunkedLineDataset(Dataset):
             raise RuntimeError("config is required to encode chunk texts into CTC targets")
         if self.target_format == "dense_symbols":
             return self._make_dense_symbol_target(image, chunk, local_idx)
+        if self.target_format == "binary_gaps":
+            return self._make_binary_gap_target(image, chunk, local_idx)
         return self._make_target_from_text(image, chunk["texts"][local_idx])
 
     def iter_texts(self):
@@ -138,6 +140,8 @@ class ChunkedLineDataset(Dataset):
             raise ValueError(f"Chunk {path} has inconsistent first dimensions")
         if "dense_targets" in chunk and chunk["dense_targets"].shape[0] != sample_count:
             raise ValueError(f"Chunk {path} has inconsistent dense_targets first dimension")
+        if "binary_gap_targets" in chunk and chunk["binary_gap_targets"].shape[0] != sample_count:
+            raise ValueError(f"Chunk {path} has inconsistent binary_gap_targets first dimension")
 
     def _make_target_from_text(self, image: torch.Tensor, text: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.config is None:
@@ -176,6 +180,26 @@ class ChunkedLineDataset(Dataset):
         if target.size(0) != image.shape[-1]:
             raise ValueError(
                 f"dense target width {target.size(0)} does not match image width {image.shape[-1]}"
+            )
+        return image, target, torch.tensor(-1, dtype=torch.long)
+
+    def _make_binary_gap_target(
+        self,
+        image: torch.Tensor,
+        chunk: dict,
+        local_idx: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if "binary_gap_targets" not in chunk:
+            raise KeyError(
+                "Chunk does not contain binary_gap_targets. Regenerate the dataset with "
+                "save_binary_gap_targets: true in the generation config."
+            )
+        target = chunk["binary_gap_targets"][local_idx].long()
+        if target.dim() != 1:
+            raise ValueError(f"binary gap target must have shape (W,), got {tuple(target.shape)}")
+        if target.size(0) != image.shape[-1]:
+            raise ValueError(
+                f"binary gap target width {target.size(0)} does not match image width {image.shape[-1]}"
             )
         return image, target, torch.tensor(-1, dtype=torch.long)
 
