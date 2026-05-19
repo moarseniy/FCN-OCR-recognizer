@@ -106,11 +106,45 @@ def segmentation_runs_summary(result: VerticalSegmentationResult) -> str:
     )
 
 
+def segmentation_x_for_timestep(timestep: float, image_width: int, timesteps: int) -> int:
+    if timesteps <= 0:
+        return 0
+    return max(0, min(image_width - 1, int(round(timestep * image_width / timesteps))))
+
+
+def draw_segmentation_lines(image: Image.Image, result: VerticalSegmentationResult) -> Image.Image:
+    output = image.convert("RGB")
+    timesteps = len(result.raw_indices)
+    if timesteps <= 0:
+        return output
+
+    overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    line_width = max(2, round(output.width / 260))
+
+    for run in result.runs:
+        if run.label != 1:
+            continue
+
+        left = segmentation_x_for_timestep(float(run.start), output.width, timesteps)
+        right = segmentation_x_for_timestep(float(run.end + 1), output.width, timesteps)
+        if right <= left:
+            right = min(output.width - 1, left + 1)
+        center = segmentation_x_for_timestep((run.start + run.end + 1) * 0.5, output.width, timesteps)
+
+        overlay_draw.rectangle((left, 0, right, output.height), fill=(255, 30, 30, 42))
+        overlay_draw.line((center, 0, center, output.height), fill=(0, 0, 0, 230), width=line_width + 2)
+        overlay_draw.line((center, 0, center, output.height), fill=(255, 0, 0, 255), width=line_width)
+
+    return Image.alpha_composite(output.convert("RGBA"), overlay).convert("RGB")
+
+
 def render_segmentation_panel(
     image: Image.Image,
     result: VerticalSegmentationResult,
 ) -> Image.Image:
     image = image.convert("RGB")
+    image_with_lines = draw_segmentation_lines(image, result)
     font = load_debug_font(14)
     small_font = load_debug_font(12)
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
@@ -124,7 +158,7 @@ def render_segmentation_panel(
         small_font,
         max(120, image.width - padding * 2),
     )
-    panel_height = padding + title_height + image.height + 8 + band_height + 8 + text_line_height * len(summary_lines) + padding
+    panel_height = padding + title_height + image_with_lines.height + 8 + band_height + 8 + text_line_height * len(summary_lines) + padding
     panel = Image.new("RGB", (image.width + padding * 2, panel_height), color=(246, 246, 246))
     draw = ImageDraw.Draw(panel)
 
@@ -132,8 +166,8 @@ def render_segmentation_panel(
     title = f"vertical segmentator input; logits {result.logits_shape}; T={len(result.raw_indices)}"
     draw.text((padding, y), title, fill=(55, 55, 55), font=font)
     y += title_height
-    panel.paste(image, (padding, y))
-    y += image.height + 8
+    panel.paste(image_with_lines, (padding, y))
+    y += image_with_lines.height + 8
 
     band = Image.new("RGB", (image.width, band_height), color=(235, 235, 235))
     band_draw = ImageDraw.Draw(band)
@@ -163,6 +197,8 @@ def render_segmentation_panel(
         right = int(round((run.end + 1) * image.width / timesteps))
         right = max(left + 1, right)
         band_draw.rectangle((left, 0, right, band_height - 1), outline=(180, 20, 20), width=1)
+        center = segmentation_x_for_timestep((run.start + run.end + 1) * 0.5, image.width, timesteps)
+        band_draw.line((center, 0, center, band_height), fill=(255, 0, 0), width=2)
 
     draw.rectangle((padding - 1, y - 1, padding + image.width, y + band_height), outline=(160, 160, 160))
     panel.paste(band, (padding, y))

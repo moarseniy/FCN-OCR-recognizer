@@ -169,7 +169,7 @@ python -m synth_generators.line_generator.generate_dataset \
 save_dense_targets: true
 save_binary_gap_targets: true
 binary_gap_min_width: 1
-binary_gap_include_spaces: true
+binary_gap_include_spaces: false
 binary_gap_include_margins: false
 ```
 
@@ -367,6 +367,10 @@ python inference.py \
 `--segmentator-checkpoint` опционален. Если он передан вместе с
 `--debug-image`, в debug-картинку дополнительно попадет дорожка вертикального
 сегментатора: `0` для не-промежутка и `1` для промежутка между символами.
+Gap-runs рисуются как четкие вертикальные красные линии поверх входа
+сегментатора. В текущей разметке пробел считается таким же символом, поэтому
+сам span пробела не размечается как gap; gap-ами остаются только границы между
+соседними символами, включая границы вокруг пробела.
 
 Python API для использования из других скриптов:
 

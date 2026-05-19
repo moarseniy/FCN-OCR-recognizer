@@ -93,7 +93,7 @@ class SingleLineDatasetConfig(BaseModel):
     save_dense_targets: bool = False
     save_binary_gap_targets: bool = False
     binary_gap_min_width: int = Field(default=1, ge=0)
-    binary_gap_include_spaces: bool = True
+    binary_gap_include_spaces: bool = False
     binary_gap_include_margins: bool = False
 
     @model_validator(mode="before")
