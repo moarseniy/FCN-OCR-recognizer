@@ -39,6 +39,26 @@ class RecognitionResult:
 
 
 @dataclass(frozen=True)
+class SegmentationRun:
+    label: int
+    kind: str
+    start: int
+    end: int
+    confidence: float
+    gap_probability: float
+
+
+@dataclass(frozen=True)
+class VerticalSegmentationResult:
+    raw_indices: list[int]
+    raw_confidences: list[float]
+    gap_probabilities: list[float]
+    runs: list[SegmentationRun]
+    input_shape: tuple[int, ...]
+    logits_shape: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class PreprocessDebug:
     metadata: dict[str, Any]
     images: list[tuple[str, Image.Image]]

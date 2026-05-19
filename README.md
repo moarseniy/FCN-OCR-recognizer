@@ -355,6 +355,7 @@ inference-preprocessing, итоговым ответом, строками decod
 ```bash
 python inference.py \
   --checkpoint checkpoints/best_model.pth \
+  --segmentator-checkpoint checkpoints/gap_segmentator/best_model.pth \
   --image path/to/line.png \
   --scale-x 0.0 \
   --y-pad 0.0 \
@@ -362,6 +363,10 @@ python inference.py \
   --debug-image output/inference_debug.png \
   --debug-top-k 8
 ```
+
+`--segmentator-checkpoint` опционален. Если он передан вместе с
+`--debug-image`, в debug-картинку дополнительно попадет дорожка вертикального
+сегментатора: `0` для не-промежутка и `1` для промежутка между символами.
 
 Python API для использования из других скриптов:
 

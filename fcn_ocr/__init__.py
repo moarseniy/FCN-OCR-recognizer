@@ -5,14 +5,20 @@ from .results import (
     DecodedSymbol,
     PreprocessDebug,
     RecognitionResult,
+    SegmentationRun,
+    VerticalSegmentationResult,
 )
+from .segmentator import VerticalSegmentator
 
 __all__ = [
     "ClassConfidence",
     "DecodedSymbol",
     "PreprocessDebug",
     "RecognitionResult",
+    "SegmentationRun",
     "TextRecognizer",
+    "VerticalSegmentationResult",
+    "VerticalSegmentator",
     "save_debug_image",
     "tensor_to_pil",
 ]

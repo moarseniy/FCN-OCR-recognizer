@@ -12,6 +12,8 @@ from fcn_ocr import (
     DecodedSymbol,
     RecognitionResult,
     TextRecognizer,
+    VerticalSegmentationResult,
+    VerticalSegmentator,
     save_debug_image,
     tensor_to_pil,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "DecodedSymbol",
     "RecognitionResult",
     "TextRecognizer",
+    "VerticalSegmentationResult",
+    "VerticalSegmentator",
     "load_dataset_config",
     "main",
     "save_debug_image",
@@ -43,6 +47,11 @@ def load_dataset_config(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run FCN OCR inference.")
     parser.add_argument("--checkpoint", required=True, help="Path to checkpoint file.")
+    parser.add_argument(
+        "--segmentator-checkpoint",
+        default=None,
+        help="Optional binary vertical segmentator checkpoint. If --debug-image is set, its gap map is rendered too.",
+    )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
         "--config",
@@ -134,6 +143,27 @@ def main() -> None:
         baseline_deskew=not args.no_baseline_deskew,
         baseline_max_angle=args.baseline_max_angle,
     )
+    segmentator = None
+    segmentator_checkpoint_path = None
+    if args.segmentator_checkpoint:
+        segmentator_checkpoint_path = Path(args.segmentator_checkpoint)
+        if not segmentator_checkpoint_path.exists():
+            raise FileNotFoundError(f"Segmentator checkpoint not found: {segmentator_checkpoint_path}")
+        segmentator = VerticalSegmentator(
+            segmentator_checkpoint_path,
+            args.device,
+            verbose=True,
+            scale_x=args.scale_x,
+            y_pad=args.y_pad,
+            baseline_crop=args.baseline_crop,
+            baseline_top_pad=args.baseline_top_pad,
+            baseline_bottom_pad=args.baseline_bottom_pad,
+            baseline_deskew=not args.no_baseline_deskew,
+            baseline_max_angle=args.baseline_max_angle,
+        )
+
+    segmentation_result = None
+    segmentator_input_image = None
 
     if args.image:
         with Image.open(args.image) as image_file:
@@ -198,6 +228,17 @@ def main() -> None:
         if preprocess_debug is not None:
             debug_metadata.update(preprocess_debug.metadata)
 
+    if segmentator is not None:
+        segmentator_input_tensor = segmentator.preprocess_pil(source_image)
+        segmentator_input_image = tensor_to_pil(segmentator_input_tensor)
+        segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
+        debug_metadata["segmentator_checkpoint"] = str(segmentator_checkpoint_path)
+        print(
+            "Segmentator: "
+            f"{sum(1 for run in segmentation_result.runs if run.label == 1)} gap runs, "
+            f"{len(segmentation_result.raw_indices)} timesteps"
+        )
+
     print(f"Recognized text: '{result.text}'")
 
     if args.debug_image:
@@ -208,6 +249,8 @@ def main() -> None:
             debug_metadata,
             network_input_image=network_input_image,
             preprocess_images=preprocess_debug.images if preprocess_debug is not None else None,
+            segmentation_result=segmentation_result,
+            segmentator_input_image=segmentator_input_image,
         )
         print(f"Saved debug image: {args.debug_image}")
 

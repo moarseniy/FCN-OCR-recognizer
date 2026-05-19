@@ -6,7 +6,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .results import ClassConfidence, RecognitionResult, display_char
+from .results import ClassConfidence, RecognitionResult, VerticalSegmentationResult, display_char
 
 
 DEFAULT_DEBUG_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -96,6 +96,84 @@ def format_raw_run(result: RecognitionResult, start: int, end: int) -> str:
     return f"{span} {label} avg {avg_confidence:.3f}"
 
 
+def segmentation_runs_summary(result: VerticalSegmentationResult) -> str:
+    gap_runs = [run for run in result.runs if run.label == 1]
+    if not gap_runs:
+        return "no gap runs"
+    return "    ".join(
+        f"{run.start}-{run.end} gap={run.gap_probability:.3f} conf={run.confidence:.3f}"
+        for run in gap_runs
+    )
+
+
+def render_segmentation_panel(
+    image: Image.Image,
+    result: VerticalSegmentationResult,
+) -> Image.Image:
+    image = image.convert("RGB")
+    font = load_debug_font(14)
+    small_font = load_debug_font(12)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    padding = 10
+    band_height = 34
+    text_line_height = text_height(probe, small_font) + 4
+    title_height = text_height(probe, font) + 6
+    summary_lines = wrapped_lines(
+        probe,
+        f"gap runs: {segmentation_runs_summary(result)}",
+        small_font,
+        max(120, image.width - padding * 2),
+    )
+    panel_height = padding + title_height + image.height + 8 + band_height + 8 + text_line_height * len(summary_lines) + padding
+    panel = Image.new("RGB", (image.width + padding * 2, panel_height), color=(246, 246, 246))
+    draw = ImageDraw.Draw(panel)
+
+    y = padding
+    title = f"vertical segmentator input; logits {result.logits_shape}; T={len(result.raw_indices)}"
+    draw.text((padding, y), title, fill=(55, 55, 55), font=font)
+    y += title_height
+    panel.paste(image, (padding, y))
+    y += image.height + 8
+
+    band = Image.new("RGB", (image.width, band_height), color=(235, 235, 235))
+    band_draw = ImageDraw.Draw(band)
+    timesteps = max(1, len(result.raw_indices))
+    for x in range(image.width):
+        timestep = min(timesteps - 1, int((x + 0.5) * timesteps / max(1, image.width)))
+        gap_probability = result.gap_probabilities[timestep] if result.gap_probabilities else 0.0
+        label = result.raw_indices[timestep] if result.raw_indices else 0
+        if label == 1:
+            color = (
+                255,
+                int(round(220 - 140 * gap_probability)),
+                int(round(210 - 150 * gap_probability)),
+            )
+        else:
+            color = (
+                int(round(235 - 70 * gap_probability)),
+                int(round(245 - 40 * gap_probability)),
+                235,
+            )
+        band_draw.line((x, 0, x, band_height), fill=color)
+
+    for run in result.runs:
+        if run.label != 1:
+            continue
+        left = int(round(run.start * image.width / timesteps))
+        right = int(round((run.end + 1) * image.width / timesteps))
+        right = max(left + 1, right)
+        band_draw.rectangle((left, 0, right, band_height - 1), outline=(180, 20, 20), width=1)
+
+    draw.rectangle((padding - 1, y - 1, padding + image.width, y + band_height), outline=(160, 160, 160))
+    panel.paste(band, (padding, y))
+    y += band_height + 8
+
+    for line in summary_lines:
+        draw.text((padding, y), line, fill=(55, 55, 55), font=small_font)
+        y += text_line_height
+    return panel
+
+
 def save_debug_image(
     source_image: Image.Image,
     result: RecognitionResult,
@@ -103,6 +181,8 @@ def save_debug_image(
     metadata: dict[str, Any],
     network_input_image: Image.Image | None = None,
     preprocess_images: list[tuple[str, Image.Image]] | None = None,
+    segmentation_result: VerticalSegmentationResult | None = None,
+    segmentator_input_image: Image.Image | None = None,
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,10 +194,17 @@ def save_debug_image(
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     padding = 16
     min_report_width = 1280
+    raw_segmentation_panel = None
+    if segmentation_result is not None:
+        segmentation_base_image = segmentator_input_image or network_input_image
+        if segmentation_base_image is not None:
+            raw_segmentation_panel = render_segmentation_panel(segmentation_base_image, segmentation_result)
+
     canvas_width = max(
         min_report_width,
         source_image.width + padding * 2,
         (network_input_image.width + padding * 2) if network_input_image is not None else 0,
+        (raw_segmentation_panel.width + padding * 2) if raw_segmentation_panel is not None else 0,
     )
 
     max_image_width = canvas_width - padding * 2
@@ -127,6 +214,11 @@ def save_debug_image(
         (title, resize_debug_image(debug_image, max_image_width))
         for title, debug_image in (preprocess_images or [])
     ]
+    segmentation_panel = (
+        resize_debug_image(raw_segmentation_panel, max_image_width)
+        if raw_segmentation_panel is not None
+        else None
+    )
 
     table_width = canvas_width - padding * 2
     position_width = 56
@@ -172,6 +264,12 @@ def save_debug_image(
         info_lines.append(f"baseline text height: {metadata['baseline_text_height']}")
     if "expected_text" in metadata:
         info_lines.append(f"expected text: {metadata['expected_text']!r}")
+    if segmentation_result is not None:
+        info_lines.append(f"segmentator checkpoint: {metadata.get('segmentator_checkpoint', '-')}")
+        info_lines.append(f"segmentator input tensor shape: {segmentation_result.input_shape}")
+        info_lines.append(f"segmentator logits shape: {segmentation_result.logits_shape}")
+        info_lines.append(f"segmentator timesteps: {len(segmentation_result.raw_indices)}")
+        info_lines.append(f"segmentator gap runs: {sum(1 for run in segmentation_result.runs if run.label == 1)}")
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)
@@ -202,6 +300,8 @@ def save_debug_image(
         images_height += padding + image_title_height + debug_image.height
     if input_image is not None:
         images_height += padding + image_title_height + input_image.height
+    if segmentation_panel is not None:
+        images_height += padding + image_title_height + segmentation_panel.height
 
     canvas_height = padding + images_height + report_height
     canvas = Image.new("RGB", (canvas_width, canvas_height), color=(246, 246, 246))
@@ -244,6 +344,19 @@ def save_debug_image(
         input_x = (canvas_width - input_image.width) // 2
         canvas.paste(input_image, (input_x, y))
         y += input_image.height
+
+    if segmentation_panel is not None:
+        y += padding
+        draw.text(
+            (padding, y),
+            f"vertical segmentator ({segmentation_panel.width}x{segmentation_panel.height})",
+            fill=(55, 55, 55),
+            font=small_font,
+        )
+        y += image_title_height
+        segmentator_x = (canvas_width - segmentation_panel.width) // 2
+        canvas.paste(segmentation_panel, (segmentator_x, y))
+        y += segmentation_panel.height
 
     y += padding
 
