@@ -213,6 +213,17 @@ architecture: legacy_fcn
 architecture_params: {}
 ```
 
+Для вертикального сегментатора есть отдельная архитектура, которая сохраняет
+горизонтальное разрешение выхода 1:1 с входной картинкой:
+
+```yaml
+architecture: vertical_segmentator_fcn
+architecture_params:
+  base_channels: 16
+  temporal_kernel: 5
+  dropout: 0.05
+```
+
 Имя архитектуры сохраняется в checkpoint, поэтому `inference.py`,
 `evaluate_ocr.py` и `VerticalSegmentator` автоматически собирают такую же сеть
 при загрузке модели. Старые checkpoint без этого поля считаются
@@ -232,8 +243,9 @@ legacy_crop_right: 5
 ```yaml
 loss_mode: legacy_logreg
 legacy_target_mode: binary_gaps
-legacy_crop_left: 6
-legacy_crop_right: 5
+legacy_crop_left: 0
+legacy_crop_right: 0
+legacy_strict_width: true
 segmentator_gap_threshold: 0.5
 segmentator_min_gap_width: 1
 segmentator_merge_gap_width: 0

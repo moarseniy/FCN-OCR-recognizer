@@ -1,7 +1,10 @@
 chunks_dir: ../data/eng_101
 generator_config: null
-architecture: legacy_fcn
-architecture_params: {}
+architecture: vertical_segmentator_fcn
+architecture_params:
+  base_channels: 16
+  temporal_kernel: 5
+  dropout: 0.05
 
 epochs: 50
 batch_size: 1024
@@ -24,8 +27,9 @@ resume: false
 
 loss_mode: legacy_logreg
 legacy_target_mode: binary_gaps
-legacy_crop_left: 6
-legacy_crop_right: 5
+legacy_crop_left: 0
+legacy_crop_right: 0
+legacy_strict_width: true
 segmentator_gap_threshold: 0.5
 segmentator_min_gap_width: 1
 segmentator_merge_gap_width: 0
