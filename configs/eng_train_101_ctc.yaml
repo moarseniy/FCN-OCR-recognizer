@@ -18,11 +18,6 @@ val_fraction: 0.1
 seed: 42
 resume: false
 
-loss_mode: legacy_logreg
-legacy_target_mode: dense_symbols
-legacy_crop_left: 6
-legacy_crop_right: 5
-
 num_workers: 0
 drop_last: false
 prefetch_factor: 2

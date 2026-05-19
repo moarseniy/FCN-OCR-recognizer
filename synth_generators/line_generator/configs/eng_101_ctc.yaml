@@ -5,7 +5,7 @@ output_dir: ../../../data
 chunk_size: 1024
 num_workers: 4
 overwrite: false
-save_dense_targets: true
+save_dense_targets: false
 image_height: 48
 image_width: 64
 min_text_length: 4

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
 from model import FullyConvTextRecognizer
-from loss import ctc_loss
+from loss import ctc_loss, legacy_logreg_loss
 
 from datetime import datetime
 import os
@@ -26,6 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
+SUPPORTED_LOSS_MODES = ("ctc", "legacy_logreg")
+SUPPORTED_LEGACY_TARGET_MODES = ("uniform_text", "dense_symbols")
 
 
 class TrainingConfig(BaseModel):
@@ -46,6 +48,11 @@ class TrainingConfig(BaseModel):
     batch_size: int = Field(default=128, ge=1)
     batch_count: int | None = Field(default=None, ge=1)
     lr: float = Field(default=1e-3, gt=0.0)
+    loss_mode: str = "ctc"
+    legacy_target_mode: str = "uniform_text"
+    legacy_crop_left: int = Field(default=6, ge=0)
+    legacy_crop_right: int = Field(default=5, ge=0)
+    legacy_strict_width: bool = False
     scheduler: str = "reduce_on_plateau"
     scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     scheduler_patience: int = Field(default=3, ge=0)
@@ -110,6 +117,22 @@ class TrainingConfig(BaseModel):
             raise ValueError(f"scheduler must be one of {SUPPORTED_SCHEDULERS}")
         return value
 
+    @field_validator("loss_mode")
+    @classmethod
+    def loss_mode_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_LOSS_MODES:
+            raise ValueError(f"loss_mode must be one of {SUPPORTED_LOSS_MODES}")
+        return value
+
+    @field_validator("legacy_target_mode")
+    @classmethod
+    def legacy_target_mode_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_LEGACY_TARGET_MODES:
+            raise ValueError(f"legacy_target_mode must be one of {SUPPORTED_LEGACY_TARGET_MODES}")
+        return value
+
     @field_validator("augmentation_probabilities")
     @classmethod
     def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
@@ -128,6 +151,20 @@ class TrainingConfig(BaseModel):
         if unknown:
             raise ValueError(f"unknown augmentation configs: {unknown}")
         return value
+
+
+def model_num_classes(alphabet: str, loss_mode: str) -> int:
+    loss_mode = loss_mode.lower()
+    if loss_mode == "ctc":
+        return len(alphabet) + 1
+    if loss_mode == "legacy_logreg":
+        return len(alphabet)
+    raise ValueError(f"Unsupported loss_mode: {loss_mode}")
+
+
+def blank_index_for_loss(alphabet: str, loss_mode: str) -> int | None:
+    return len(alphabet) if loss_mode.lower() == "ctc" else None
+
 
 def save_checkpoint(
     model,
@@ -184,6 +221,7 @@ def build_checkpoint(
     val_losses,
     scheduler=None,
 ):
+    loss_mode = str(config.get("loss_mode", "ctc")).lower()
     return {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -195,8 +233,9 @@ def build_checkpoint(
         'config': config,
         'model_config': {
             'in_channels': config.get('channels', 3),
-            'num_classes': len(alphabet) + 1,
-            'blank_idx': len(alphabet),
+            'num_classes': model_num_classes(alphabet, loss_mode),
+            'blank_idx': blank_index_for_loss(alphabet, loss_mode),
+            'loss_mode': loss_mode,
         },
         'train_losses': train_losses,
         'val_losses': val_losses,
@@ -278,8 +317,33 @@ def step_scheduler(scheduler, config: TrainingConfig, val_loss: float, optimizer
         scheduler.step()
     return old_lr, current_lr(optimizer)
 
-def compute_loss(logits, targets, lengths, blank_idx):
-    return ctc_loss(logits, targets, lengths, blank_idx)
+def compute_loss(
+    logits,
+    targets,
+    lengths,
+    blank_idx,
+    loss_mode="ctc",
+    legacy_target_mode="uniform_text",
+    legacy_crop_left=6,
+    legacy_crop_right=5,
+    legacy_strict_width=False,
+):
+    loss_mode = loss_mode.lower()
+    if loss_mode == "ctc":
+        if blank_idx is None:
+            raise ValueError("blank_idx is required for CTC loss")
+        return ctc_loss(logits, targets, lengths, blank_idx)
+    if loss_mode == "legacy_logreg":
+        return legacy_logreg_loss(
+            logits,
+            targets,
+            lengths,
+            target_mode=legacy_target_mode,
+            crop_left=legacy_crop_left,
+            crop_right=legacy_crop_right,
+            strict_width=legacy_strict_width,
+        )
+    raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
 
 def prepare_batch(imgs, targets, lengths, device):
@@ -293,7 +357,21 @@ def prepare_batch(imgs, targets, lengths, device):
     return imgs, targets, lengths
 
 
-def validate(model, loader, device, blank_idx, max_batches=50, preview_saver=None, log_every=0, augmenter=None):
+def validate(
+    model,
+    loader,
+    device,
+    blank_idx,
+    max_batches=50,
+    preview_saver=None,
+    log_every=0,
+    augmenter=None,
+    loss_mode="ctc",
+    legacy_target_mode="uniform_text",
+    legacy_crop_left=6,
+    legacy_crop_right=5,
+    legacy_strict_width=False,
+):
     """Валидация модели"""
     model.eval()
     total_loss = 0.0
@@ -316,7 +394,17 @@ def validate(model, loader, device, blank_idx, max_batches=50, preview_saver=Non
 
             logits = model(imgs)
 
-            loss = compute_loss(logits, targets, lengths, blank_idx)
+            loss = compute_loss(
+                logits,
+                targets,
+                lengths,
+                blank_idx,
+                loss_mode=loss_mode,
+                legacy_target_mode=legacy_target_mode,
+                legacy_crop_left=legacy_crop_left,
+                legacy_crop_right=legacy_crop_right,
+                legacy_strict_width=legacy_strict_width,
+            )
             total_loss += loss.item()
             batches += 1
             samples += imgs.size(0)
@@ -350,6 +438,11 @@ def train_one_epoch(
     preview_saver=None,
     log_every=0,
     augmenter=None,
+    loss_mode="ctc",
+    legacy_target_mode="uniform_text",
+    legacy_crop_left=6,
+    legacy_crop_right=5,
+    legacy_strict_width=False,
 ):
     model.train()
     total_loss = 0.0
@@ -371,7 +464,17 @@ def train_one_epoch(
 
         logits = model(imgs)
 
-        loss = compute_loss(logits, targets, lengths, blank_idx)
+        loss = compute_loss(
+            logits,
+            targets,
+            lengths,
+            blank_idx,
+            loss_mode=loss_mode,
+            legacy_target_mode=legacy_target_mode,
+            legacy_crop_left=legacy_crop_left,
+            legacy_crop_right=legacy_crop_right,
+            legacy_strict_width=legacy_strict_width,
+        )
 
         # print(torch.isnan(loss), torch.isinf(loss))
 
@@ -413,6 +516,8 @@ def tensor_to_pil(image_tensor):
     return Image.fromarray(array, mode="RGB")
 
 def decode_target_for_preview(target, length, alphabet):
+    if int(length) < 0:
+        return "<dense_symbols>"
     return "".join(alphabet[idx] for idx in target[:length].tolist())
 
 class InputPreviewSaver:
@@ -661,10 +766,24 @@ def effective_training_config_data(config: TrainingConfig, dataset_config: Singl
 
 
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
+    target_format = "dense_symbols" if (
+        config.loss_mode == "legacy_logreg" and config.legacy_target_mode == "dense_symbols"
+    ) else "text"
+
     if config.chunks_dir:
         metadata = load_chunk_metadata(config.chunks_dir)
         dataset_config = dataset_config_from_training_config(config, metadata)
-        dataset = ChunkedLineDataset(config.chunks_dir, cache_size=config.chunk_cache_size, config=dataset_config)
+        if target_format == "dense_symbols" and not metadata.get("dense_targets", False):
+            raise ValueError(
+                "Training config requests legacy_target_mode=dense_symbols, but chunk metadata says "
+                "dense_targets are absent. Regenerate the dataset with save_dense_targets: true."
+            )
+        dataset = ChunkedLineDataset(
+            config.chunks_dir,
+            cache_size=config.chunk_cache_size,
+            config=dataset_config,
+            target_format=target_format,
+        )
         print(f"Dataset source: chunks ({config.chunks_dir})")
         if metadata:
             print(f"Dataset metadata: {Path(config.chunks_dir) / 'metadata.yaml'}")
@@ -680,7 +799,7 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
     generator_config = SingleLineDatasetConfig.model_validate_with_paths(generator_data, config.generator_config)
     generator_config = dataset_config_from_training_config(config, generator_config.model_dump())
 
-    dataset = SingleLineDataset(generator_config)
+    dataset = SingleLineDataset(generator_config, target_format=target_format)
     print(f"Dataset source: online generator ({config.generator_config})")
     return dataset, generator_config
 
@@ -838,10 +957,22 @@ def run_training(
     print(f"Validation samples: {len(val_dataset)}")
 
     alphabet = dataset_config.alphabet
-    blank_idx = len(alphabet)
+    blank_idx = blank_index_for_loss(alphabet, args.loss_mode)
+    num_classes = model_num_classes(alphabet, args.loss_mode)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
-    print("Blank index: ", blank_idx)
+    print("Loss mode: ", args.loss_mode)
+    print("Output classes: ", num_classes)
+    if blank_idx is not None:
+        print("Blank index: ", blank_idx)
+    else:
+        print("Blank index: none")
+        print("Legacy target mode: ", args.legacy_target_mode)
+        if args.legacy_target_mode == "dense_symbols":
+            print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
+            print("Batch targets: dense symbol labels from generator/chunks")
+        else:
+            print("Legacy text alignment: uniform projection over model output width")
 
     train_loader = make_data_loader(
         dataset,
@@ -907,7 +1038,7 @@ def run_training(
 
     model = FullyConvTextRecognizer(
         in_channels=dataset_config.channels,
-        num_classes=len(alphabet) + 1,
+        num_classes=num_classes,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -959,6 +1090,11 @@ def run_training(
                 train_preview_saver,
                 args.log_every,
                 train_augmenter,
+                args.loss_mode,
+                args.legacy_target_mode,
+                args.legacy_crop_left,
+                args.legacy_crop_right,
+                args.legacy_strict_width,
             )
             train_loss = train_stats["loss"]
             train_losses.append(train_loss)
@@ -972,6 +1108,11 @@ def run_training(
                 val_preview_saver,
                 args.log_every,
                 val_augmenter,
+                args.loss_mode,
+                args.legacy_target_mode,
+                args.legacy_crop_left,
+                args.legacy_crop_right,
+                args.legacy_strict_width,
             )
             val_loss = val_stats["loss"]
             val_losses.append(val_loss)

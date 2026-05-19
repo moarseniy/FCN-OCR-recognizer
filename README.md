@@ -13,8 +13,19 @@
 - `target` — padded-тензор длиной `max_text_length`;
 - `length` — реальная длина строки.
 
-Обучение сейчас использует один основной режим: CTC loss. Последний класс
-модели — `blank`, поэтому `num_classes = len(alphabet) + 1`.
+Обучение по умолчанию использует CTC loss. Последний класс модели — `blank`,
+поэтому `num_classes = len(alphabet) + 1`.
+
+Для экспериментов со старой схемой `final -> softmax -> logreg` есть
+`loss_mode: legacy_logreg`. В этом режиме `final` имеет ровно
+`len(alphabet)` выходов, без `blank`. Если в данных есть плотная symbol-map
+разметка, можно выбрать `legacy_target_mode: dense_symbols`: таргет будет
+выравниваться как в старом графе через `max_pool2d(kernel=(4, 1),
+stride=(4, 1), padding=(1, 0))` и `cropX=[6, -5]`. Для текущих текстовых
+чанков доступен `legacy_target_mode: uniform_text`, который равномерно
+раскладывает строку по выходной ширине модели. Это удобный режим для проверки
+идеи, но CTC остается более корректным для строк переменной длины и повторов
+одинаковых символов.
 
 В generation-конфиге `sample_alphabet` задает символы, из которых синтезируются
 строки. В training-конфиге `alphabet` задает классы модели. В примерах оба
@@ -147,14 +158,24 @@ python -m synth_generators.line_generator.generate_dataset \
 ```
 
 В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
-`N x C x H x W`) и исходные `texts` как текстовая разметка. Рядом создается
-`metadata.yaml` с параметрами датасета: алфавитом, `space_char`, размерами
-картинок, числом каналов и максимальной длиной текста. Настройки обучения и
-настройки аугментаций в offline-датасет не сохраняются. `output_dir`,
-`chunk_size`, `num_workers` и `overwrite` задаются в generation-конфиге.
-Датасет сохраняется в подпапку с именем generation-конфига, например
-`data/eng_001`. Если `num_workers > 0`, чанки генерируются параллельно.
-Offline-генерация сохраняет чистые строки без аугментаций.
+`N x C x H x W`) и исходные `texts` как текстовая разметка. Если нужен
+`legacy_logreg` с плотной разметкой, добавьте в generation-конфиг:
+
+```yaml
+save_dense_targets: true
+```
+
+Тогда в чанки также попадет `dense_targets` (`N x W`) — класс символа для
+каждой X-колонки исходного кропа. При обучении loss делает legacy-crop и
+пересэмплирует эту разметку к выходной ширине сети `T`. Рядом создается
+`metadata.yaml` с параметрами
+датасета: алфавитом, `space_char`, размерами картинок, числом каналов и
+максимальной длиной текста. Настройки обучения и настройки аугментаций в
+offline-датасет не сохраняются. `output_dir`, `chunk_size`, `num_workers` и
+`overwrite` задаются в generation-конфиге. Датасет сохраняется в подпапку с
+именем generation-конфига, например `data/eng_001`. Если `num_workers > 0`,
+чанки генерируются параллельно. Offline-генерация сохраняет чистые строки без
+аугментаций.
 
 Посмотреть пример из чанка с теми же аугментациями, которые использует
 обучение:
@@ -171,6 +192,15 @@ python synth_generators/line_generator/render_text.py \
 
 ```bash
 python train.py --config configs/eng_train_001.yaml
+```
+
+Для обучения в старом плотном режиме на чанках с `dense_targets`:
+
+```yaml
+loss_mode: legacy_logreg
+legacy_target_mode: dense_symbols
+legacy_crop_left: 6
+legacy_crop_right: 5
 ```
 
 В training-конфиге задаются `chunks_dir` или `generator_config`, learning rate,

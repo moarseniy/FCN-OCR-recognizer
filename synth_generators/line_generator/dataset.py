@@ -90,6 +90,7 @@ class SingleLineDatasetConfig(BaseModel):
     chunk_size: int = Field(default=1024, ge=1)
     num_workers: int = Field(default=0, ge=0)
     overwrite: bool = False
+    save_dense_targets: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -255,13 +256,17 @@ class GeneratedLineSample:
     image: torch.Tensor
     target: torch.Tensor
     length: int
+    dense_target: torch.Tensor | None
 
 
 class SingleLineDataset(Dataset):
     """Renders synthetic text lines with CTC-friendly sequence labels."""
 
-    def __init__(self, config: SingleLineDatasetConfig):
+    def __init__(self, config: SingleLineDatasetConfig, target_format: str = "text"):
         self.config = config
+        self.target_format = target_format
+        if self.target_format not in {"text", "dense_symbols"}:
+            raise ValueError("target_format must be 'text' or 'dense_symbols'")
         self.alphabet = config.alphabet or config.sample_alphabet
         self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
@@ -293,6 +298,10 @@ class SingleLineDataset(Dataset):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         sample = self.generate_sample_from_index(index)
+        if self.target_format == "dense_symbols":
+            if sample.dense_target is None:
+                raise RuntimeError("dense target was not generated for this sample")
+            return sample.image, sample.dense_target, torch.tensor(-1, dtype=torch.long)
         return sample.image, sample.target, torch.tensor(sample.length, dtype=torch.long)
 
     def generate_sample_from_index(self, index: int) -> GeneratedLineSample:
@@ -344,8 +353,8 @@ class SingleLineDataset(Dataset):
         if len(text) > self.config.max_text_length:
             raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
         font = font or self._load_font_that_fits(text, rng)
-        image = self._render_text(text, font, rng)
-        return self._make_sample(image, text)
+        image, spans = self._render_text(text, font, rng)
+        return self._make_sample(image, text, spans)
 
     def _validate_text(self, text: str) -> None:
         text = self._normalize_spaces(text)
@@ -456,7 +465,7 @@ class SingleLineDataset(Dataset):
         text: str,
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
-    ) -> Image.Image:
+    ) -> tuple[Image.Image, list[tuple[str, float, float]]]:
         cfg = self.config
         image = self._make_background(rng)
         draw = ImageDraw.Draw(image)
@@ -476,8 +485,9 @@ class SingleLineDataset(Dataset):
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
 
         draw.text((x, y), text, font=font, fill=fill)
+        spans = self._char_spans(text, font, float(x))
 
-        return image
+        return image, spans
 
     def _render_long_text(
         self,
@@ -513,14 +523,7 @@ class SingleLineDataset(Dataset):
 
         draw.text((x, y), text, font=font, fill=fill)
 
-        spans: list[tuple[str, float, float]] = []
-        for char_index, char in enumerate(text):
-            start = float(x) + float(font.getlength(text[:char_index]))
-            end = float(x) + float(font.getlength(text[: char_index + 1]))
-            if end <= start:
-                end = start + max(1.0, float(font.getlength(char)))
-            spans.append((char, start, end))
-
+        spans = self._char_spans(text, font, float(x))
         return image, spans
 
     def _slice_line_image(
@@ -534,26 +537,58 @@ class SingleLineDataset(Dataset):
 
         for left in range(0, image.width - cfg.image_width + 1, stride):
             right = left + cfg.image_width
-            text = self._crop_text(spans, left, right)
+            crop_spans = self._crop_spans(spans, left, right)
+            text = "".join(char for char, _, _ in crop_spans)
             if len(text) < cfg.min_crop_text_length:
                 continue
             if len(text) > cfg.max_text_length:
                 continue
             crop = image.crop((left, 0, right, cfg.image_height))
-            samples.append(self._make_sample(crop, text))
+            samples.append(self._make_sample(crop, text, crop_spans))
 
         return samples
 
-    def _crop_text(self, spans: list[tuple[str, float, float]], left: int, right: int) -> str:
-        chars = []
+    def _crop_spans(
+        self,
+        spans: list[tuple[str, float, float]],
+        left: int,
+        right: int,
+    ) -> list[tuple[str, float, float]]:
+        cropped_spans = []
         for char, start, end in spans:
             center = (start + end) * 0.5
             if left <= center < right:
-                chars.append(char)
-        return self._normalize_spaces("".join(chars))
+                cropped_spans.append((char, start - left, end - left))
+        return self._normalize_span_sequence(cropped_spans)
 
-    def _make_sample(self, image: Image.Image, text: str) -> GeneratedLineSample:
+    def _normalize_span_sequence(
+        self,
+        spans: list[tuple[str, float, float]],
+    ) -> list[tuple[str, float, float]]:
+        space = self.config.space_char
+        normalized = []
+        previous_was_space = False
+        for char, start, end in spans:
+            is_space = char == space
+            if is_space and (not normalized or previous_was_space):
+                continue
+            normalized.append((char, start, end))
+            previous_was_space = is_space
+
+        while normalized and normalized[-1][0] == space:
+            normalized.pop()
+        return normalized
+
+    def _make_sample(
+        self,
+        image: Image.Image,
+        text: str,
+        spans: list[tuple[str, float, float]],
+    ) -> GeneratedLineSample:
         target = self._encode_text(text)
+        dense_target = None
+        if self.target_format == "dense_symbols" or self.config.save_dense_targets:
+            dense_target = self._encode_dense_symbols(spans, image.width)
         length = len(text)
 
         if self.config.channels == 3:
@@ -568,6 +603,7 @@ class SingleLineDataset(Dataset):
             image=tensor.contiguous(),
             target=target,
             length=length,
+            dense_target=dense_target,
         )
 
     def _encode_text(self, text: str) -> torch.Tensor:
@@ -575,6 +611,50 @@ class SingleLineDataset(Dataset):
         encoded = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
         target[: len(encoded)] = encoded
         return target
+
+    def _encode_dense_symbols(
+        self,
+        spans: list[tuple[str, float, float]],
+        width: int,
+    ) -> torch.Tensor:
+        if not spans:
+            raise ValueError("cannot encode dense symbols for an empty span list")
+
+        labels = torch.empty(width, dtype=torch.long)
+        centers = [0.5 * (start + end) for _, start, end in spans]
+        last_span_index = len(spans) - 1
+
+        for x in range(width):
+            position = x + 0.5
+            chosen_index = None
+            for span_index, (_, start, end) in enumerate(spans):
+                if start <= position < end:
+                    chosen_index = span_index
+                    break
+            if chosen_index is None:
+                chosen_index = min(
+                    range(len(spans)),
+                    key=lambda span_index: abs(centers[span_index] - position),
+                )
+            char = spans[min(chosen_index, last_span_index)][0]
+            labels[x] = self.char_to_index[char]
+
+        return labels
+
+    def _char_spans(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        x: float,
+    ) -> list[tuple[str, float, float]]:
+        spans: list[tuple[str, float, float]] = []
+        for char_index, char in enumerate(text):
+            start = x + float(font.getlength(text[:char_index]))
+            end = x + float(font.getlength(text[: char_index + 1]))
+            if end <= start:
+                end = start + max(1.0, float(font.getlength(char)))
+            spans.append((char, start, end))
+        return spans
 
     def _load_font(self, rng: random.Random, size: int | None = None) -> ImageFont.FreeTypeFont:
         font_size = size or rng.randint(self.config.font_size_min, self.config.font_size_max)

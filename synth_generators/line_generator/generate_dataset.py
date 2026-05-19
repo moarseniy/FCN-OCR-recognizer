@@ -18,25 +18,36 @@ def image_to_uint8(image: torch.Tensor) -> torch.Tensor:
     return (image.detach().cpu().clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)
 
 
-def save_chunk(samples: Iterable[GeneratedLineSample], output_dir: Path, chunk_idx: int) -> dict:
+def save_chunk(
+    samples: Iterable[GeneratedLineSample],
+    output_dir: Path,
+    chunk_idx: int,
+    save_dense_targets: bool = False,
+) -> dict:
     images = []
     texts = []
+    dense_targets = []
 
     for sample in samples:
         images.append(image_to_uint8(sample.image))
         texts.append(sample.text)
+        if save_dense_targets:
+            if sample.dense_target is None:
+                raise RuntimeError("sample does not contain dense_target")
+            dense_targets.append(sample.dense_target.detach().cpu().to(torch.int16))
 
     if not images:
         raise ValueError("cannot save an empty chunk")
 
     filename = f"chunk_{chunk_idx:06d}.pt"
-    torch.save(
-        {
-            "images": torch.stack(images, dim=0).contiguous(),
-            "texts": texts,
-        },
-        output_dir / filename,
-    )
+    chunk = {
+        "images": torch.stack(images, dim=0).contiguous(),
+        "texts": texts,
+    }
+    if save_dense_targets:
+        chunk["dense_targets"] = torch.stack(dense_targets, dim=0).contiguous()
+
+    torch.save(chunk, output_dir / filename)
     return {"file": filename, "samples": len(images)}
 
 
@@ -83,7 +94,12 @@ def generate_chunk_worker(task: dict) -> dict:
         raise RuntimeError(
             f"Generator stopped after {len(samples)} samples, expected {task['sample_count']}"
         )
-    return save_chunk(samples, Path(task["output_dir"]), task["chunk_idx"])
+    return save_chunk(
+        samples,
+        Path(task["output_dir"]),
+        task["chunk_idx"],
+        save_dense_targets=bool(task["save_dense_targets"]),
+    )
 
 
 def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
@@ -110,6 +126,7 @@ def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
         "dtype": "uint8",
         "chunk_size": config.chunk_size,
         "chunk_count": len(chunks),
+        "dense_targets": config.save_dense_targets,
         "chunks": chunks,
     }
 
@@ -135,7 +152,12 @@ def generate_chunks_sequential(
         if len(chunk_samples) != end - start:
             raise RuntimeError(f"Generator stopped after {saved} samples, expected {total}")
 
-        chunk = save_chunk(chunk_samples, output_dir, chunk_idx)
+        chunk = save_chunk(
+            chunk_samples,
+            output_dir,
+            chunk_idx,
+            save_dense_targets=dataset.config.save_dense_targets,
+        )
         chunks.append(chunk)
         saved += chunk["samples"]
         print(f"saved {chunk['file']} [{start}:{start + chunk['samples']}]")
@@ -164,6 +186,7 @@ def generate_chunks_parallel(
                 "end": end,
                 "sample_count": end - start,
                 "output_dir": str(output_dir),
+                "save_dense_targets": config.save_dense_targets,
                 "config": worker_config_data(
                     config,
                     font_paths,

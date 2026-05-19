@@ -33,10 +33,19 @@ def load_chunk_metadata(root_dir: str | Path) -> dict:
 class ChunkedLineDataset(Dataset):
     """Reads pre-rendered OCR line chunks saved by generate_dataset.py."""
 
-    def __init__(self, root_dir: str | Path, cache_size: int = 2, config: SingleLineDatasetConfig | None = None):
+    def __init__(
+        self,
+        root_dir: str | Path,
+        cache_size: int = 2,
+        config: SingleLineDatasetConfig | None = None,
+        target_format: str = "text",
+    ):
         self.root_dir = Path(root_dir)
         self.cache_size = max(1, cache_size)
         self.config = config
+        self.target_format = target_format
+        if self.target_format not in {"text", "dense_symbols"}:
+            raise ValueError("target_format must be 'text' or 'dense_symbols'")
         self.metadata = load_chunk_metadata(self.root_dir)
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)} if config else {}
         chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
@@ -73,6 +82,8 @@ class ChunkedLineDataset(Dataset):
 
         if self.config is None:
             raise RuntimeError("config is required to encode chunk texts into CTC targets")
+        if self.target_format == "dense_symbols":
+            return self._make_dense_symbol_target(image, chunk, local_idx)
         return self._make_target_from_text(image, chunk["texts"][local_idx])
 
     def iter_texts(self):
@@ -125,6 +136,8 @@ class ChunkedLineDataset(Dataset):
         sample_count = chunk["images"].shape[0]
         if len(chunk["texts"]) != sample_count:
             raise ValueError(f"Chunk {path} has inconsistent first dimensions")
+        if "dense_targets" in chunk and chunk["dense_targets"].shape[0] != sample_count:
+            raise ValueError(f"Chunk {path} has inconsistent dense_targets first dimension")
 
     def _make_target_from_text(self, image: torch.Tensor, text: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.config is None:
@@ -145,6 +158,26 @@ class ChunkedLineDataset(Dataset):
         if text:
             target[: len(text)] = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
         return image, target, torch.tensor(len(text), dtype=torch.long)
+
+    def _make_dense_symbol_target(
+        self,
+        image: torch.Tensor,
+        chunk: dict,
+        local_idx: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if "dense_targets" not in chunk:
+            raise KeyError(
+                "Chunk does not contain dense_targets. Regenerate the dataset with "
+                "save_dense_targets: true in the generation config."
+            )
+        target = chunk["dense_targets"][local_idx].long()
+        if target.dim() != 1:
+            raise ValueError(f"dense target must have shape (W,), got {tuple(target.shape)}")
+        if target.size(0) != image.shape[-1]:
+            raise ValueError(
+                f"dense target width {target.size(0)} does not match image width {image.shape[-1]}"
+            )
+        return image, target, torch.tensor(-1, dtype=torch.long)
 
     def _normalize_text(self, text: str) -> str:
         if self.config is None:

@@ -73,7 +73,10 @@ class TextRecognizer:
         checkpoint_config = self.checkpoint.get("config", {})
         self.in_channels = int(model_config.get("in_channels", 3))
         self.num_classes = int(model_config.get("num_classes", len(self.alphabet) + 1))
-        self.blank_idx = int(model_config.get("blank_idx", len(self.alphabet)))
+        self.loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", "ctc"))).lower()
+        default_blank_idx = len(self.alphabet) if self.loss_mode == "ctc" else None
+        blank_idx_value = model_config.get("blank_idx", default_blank_idx)
+        self.blank_idx = int(blank_idx_value) if blank_idx_value is not None else None
         self.space_char = checkpoint_config.get("space_char", " ")
         self.space_idx = self.alphabet.index(self.space_char) if self.space_char in self.alphabet else None
         self.image_height = int(checkpoint_config.get("image_height", 48))
@@ -96,7 +99,8 @@ class TextRecognizer:
         print(f"Using device: {self.device}")
         print(f"Model loaded from epoch {epoch}{loss_text}")
         print(f"Alphabet size: {len(self.alphabet)}")
-        print(f"Blank index: {self.blank_idx}")
+        print(f"Loss mode: {self.loss_mode}")
+        print(f"Blank index: {self.blank_idx if self.blank_idx is not None else 'none'}")
         print(f"Preprocess scale_x: {self.scale_x:+.4f}")
         print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
         print(f"Baseline crop:      {self.baseline_crop}")
@@ -108,7 +112,7 @@ class TextRecognizer:
             )
 
     def class_label(self, index: int) -> str:
-        if index == self.blank_idx:
+        if self.blank_idx is not None and index == self.blank_idx:
             return BLANK_SYMBOL
         return display_char(self.idx_to_char.get(index, f"<{index}>"))
 
@@ -501,7 +505,7 @@ class TextRecognizer:
             text = "".join(
                 self.idx_to_char[class_index]
                 for class_index in collapsed_ids
-                if class_index != self.blank_idx and class_index in self.idx_to_char
+                if (self.blank_idx is None or class_index != self.blank_idx) and class_index in self.idx_to_char
             )
             decoded.append((text, raw_ids))
         return decoded
@@ -551,7 +555,7 @@ class TextRecognizer:
 
         for timestep in keep.nonzero(as_tuple=False).flatten().detach().cpu().tolist():
             class_index = raw_indices[timestep]
-            if class_index == self.blank_idx:
+            if self.blank_idx is not None and class_index == self.blank_idx:
                 continue
             char = self.idx_to_char.get(class_index)
             if char is None:
@@ -569,7 +573,7 @@ class TextRecognizer:
         text = "".join(
             self.idx_to_char[idx]
             for idx in collapsed[0, : lengths[0]].detach().cpu().tolist()
-            if idx != self.blank_idx and idx in self.idx_to_char
+            if (self.blank_idx is None or idx != self.blank_idx) and idx in self.idx_to_char
         )
         return RecognitionResult(
             text=text,

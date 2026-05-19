@@ -28,7 +28,9 @@ class FullyConvTextRecognizer(nn.Module):
     """
     Полносверточный распознаватель строк.
       - in_channels: 1 (grayscale) или 3 (RGB)
-      - num_classes: число классов (символов)
+      - num_classes: число выходных классов final 1x1 conv
+        * CTC: len(alphabet) + 1, последний класс -- blank
+        * legacy_logreg: len(alphabet), без blank
       - input height должен быть заранее подобран так, чтобы сеть могла
         свести высоту к 1 (см. stride по высоте в conv1 и т.д.)
     """
@@ -108,11 +110,8 @@ class FullyConvTextRecognizer(nn.Module):
         """
         x: (B, C, H, W)  -- переменная ширина W, фиксированная H
         Возвращает:
-          logits: (B, T, C_classes)  -- невыпуклые логиты по временным шагам (T — ширина выхода)
-          probs:  (B, T, C_classes)  -- softmax probs (можно не вычислять, если нужен только лосс)
+          logits: (B, C_classes, T)  -- логиты по временным шагам (T — ширина выхода)
         """
-
-        w_in = x.shape[3]
 
         # последовательные проходы
         y = self.conv0(x)
@@ -126,22 +125,12 @@ class FullyConvTextRecognizer(nn.Module):
         y = self.conv6(y)
         y = self.final(y)  # shape (B, num_classes, H_out, W_out)
 
-        # ожидаем, что H_out == 1 (после страйдов по высоте)
-        # if y.size(2) != 1:
-        #     # если H_out != 1 — можно сделать adaptive pooling по высоте, но я предпочитаю предупредить
-        #     # для простоты: сведём высоту к 1 через mean по высоте
-        #     y = y.mean(dim=2, keepdim=True)
-
-        # y = y.squeeze(2)          # (B, num_classes, W_out)
-        # y = y.permute(0, 2, 1)    # (B, T=W_out, num_classes)
+        if y.size(2) != 1:
+            raise RuntimeError(
+                "FullyConvTextRecognizer expects output height 1 before squeezing; "
+                f"got output shape {tuple(y.shape)}. Check training image_height."
+            )
 
         y = y.squeeze(2)
         logits = y
-        # probs = F.softmax(logits, dim=1)
-        # pred_ids = logits.argmax(dim=1)
-        # print("PREDS", pred_ids[0], pred_ids.shape)
-
-        # collapsed, lengths = decode_greedy_batch_tensor(pred_ids)
-        # print("GREEDY", collapsed, lengths)
-
         return logits
