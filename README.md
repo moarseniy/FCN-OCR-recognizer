@@ -227,6 +227,24 @@ segmentator_merge_gap_width: 0
 
 Пример конфига: `configs/eng_train_101_gaps.yaml`.
 
+Подобрать параметры вертикального сегментатора без OCR, сравнивая число
+предсказанных межбуквенных промежутков с длиной строки из Label Studio:
+
+```bash
+python evaluate_segmentator.py \
+  --json labels.json \
+  --images images \
+  --checkpoint checkpoints/gap_segmentator/best_model.pth \
+  --out output/segmentator_lengths.csv \
+  --optuna-trials 100 \
+  --optuna-trials-out output/segmentator_trials.tsv \
+  --optuna-tune-baseline-crop \
+  --optuna-tune-baseline-params
+```
+
+Оцениваемая длина считается как `число gap-runs + 1`, поэтому пробел в
+разметке считается обычным символом.
+
 В training-конфиге задаются `chunks_dir` или `generator_config`, optimizer,
 learning rate, batch size, workers, checkpoint path, preview-настройки и
 GPU-аугментации.
