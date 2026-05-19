@@ -13,7 +13,7 @@ from typing import Any, Callable
 from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
-from model import FullyConvTextRecognizer
+from fcn_architectures import available_architectures, create_model, normalize_architecture_name
 from loss import ctc_loss, legacy_logreg_loss
 
 from datetime import datetime
@@ -41,6 +41,8 @@ class TrainingConfig(BaseModel):
     image_height: int | None = Field(default=None, ge=16)
     image_width: int | None = Field(default=None, ge=32)
     background: int | None = Field(default=None, ge=0, le=255)
+    architecture: str = "legacy_fcn"
+    architecture_params: dict[str, Any] = Field(default_factory=dict)
 
     chunks_dir: str | None = None
     generator_config: str | None = None
@@ -137,6 +139,14 @@ class TrainingConfig(BaseModel):
         value = value.lower()
         if value not in SUPPORTED_OPTIMIZERS:
             raise ValueError(f"optimizer must be one of {SUPPORTED_OPTIMIZERS}")
+        return value
+
+    @field_validator("architecture")
+    @classmethod
+    def architecture_must_be_supported(cls, value: str) -> str:
+        value = normalize_architecture_name(value)
+        if value not in available_architectures():
+            raise ValueError(f"architecture must be one of {available_architectures()}")
         return value
 
     @field_validator("loss_mode")
@@ -247,6 +257,8 @@ def build_checkpoint(
 ):
     loss_mode = str(config.get("loss_mode", "ctc")).lower()
     legacy_target_mode = str(config.get("legacy_target_mode", "uniform_text")).lower()
+    architecture = normalize_architecture_name(str(config.get("architecture", "legacy_fcn")))
+    architecture_params = dict(config.get("architecture_params") or {})
     return {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -257,6 +269,8 @@ def build_checkpoint(
         'alphabet': alphabet,
         'config': config,
         'model_config': {
+            'architecture': architecture,
+            'architecture_params': architecture_params,
             'in_channels': config.get('channels', 3),
             'num_classes': model_num_classes(alphabet, loss_mode, legacy_target_mode),
             'blank_idx': blank_index_for_loss(alphabet, loss_mode),
@@ -1055,6 +1069,9 @@ def run_training(
     print("Alphabet length: ", len(alphabet))
     print("Loss mode: ", args.loss_mode)
     print("Output classes: ", num_classes)
+    print("Architecture: ", args.architecture)
+    if args.architecture_params:
+        print("Architecture params: ", args.architecture_params)
     if blank_idx is not None:
         print("Blank index: ", blank_idx)
     else:
@@ -1131,9 +1148,11 @@ def run_training(
     if val_augmenter is not None:
         print("GPU validation augmentations: on")
 
-    model = FullyConvTextRecognizer(
+    model = create_model(
+        args.architecture,
         in_channels=dataset_config.channels,
         num_classes=num_classes,
+        **args.architecture_params,
     ).to(device)
 
     optimizer = create_optimizer(model, args)
@@ -1156,6 +1175,17 @@ def run_training(
     if args.resume and latest_checkpoint.exists():
         print("Found latest checkpoint, loading...")
         checkpoint = torch.load(latest_checkpoint, map_location=device)
+        checkpoint_architecture = normalize_architecture_name(
+            checkpoint.get("model_config", {}).get(
+                "architecture",
+                checkpoint.get("config", {}).get("architecture", "legacy_fcn"),
+            )
+        )
+        if checkpoint_architecture != args.architecture:
+            raise ValueError(
+                "Resume checkpoint architecture mismatch: "
+                f"checkpoint={checkpoint_architecture}, config={args.architecture}"
+            )
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:

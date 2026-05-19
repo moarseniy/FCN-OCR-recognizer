@@ -13,7 +13,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 import torch
 
-from model import FullyConvTextRecognizer, decode_greedy_batch_tensor
+from fcn_architectures import create_model, normalize_architecture_name
+from model import decode_greedy_batch_tensor
 from .results import BLANK_SYMBOL, ClassConfidence, DecodedSymbol, PreprocessDebug, RecognitionResult, display_char
 
 
@@ -71,6 +72,16 @@ class TextRecognizer:
 
         model_config = self.checkpoint.get("model_config", {})
         checkpoint_config = self.checkpoint.get("config", {})
+        self.architecture = normalize_architecture_name(
+            model_config.get("architecture", checkpoint_config.get("architecture", "legacy_fcn"))
+        )
+        self.architecture_params = dict(
+            model_config.get(
+                "architecture_params",
+                checkpoint_config.get("architecture_params", {}),
+            )
+            or {}
+        )
         self.in_channels = int(model_config.get("in_channels", 3))
         self.num_classes = int(model_config.get("num_classes", len(self.alphabet) + 1))
         self.loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", "ctc"))).lower()
@@ -82,9 +93,11 @@ class TextRecognizer:
         self.image_height = int(checkpoint_config.get("image_height", 48))
         self.preprocess_fill = int(checkpoint_config.get("background", 255))
 
-        self.model = FullyConvTextRecognizer(
+        self.model = create_model(
+            self.architecture,
             in_channels=self.in_channels,
             num_classes=self.num_classes,
+            **self.architecture_params,
         ).to(self.device)
         self.model.load_state_dict(self.checkpoint["model_state_dict"])
         self.model.eval()
@@ -98,6 +111,9 @@ class TextRecognizer:
         loss_text = f", loss: {loss:.8f}" if isinstance(loss, float) else ""
         print(f"Using device: {self.device}")
         print(f"Model loaded from epoch {epoch}{loss_text}")
+        print(f"Architecture: {self.architecture}")
+        if self.architecture_params:
+            print(f"Architecture params: {self.architecture_params}")
         print(f"Alphabet size: {len(self.alphabet)}")
         print(f"Loss mode: {self.loss_mode}")
         print(f"Blank index: {self.blank_idx if self.blank_idx is not None else 'none'}")
@@ -511,6 +527,9 @@ class TextRecognizer:
         return decoded
 
     def output_width_for_input_width(self, width: int) -> int:
+        if hasattr(self.model, "output_width_for_input_width"):
+            return int(self.model.output_width_for_input_width(width))
+
         output_width = int(width)
         for module in self.model.modules():
             if not isinstance(module, torch.nn.Conv2d):

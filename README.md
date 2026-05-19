@@ -204,6 +204,20 @@ python synth_generators/line_generator/render_text.py \
 python train.py --config configs/eng_train_001.yaml
 ```
 
+FCN-архитектуры лежат в `fcn_architectures/`: одна архитектура - один файл.
+Новый файл должен определить `ARCHITECTURE_NAME` и `create_model(...)`.
+Выбор делается в training-конфиге:
+
+```yaml
+architecture: legacy_fcn
+architecture_params: {}
+```
+
+Имя архитектуры сохраняется в checkpoint, поэтому `inference.py`,
+`evaluate_ocr.py` и `VerticalSegmentator` автоматически собирают такую же сеть
+при загрузке модели. Старые checkpoint без этого поля считаются
+`legacy_fcn`.
+
 Для обучения в старом плотном режиме на чанках с `dense_targets`:
 
 ```yaml

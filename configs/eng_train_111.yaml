@@ -1,5 +1,7 @@
 chunks_dir: ../data/eng_111
 generator_config: null
+architecture: legacy_fcn
+architecture_params: {}
 
 epochs: 50
 batch_size: 128
