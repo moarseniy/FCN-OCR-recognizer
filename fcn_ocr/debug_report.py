@@ -163,7 +163,10 @@ def render_segmentation_panel(
     draw = ImageDraw.Draw(panel)
 
     y = padding
-    title = f"vertical segmentator input; logits {result.logits_shape}; T={len(result.raw_indices)}"
+    title = (
+        f"vertical segmentator input; logits {result.logits_shape}; "
+        f"T={len(result.raw_indices)}; threshold={result.gap_threshold:.3f}"
+    )
     draw.text((padding, y), title, fill=(55, 55, 55), font=font)
     y += title_height
     panel.paste(image_with_lines, (padding, y))
@@ -306,6 +309,9 @@ def save_debug_image(
         info_lines.append(f"segmentator logits shape: {segmentation_result.logits_shape}")
         info_lines.append(f"segmentator timesteps: {len(segmentation_result.raw_indices)}")
         info_lines.append(f"segmentator gap runs: {sum(1 for run in segmentation_result.runs if run.label == 1)}")
+        info_lines.append(f"segmentator gap threshold: {segmentation_result.gap_threshold:.3f}")
+        info_lines.append(f"segmentator min gap width: {segmentation_result.min_gap_width}")
+        info_lines.append(f"segmentator merge gap width: {segmentation_result.merge_gap_width}")
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)

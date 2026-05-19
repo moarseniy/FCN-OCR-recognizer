@@ -64,6 +64,9 @@ class TrainingConfig(BaseModel):
     legacy_crop_left: int = Field(default=6, ge=0)
     legacy_crop_right: int = Field(default=5, ge=0)
     legacy_strict_width: bool = False
+    segmentator_gap_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)
+    segmentator_min_gap_width: int = Field(default=1, ge=1)
+    segmentator_merge_gap_width: int = Field(default=0, ge=0)
     scheduler: str = "reduce_on_plateau"
     scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     scheduler_patience: int = Field(default=3, ge=0)

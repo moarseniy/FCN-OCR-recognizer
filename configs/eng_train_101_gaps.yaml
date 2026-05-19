@@ -24,6 +24,9 @@ loss_mode: legacy_logreg
 legacy_target_mode: binary_gaps
 legacy_crop_left: 6
 legacy_crop_right: 5
+segmentator_gap_threshold: 0.5
+segmentator_min_gap_width: 1
+segmentator_merge_gap_width: 0
 
 num_workers: 0
 drop_last: false

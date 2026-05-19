@@ -54,6 +54,9 @@ class VerticalSegmentationResult:
     raw_confidences: list[float]
     gap_probabilities: list[float]
     runs: list[SegmentationRun]
+    gap_threshold: float
+    min_gap_width: int
+    merge_gap_width: int
     input_shape: tuple[int, ...]
     logits_shape: tuple[int, ...]
 

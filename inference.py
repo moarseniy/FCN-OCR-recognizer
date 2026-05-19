@@ -52,6 +52,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional binary vertical segmentator checkpoint. If --debug-image is set, its gap map is rendered too.",
     )
+    parser.add_argument(
+        "--segmentator-gap-threshold",
+        type=float,
+        default=None,
+        help="Override segmentator gap probability threshold from checkpoint config.",
+    )
+    parser.add_argument(
+        "--segmentator-min-gap-width",
+        type=int,
+        default=None,
+        help="Override minimum gap run width in segmentator output timesteps.",
+    )
+    parser.add_argument(
+        "--segmentator-merge-gap-width",
+        type=int,
+        default=None,
+        help="Override maximum non-gap distance for merging nearby gap runs in output timesteps.",
+    )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
         "--config",
@@ -160,6 +178,9 @@ def main() -> None:
             baseline_bottom_pad=args.baseline_bottom_pad,
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
+            gap_threshold=args.segmentator_gap_threshold,
+            min_gap_width=args.segmentator_min_gap_width,
+            merge_gap_width=args.segmentator_merge_gap_width,
         )
 
     segmentation_result = None
