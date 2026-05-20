@@ -162,7 +162,7 @@ class TextRecognizer:
         debug_metadata: dict[str, Any] = {
             "baseline_crop": self.baseline_crop,
             "x_pad": self.x_pad,
-            "x_pad_mode": "edge",
+            "x_pad_mode": "reflect_original",
         }
         debug_images: list[tuple[str, Image.Image]] = []
         image = image.convert("RGB" if self.in_channels == 3 else "L")
@@ -172,6 +172,10 @@ class TextRecognizer:
             debug_metadata.update(baseline_debug.metadata)
             debug_images.extend(baseline_debug.images)
 
+        image = self._apply_x_pad(image)
+        if collect_debug and self.x_pad > 0.0:
+            debug_images.append(("x-pad reflect from original geometry", image))
+
         image = self._apply_y_pad(image)
 
         if image.height != self.image_height:
@@ -179,7 +183,6 @@ class TextRecognizer:
             image = image.resize((new_width, self.image_height), Image.Resampling.BICUBIC)
 
         image = self._apply_scale_x(image)
-        image = self._apply_x_pad(image)
 
         array = np.asarray(image, dtype=np.float32) / 255.0
         if self.in_channels == 1:
@@ -226,16 +229,15 @@ class TextRecognizer:
         if delta <= 0:
             return image
 
-        output = Image.new(image.mode, (image.width + delta * 2, image.height))
-        left_edge = image.crop((0, 0, 1, image.height)).resize((delta, image.height), Image.Resampling.NEAREST)
-        right_edge = image.crop((image.width - 1, 0, image.width, image.height)).resize(
-            (delta, image.height),
-            Image.Resampling.NEAREST,
-        )
-        output.paste(left_edge, (0, 0))
-        output.paste(image, (delta, 0))
-        output.paste(right_edge, (delta + image.width, 0))
-        return output
+        array = np.asarray(image)
+        mode = "reflect" if image.width > 1 else "edge"
+        if array.ndim == 2:
+            padded = np.pad(array, ((0, 0), (delta, delta)), mode=mode)
+        elif array.ndim == 3:
+            padded = np.pad(array, ((0, 0), (delta, delta), (0, 0)), mode=mode)
+        else:
+            raise ValueError(f"Unsupported image array shape for x_pad: {array.shape}")
+        return Image.fromarray(padded, mode=image.mode)
 
     def _pil_fill_value(self, mode: str) -> int | tuple[int, int, int]:
         fill = max(0, min(255, self.preprocess_fill))
