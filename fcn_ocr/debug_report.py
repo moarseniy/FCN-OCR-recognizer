@@ -6,7 +6,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .results import ClassConfidence, RecognitionResult, VerticalSegmentationResult, display_char
+from .results import ClassConfidence, CutDecodingResult, RecognitionResult, VerticalSegmentationResult, display_char
 
 
 DEFAULT_DEBUG_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -230,6 +230,7 @@ def save_debug_image(
     preprocess_images: list[tuple[str, Image.Image]] | None = None,
     segmentation_result: VerticalSegmentationResult | None = None,
     segmentator_input_image: Image.Image | None = None,
+    cut_decoding_result: CutDecodingResult | None = None,
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,6 +286,17 @@ def save_debug_image(
     if not rows:
         row_heights.append(line_height)
     table_height = line_height + sum(row_heights) + row_gap * max(0, len(row_heights) - 1)
+    cut_rows = cut_decoding_result.symbols if cut_decoding_result is not None else []
+    cut_row_heights = [line_height for _ in cut_rows] or ([line_height] if cut_decoding_result is not None else [])
+    cut_table_height = 0
+    if cut_decoding_result is not None:
+        cut_table_height = (
+            text_height(probe, font) + 8
+            + line_height
+            + sum(cut_row_heights)
+            + row_gap * max(0, len(cut_row_heights) - 1)
+            + 14
+        )
 
     info_lines = [
         f"source: {metadata.get('source', '-')}",
@@ -332,18 +344,29 @@ def save_debug_image(
             info_lines.append(f"segmentator gap threshold: {segmentation_result.gap_threshold:.3f}")
             info_lines.append(f"segmentator min gap width: {segmentation_result.min_gap_width}")
             info_lines.append(f"segmentator merge gap width: {segmentation_result.merge_gap_width}")
+    if cut_decoding_result is not None:
+        info_lines.append(f"legacy+cuts symbols: {len(cut_decoding_result.symbols)}")
+        info_lines.append(f"legacy+cuts raw cuts: {len(cut_decoding_result.cuts)}")
+        info_lines.append(f"legacy+cuts OCR timesteps: {cut_decoding_result.ocr_width}")
+        info_lines.append(f"legacy+cuts segmentator timesteps: {cut_decoding_result.segmentator_width}")
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)
+    cut_result_lines = (
+        wrapped_lines(probe, f"legacy+cuts: {cut_decoding_result.text!r}", result_font, table_width)
+        if cut_decoding_result is not None
+        else []
+    )
     expected_lines = wrapped_lines(probe, f"expected: {expected_text!r}", result_font, table_width) if expected_text is not None else []
     result_block_height = (
         len(result_lines) * (text_height(probe, result_font) + 6)
+        + len(cut_result_lines) * (text_height(probe, result_font) + 6)
         + len(expected_lines) * (text_height(probe, result_font) + 6)
         + 8
     )
     info_height = len(info_lines) * (text_height(probe, small_font) + 5)
     raw_summary = raw_timestep_summary(result)
-    raw_lines = wrapped_lines(probe, f"raw CTC runs: {raw_summary}", small_font, table_width)
+    raw_lines = wrapped_lines(probe, f"raw OCR runs: {raw_summary}", small_font, table_width)
     raw_height = len(raw_lines) * (text_height(probe, small_font) + 4)
 
     report_height = (
@@ -353,6 +376,7 @@ def save_debug_image(
         + info_height + 14
         + text_height(probe, font) + 8
         + table_height + 14
+        + cut_table_height
         + raw_height
         + padding
     )
@@ -432,6 +456,12 @@ def save_debug_image(
     for line in result_lines:
         draw.text((padding, y), line, fill=result_fill, font=result_font)
         y += text_height(draw, result_font) + 6
+    cut_result_fill = (30, 80, 120)
+    if expected_text is not None and cut_decoding_result is not None and expected_text != cut_decoding_result.text:
+        cut_result_fill = (150, 30, 30)
+    for line in cut_result_lines:
+        draw.text((padding, y), line, fill=cut_result_fill, font=result_font)
+        y += text_height(draw, result_font) + 6
     for line in expected_lines:
         draw.text((padding, y), line, fill=expected_fill, font=result_font)
         y += text_height(draw, result_font) + 6
@@ -489,6 +519,57 @@ def save_debug_image(
             x += width
         y += row_height + row_gap
 
+    if cut_decoding_result is not None:
+        y += 14
+        draw.text(
+            (padding, y),
+            "legacy+cuts symbols; each row is one interval between neighboring vertical cuts",
+            fill=(20, 20, 20),
+            font=font,
+        )
+        y += text_height(draw, font) + 8
+
+        x = padding
+        header_y = y
+        cut_column_titles = ["#", "answer", "ocr span", "conf", "ordered candidates"]
+        for title, width in zip(cut_column_titles, column_widths):
+            draw.rectangle((x, header_y, x + width, header_y + line_height), fill=(220, 226, 235), outline=(150, 155, 165))
+            draw.text((x + 8, header_y + 6), title, fill=(20, 20, 20), font=font)
+            x += width
+        y += line_height
+
+        if not cut_rows:
+            x = padding
+            empty_row = ["-", "<empty>", "-", "-", "no intervals decoded from segmentator cuts"]
+            row_height = cut_row_heights[0]
+            for cell, width in zip(empty_row, column_widths):
+                draw.rectangle((x, y, x + width, y + row_height), fill=(255, 255, 255), outline=(190, 190, 190))
+                draw.text((x + 8, y + 6), cell, fill=(20, 20, 20), font=font)
+                x += width
+            y += row_height
+
+        for row_index, item in enumerate(cut_rows):
+            row_height = cut_row_heights[row_index]
+            x = padding
+            fill = (255, 255, 255) if row_index % 2 == 0 else (248, 250, 252)
+            candidates_text = format_candidate_row(item.candidates)
+            span = f"{item.start}-{item.end - 1}" if item.end > item.start else "-"
+            cells = [
+                str(row_index + 1),
+                display_char(item.char),
+                span,
+                f"{item.confidence:.4f}",
+                candidates_text,
+            ]
+            for cell_index, (cell, width) in enumerate(zip(cells, column_widths)):
+                draw.rectangle((x, y, x + width, y + row_height), fill=fill, outline=(190, 190, 190))
+                if cell_index == 4:
+                    draw.text((x + 6, y + 6), cell, fill=(20, 20, 20), font=font)
+                else:
+                    draw.text((x + 8, y + 6), cell, fill=(20, 20, 20), font=font)
+                x += width
+            y += row_height + row_gap
+
     y += 14
-    draw_wrapped_text(draw, (padding, y), f"raw CTC runs: {raw_summary}", small_font, (55, 55, 55), table_width)
+    draw_wrapped_text(draw, (padding, y), f"raw OCR runs: {raw_summary}", small_font, (55, 55, 55), table_width)
     canvas.save(output_path)

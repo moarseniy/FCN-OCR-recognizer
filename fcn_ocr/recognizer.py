@@ -15,7 +15,17 @@ import torch
 
 from fcn_architectures import create_model, normalize_architecture_name
 from model import decode_greedy_batch_tensor
-from .results import BLANK_SYMBOL, ClassConfidence, DecodedSymbol, PreprocessDebug, RecognitionResult, display_char
+from .results import (
+    BLANK_SYMBOL,
+    ClassConfidence,
+    CutDecodedSymbol,
+    CutDecodingResult,
+    DecodedSymbol,
+    PreprocessDebug,
+    RecognitionResult,
+    VerticalSegmentationResult,
+    display_char,
+)
 
 
 def tensor_to_pil(image_tensor: torch.Tensor) -> Image.Image:
@@ -605,8 +615,122 @@ class TextRecognizer:
             logits_shape=tuple(logits.shape),
         )
 
+    @staticmethod
+    def _segmentation_cut_positions(segmentation_result: VerticalSegmentationResult) -> list[int]:
+        if segmentation_result.cut_positions is not None:
+            return [int(position) for position in segmentation_result.cut_positions]
+
+        cuts: list[int] = []
+        for run in segmentation_result.runs:
+            if run.label != 1:
+                continue
+            cuts.append(int(round((run.start + run.end + 1) * 0.5)))
+        return cuts
+
+    @staticmethod
+    def _map_cut_to_boundary(cut_position: int, source_width: int, target_width: int) -> int:
+        if source_width <= 0 or target_width <= 1:
+            return 0
+        boundary = int(round((float(cut_position) + 0.5) * float(target_width) / float(source_width)))
+        return max(1, min(target_width - 1, boundary))
+
+    @staticmethod
+    def _map_boundary_to_source(boundary: int, source_width: int, target_width: int) -> int:
+        if source_width <= 0 or target_width <= 0:
+            return 0
+        mapped = int(round(float(boundary) * float(source_width) / float(target_width)))
+        return max(0, min(source_width, mapped))
+
+    def decode_legacy_with_cuts(
+        self,
+        logits: torch.Tensor,
+        segmentation_result: VerticalSegmentationResult,
+        input_width: int | None = None,
+        top_k: int = 8,
+    ) -> CutDecodingResult:
+        if self.loss_mode not in {"legacy", "legacy_logreg"} or self.blank_idx is not None:
+            raise ValueError(
+                "legacy+cuts decoding expects a legacy OCR checkpoint without CTC blank; "
+                f"got loss_mode={self.loss_mode!r}, blank_idx={self.blank_idx!r}"
+            )
+        if logits.dim() != 3 or logits.size(0) != 1:
+            raise ValueError(f"legacy+cuts decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
+
+        probs = torch.softmax(logits, dim=1)[0]
+        ocr_width = int(probs.size(1))
+        segmentator_width = len(segmentation_result.raw_indices)
+        input_width = int(input_width if input_width is not None else segmentation_result.input_shape[-1])
+        if ocr_width <= 0:
+            return CutDecodingResult(
+                text="",
+                symbols=[],
+                cuts=[],
+                boundaries=[],
+                input_width=input_width,
+                ocr_width=ocr_width,
+                segmentator_width=segmentator_width,
+            )
+
+        raw_cuts = [
+            position for position in self._segmentation_cut_positions(segmentation_result)
+            if 0 <= position < max(0, segmentator_width)
+        ]
+        mapped_cuts = [
+            self._map_cut_to_boundary(position, segmentator_width, ocr_width)
+            for position in raw_cuts
+        ]
+        boundaries = [0, *sorted(set(mapped_cuts)), ocr_width]
+        top_k = max(1, min(int(top_k), probs.size(0)))
+
+        symbols: list[CutDecodedSymbol] = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            if end <= start:
+                continue
+            scores = probs[:, start:end].mean(dim=1)
+            top_confidences, top_indices = scores.topk(top_k)
+            class_index = int(top_indices[0].detach().cpu().item())
+            if self.blank_idx is not None and class_index == self.blank_idx:
+                continue
+            char = self.idx_to_char.get(class_index)
+            if char is None:
+                continue
+
+            candidates: list[ClassConfidence] = []
+            for rank in range(top_k):
+                candidate_index = int(top_indices[rank].detach().cpu().item())
+                candidates.append(
+                    ClassConfidence(
+                        label=self.class_label(candidate_index),
+                        confidence=float(top_confidences[rank].detach().cpu().item()),
+                        class_index=candidate_index,
+                    )
+                )
+
+            symbols.append(
+                CutDecodedSymbol(
+                    char=char,
+                    confidence=float(scores[class_index].detach().cpu().item()),
+                    class_index=class_index,
+                    start=int(start),
+                    end=int(end),
+                    source_start=self._map_boundary_to_source(start, segmentator_width, ocr_width),
+                    source_end=self._map_boundary_to_source(end, segmentator_width, ocr_width),
+                    candidates=candidates,
+                )
+            )
+
+        return CutDecodingResult(
+            text="".join(symbol.char for symbol in symbols),
+            symbols=symbols,
+            cuts=raw_cuts,
+            boundaries=boundaries,
+            input_width=input_width,
+            ocr_width=ocr_width,
+            segmentator_width=segmentator_width,
+        )
+
     @torch.no_grad()
-    def recognize_tensor_debug(self, image_tensor: torch.Tensor, top_k: int = 8) -> RecognitionResult:
+    def logits_from_tensor(self, image_tensor: torch.Tensor) -> tuple[torch.Tensor, tuple[int, ...]]:
         if image_tensor.dim() == 3:
             image_tensor = image_tensor.unsqueeze(0)
 
@@ -615,18 +739,25 @@ class TextRecognizer:
             image_tensor = image_tensor / 255.0
 
         logits = self.model(image_tensor)
-        return self.analyze_logits(logits, input_shape=tuple(image_tensor.shape), top_k=top_k)
+        return logits, tuple(image_tensor.shape)
+
+    @torch.no_grad()
+    def recognize_tensor_debug_with_logits(
+        self,
+        image_tensor: torch.Tensor,
+        top_k: int = 8,
+    ) -> tuple[RecognitionResult, torch.Tensor]:
+        logits, input_shape = self.logits_from_tensor(image_tensor)
+        return self.analyze_logits(logits, input_shape=input_shape, top_k=top_k), logits
+
+    @torch.no_grad()
+    def recognize_tensor_debug(self, image_tensor: torch.Tensor, top_k: int = 8) -> RecognitionResult:
+        logits, input_shape = self.logits_from_tensor(image_tensor)
+        return self.analyze_logits(logits, input_shape=input_shape, top_k=top_k)
 
     @torch.no_grad()
     def recognize_tensor(self, image_tensor: torch.Tensor) -> tuple[str, list[int]]:
-        if image_tensor.dim() == 3:
-            image_tensor = image_tensor.unsqueeze(0)
-
-        image_tensor = image_tensor.to(self.device).float()
-        if image_tensor.max() > 1.0:
-            image_tensor = image_tensor / 255.0
-
-        logits = self.model(image_tensor)
+        logits, _ = self.logits_from_tensor(image_tensor)
         return self.decode_predictions(logits)
 
     def recognize(self, image_path: str | Path) -> tuple[str, list[int]]:

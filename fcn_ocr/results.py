@@ -27,6 +27,29 @@ class DecodedSymbol:
 
 
 @dataclass(frozen=True)
+class CutDecodedSymbol:
+    char: str
+    confidence: float
+    class_index: int
+    start: int
+    end: int
+    source_start: int
+    source_end: int
+    candidates: list[ClassConfidence]
+
+
+@dataclass(frozen=True)
+class CutDecodingResult:
+    text: str
+    symbols: list[CutDecodedSymbol]
+    cuts: list[int]
+    boundaries: list[int]
+    input_width: int
+    ocr_width: int
+    segmentator_width: int
+
+
+@dataclass(frozen=True)
 class RecognitionResult:
     text: str
     raw_indices: list[int]

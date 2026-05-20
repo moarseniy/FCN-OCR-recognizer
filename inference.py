@@ -9,6 +9,7 @@ import yaml
 
 from fcn_ocr import (
     ClassConfidence,
+    CutDecodingResult,
     DecodedSymbol,
     RecognitionResult,
     TextRecognizer,
@@ -22,6 +23,7 @@ from synth_generators.line_generator.dataset import SingleLineDataset, SingleLin
 
 __all__ = [
     "ClassConfidence",
+    "CutDecodingResult",
     "DecodedSymbol",
     "RecognitionResult",
     "TextRecognizer",
@@ -99,6 +101,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Triangular smoothing radius for cut projection scores before peak selection.",
+    )
+    parser.add_argument(
+        "--decode-with-segmentator",
+        action="store_true",
+        help="Also decode a legacy OCR checkpoint by averaging OCR probabilities inside segmentator cut intervals.",
+    )
+    parser.add_argument(
+        "--segmentator-decode-top-k",
+        type=int,
+        default=8,
+        help="Number of OCR class candidates to keep per legacy+cuts interval in --debug-image.",
     )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
@@ -217,9 +230,12 @@ def main() -> None:
             cut_candidate_threshold=args.segmentator_cut_candidate_threshold,
             cut_smooth_radius=args.segmentator_cut_smooth_radius,
         )
+    if args.decode_with_segmentator and segmentator is None:
+        raise ValueError("--decode-with-segmentator requires --segmentator-checkpoint")
 
     segmentation_result = None
     segmentator_input_image = None
+    cut_decoding_result = None
 
     if args.image:
         with Image.open(args.image) as image_file:
@@ -230,7 +246,7 @@ def main() -> None:
             input_tensor = recognizer.preprocess_image(args.image)
             preprocess_debug = None
         network_input_image = tensor_to_pil(input_tensor)
-        result = recognizer.recognize_tensor_debug(input_tensor, top_k=args.debug_top_k)
+        result, ocr_logits = recognizer.recognize_tensor_debug_with_logits(input_tensor, top_k=args.debug_top_k)
         print(f"Image: {args.image}")
         debug_metadata = {
             "source": str(args.image),
@@ -268,7 +284,7 @@ def main() -> None:
             input_tensor = recognizer.preprocess_pil(source_image)
             preprocess_debug = None
         network_input_image = tensor_to_pil(input_tensor)
-        result = recognizer.recognize_tensor_debug(input_tensor, top_k=args.debug_top_k)
+        result, ocr_logits = recognizer.recognize_tensor_debug_with_logits(input_tensor, top_k=args.debug_top_k)
         print(f"Synthetic sample index: {sample_index}")
         print(f"Saved sample image: {args.save_sample}")
         print(f"Expected text: '{sample.text}'")
@@ -301,6 +317,17 @@ def main() -> None:
                 f"{sum(1 for run in segmentation_result.runs if run.label == 1)} gap runs, "
                 f"{len(segmentation_result.raw_indices)} timesteps"
             )
+        if args.decode_with_segmentator:
+            cut_decoding_result = recognizer.decode_legacy_with_cuts(
+                ocr_logits,
+                segmentation_result,
+                input_width=int(input_tensor.shape[-1]),
+                top_k=args.segmentator_decode_top_k,
+            )
+            debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
+            debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
+            debug_metadata["legacy_cuts_raw_cuts"] = len(cut_decoding_result.cuts)
+            print(f"Recognized text (legacy+cuts): '{cut_decoding_result.text}'")
 
     print(f"Recognized text: '{result.text}'")
 
@@ -314,6 +341,7 @@ def main() -> None:
             preprocess_images=preprocess_debug.images if preprocess_debug is not None else None,
             segmentation_result=segmentation_result,
             segmentator_input_image=segmentator_input_image,
+            cut_decoding_result=cut_decoding_result,
         )
         print(f"Saved debug image: {args.debug_image}")
 
