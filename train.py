@@ -420,6 +420,55 @@ def step_scheduler(scheduler, config: TrainingConfig, val_loss: float, optimizer
         scheduler.step()
     return old_lr, current_lr(optimizer)
 
+
+def output_width_for_model(model, width: int) -> int:
+    if hasattr(model, "output_width_for_input_width"):
+        return int(model.output_width_for_input_width(width))
+
+    output_width = int(width)
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Conv2d):
+            continue
+
+        kernel = module.kernel_size[1]
+        stride = module.stride[1]
+        padding = module.padding[1]
+        dilation = module.dilation[1]
+        output_width = (output_width + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
+    return output_width
+
+
+def validate_model_target_width(model, config: TrainingConfig, dataset_config: SingleLineDatasetConfig) -> None:
+    output_width = output_width_for_model(model, dataset_config.image_width)
+    print(f"Model output width: {output_width} for input width {dataset_config.image_width}")
+
+    if config.loss_mode != "legacy_logreg":
+        return
+    if config.legacy_target_mode not in {"dense_symbols", "binary_gaps"}:
+        return
+
+    target_width = dataset_config.image_width - config.legacy_crop_left - config.legacy_crop_right
+    if target_width <= 0:
+        raise ValueError(
+            "Legacy target crop is empty: "
+            f"image_width={dataset_config.image_width}, "
+            f"legacy_crop_left={config.legacy_crop_left}, "
+            f"legacy_crop_right={config.legacy_crop_right}"
+        )
+    print(f"Legacy target width: {target_width}")
+
+    if not config.legacy_strict_width or output_width == target_width:
+        return
+
+    raise ValueError(
+        "legacy_strict_width requires model output width to match target width, "
+        f"but architecture={config.architecture!r} gives T={output_width} while "
+        f"targets have width {target_width}. For width-preserving gap segmentation "
+        "use architecture: vertical_segmentator_fcn with legacy_crop_left: 0 and "
+        "legacy_crop_right: 0, or set legacy_strict_width: false to allow label resampling."
+    )
+
+
 def compute_loss(
     logits,
     targets,
@@ -1153,6 +1202,7 @@ def run_training(
         num_classes=num_classes,
         **args.architecture_params,
     ).to(device)
+    validate_model_target_width(model, args, dataset_config)
 
     optimizer = create_optimizer(model, args)
     print_optimizer_summary(args)

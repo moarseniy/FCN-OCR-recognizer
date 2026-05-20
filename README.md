@@ -161,6 +161,20 @@ python -m synth_generators.line_generator.generate_dataset \
   --config synth_generators/line_generator/configs/eng_001.yaml
 ```
 
+В generation-конфиге можно задавать межсимвольные интервалы. Значения
+сэмплятся один раз на всю строку, поэтому строка остается написанной одним
+стилем:
+
+```yaml
+char_spacing_min: -0.4
+char_spacing_max: 1.6
+word_spacing_multiplier_min: 0.75
+word_spacing_multiplier_max: 1.7
+```
+
+`char_spacing_*` добавляет единый tracking между соседними символами внутри
+слова, а `word_spacing_multiplier_*` отдельно меняет ширину пробелов.
+
 В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
 `N x C x H x W`) и исходные `texts` как текстовая разметка. Если нужен
 `legacy_logreg` с плотной разметкой, добавьте в generation-конфиг:
@@ -209,15 +223,19 @@ python train.py --config configs/eng_train_001.yaml
 
 FCN-архитектуры лежат в `fcn_architectures/`: одна архитектура - один файл.
 Новый файл должен определить `ARCHITECTURE_NAME` и `create_model(...)`.
-Выбор делается в training-конфиге:
+После этого архитектуру можно выбрать в любом training-конфиге:
 
 ```yaml
 architecture: legacy_fcn
 architecture_params: {}
 ```
 
-Для вертикального сегментатора есть отдельная архитектура, которая сохраняет
-горизонтальное разрешение выхода 1:1 с входной картинкой:
+Архитектура не привязана к задаче: один и тот же файл можно использовать и для
+OCR, и для вертикального сегментатора. Роль задается остальными полями конфига:
+`loss_mode`, `legacy_target_mode`, числом классов и разметкой в чанках.
+
+Для экспериментов с вертикальным сегментатором есть пример архитектуры, которая
+сохраняет горизонтальное разрешение выхода 1:1 с входной картинкой:
 
 ```yaml
 architecture: vertical_segmentator_fcn

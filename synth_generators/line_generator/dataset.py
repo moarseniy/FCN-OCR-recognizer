@@ -72,6 +72,10 @@ class SingleLineDatasetConfig(BaseModel):
     font_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_FONT_EXTENSIONS))
     font_size_min: int = Field(default=24, ge=6)
     font_size_max: int = Field(default=34, ge=6)
+    char_spacing_min: float = 0.0
+    char_spacing_max: float = 0.0
+    word_spacing_multiplier_min: float = Field(default=1.0, gt=0.0)
+    word_spacing_multiplier_max: float = Field(default=1.0, gt=0.0)
     channels: int = Field(default=3, ge=1, le=3)
     seed: int | None = None
     background: int = Field(default=255, ge=0, le=255)
@@ -212,6 +216,22 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError("font_size_max must be >= font_size_min")
         return value
 
+    @field_validator("char_spacing_max")
+    @classmethod
+    def max_char_spacing_must_be_valid(cls, value: float, info) -> float:
+        min_spacing = info.data.get("char_spacing_min")
+        if min_spacing is not None and value < min_spacing:
+            raise ValueError("char_spacing_max must be >= char_spacing_min")
+        return value
+
+    @field_validator("word_spacing_multiplier_max")
+    @classmethod
+    def max_word_spacing_multiplier_must_be_valid(cls, value: float, info) -> float:
+        min_multiplier = info.data.get("word_spacing_multiplier_min")
+        if min_multiplier is not None and value < min_multiplier:
+            raise ValueError("word_spacing_multiplier_max must be >= word_spacing_multiplier_min")
+        return value
+
     @field_validator("foreground_max")
     @classmethod
     def foreground_range_must_be_valid(cls, value: int, info) -> int:
@@ -252,6 +272,12 @@ class SingleLineDatasetConfig(BaseModel):
         if unknown:
             raise ValueError(f"unknown augmentation configs: {unknown}")
         return value
+
+
+@dataclass(frozen=True)
+class TextRenderStyle:
+    char_spacing: float
+    word_spacing_multiplier: float
 
 
 @dataclass(frozen=True)
@@ -333,8 +359,8 @@ class SingleLineDataset(Dataset):
         if self.config.line_crops:
             return next(self._iter_line_crop_samples(rng))
 
-        text, font = self._make_text_that_fits(rng)
-        return self.generate_text_sample(text, rng, font)
+        text, font, style = self._make_text_that_fits(rng)
+        return self.generate_text_sample(text, rng, font, style)
 
     def iter_generated_samples(self) -> Iterable[GeneratedLineSample]:
         if not self.config.line_crops:
@@ -355,14 +381,16 @@ class SingleLineDataset(Dataset):
         text: str,
         rng: random.Random | None = None,
         font: ImageFont.FreeTypeFont | None = None,
+        style: TextRenderStyle | None = None,
     ) -> GeneratedLineSample:
         rng = rng or random.Random()
         self._validate_text(text)
         text = self._normalize_spaces(text)
         if len(text) > self.config.max_text_length:
             raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
-        font = font or self._load_font_that_fits(text, rng)
-        image, spans = self._render_text(text, font, rng)
+        style = style or self._sample_text_style(rng)
+        font = font or self._load_font_that_fits(text, rng, style)
+        image, spans = self._render_text(text, font, rng, style)
         return self._make_sample(image, text, spans)
 
     def _validate_text(self, text: str) -> None:
@@ -376,17 +404,22 @@ class SingleLineDataset(Dataset):
     def _normalize_spaces(self, text: str) -> str:
         return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
 
-    def _load_font_that_fits(self, text: str, rng: random.Random) -> ImageFont.FreeTypeFont:
+    def _load_font_that_fits(
+        self,
+        text: str,
+        rng: random.Random,
+        style: TextRenderStyle | None = None,
+    ) -> ImageFont.FreeTypeFont:
         for _ in range(100):
             font = self._load_font(rng)
-            if self._text_fits(text, font):
+            if self._text_fits(text, font, style):
                 return font
 
         font_paths = list(self.font_paths)
         rng.shuffle(font_paths)
         for path in font_paths:
             font = ImageFont.truetype(path, self.config.font_size_min)
-            if self._text_fits(text, font):
+            if self._text_fits(text, font, style):
                 return font
 
         raise ValueError(
@@ -409,8 +442,9 @@ class SingleLineDataset(Dataset):
     def _generate_line_crop_samples(self, rng: random.Random) -> list[GeneratedLineSample]:
         for _ in range(100):
             text = self._make_line_text(rng)
+            style = self._sample_text_style(rng)
             font = self._load_font_for_line(text, rng)
-            image, spans = self._render_long_text(text, font, rng)
+            image, spans = self._render_long_text(text, font, rng, style)
             samples = self._slice_line_image(image, spans)
             if samples:
                 return samples
@@ -447,7 +481,7 @@ class SingleLineDataset(Dataset):
             f"with font_size_min={self.config.font_size_min}: {text!r}"
         )
 
-    def _make_text_that_fits(self, rng: random.Random) -> tuple[str, ImageFont.FreeTypeFont]:
+    def _make_text_that_fits(self, rng: random.Random) -> tuple[str, ImageFont.FreeTypeFont, TextRenderStyle]:
         last_error: Exception | None = None
 
         for _ in range(1000):
@@ -455,9 +489,10 @@ class SingleLineDataset(Dataset):
             text = self._normalize_spaces("".join(rng.choice(self.sample_alphabet) for _ in range(text_length)))
             if not text:
                 continue
+            style = self._sample_text_style(rng)
             try:
-                font = self._load_font_that_fits(text, rng)
-                return text, font
+                font = self._load_font_that_fits(text, rng, style)
+                return text, font, style
             except ValueError as exc:
                 last_error = exc
 
@@ -474,17 +509,18 @@ class SingleLineDataset(Dataset):
         text: str,
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
+        style: TextRenderStyle,
     ) -> tuple[Image.Image, list[tuple[str, float, float]]]:
         cfg = self.config
         image = self._make_background(rng)
         draw = ImageDraw.Draw(image)
 
-        bbox = self._text_bbox(text, font)
+        bbox = self._text_bbox(text, font, style)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         x_min = cfg.horizontal_padding - bbox[0]
         x_max = cfg.image_width - cfg.horizontal_padding - bbox[2]
-        free_x = max(0, x_max - x_min)
+        free_x = max(0, int(math.floor(x_max - x_min)))
         x = x_min + rng.randint(0, free_x)
         y_jitter = rng.randint(-2, 2)
         y_min = -bbox[1]
@@ -493,8 +529,7 @@ class SingleLineDataset(Dataset):
         y = min(max(y, y_min), y_max)
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
 
-        draw.text((x, y), text, font=font, fill=fill)
-        spans = self._char_spans(text, font, float(x))
+        spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
 
         return image, spans
 
@@ -503,11 +538,12 @@ class SingleLineDataset(Dataset):
         text: str,
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
+        style: TextRenderStyle,
     ) -> tuple[Image.Image, list[tuple[str, float, float]]]:
         cfg = self.config
-        bbox = self._text_bbox(text, font)
+        bbox = self._text_bbox(text, font, style)
         text_width = bbox[2] - bbox[0]
-        text_advance = max(1.0, float(font.getlength(text)))
+        text_advance = max(1.0, self._text_advance(text, font, style))
         x = cfg.horizontal_padding - bbox[0]
         crop_width = cfg.image_width
         stride = cfg.crop_stride or crop_width
@@ -530,9 +566,7 @@ class SingleLineDataset(Dataset):
         y = min(max(y, y_min), y_max)
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
 
-        draw.text((x, y), text, font=font, fill=fill)
-
-        spans = self._char_spans(text, font, float(x))
+        spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
         return image, spans
 
     def _slice_line_image(
@@ -719,6 +753,129 @@ class SingleLineDataset(Dataset):
             spans.append((char, start, end))
         return spans
 
+    def _sample_text_style(self, rng: random.Random) -> TextRenderStyle:
+        cfg = self.config
+        char_spacing = rng.uniform(cfg.char_spacing_min, cfg.char_spacing_max)
+        word_spacing_multiplier = rng.uniform(
+            cfg.word_spacing_multiplier_min,
+            cfg.word_spacing_multiplier_max,
+        )
+        return TextRenderStyle(
+            char_spacing=char_spacing,
+            word_spacing_multiplier=word_spacing_multiplier,
+        )
+
+    def _has_custom_spacing(self, style: TextRenderStyle | None) -> bool:
+        if style is None:
+            return False
+        return (
+            abs(style.char_spacing) > 1e-6
+            or abs(style.word_spacing_multiplier - 1.0) > 1e-6
+        )
+
+    def _draw_text(
+        self,
+        draw: ImageDraw.ImageDraw,
+        x: float,
+        y: float,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        fill: int,
+        style: TextRenderStyle,
+    ) -> list[tuple[str, float, float]]:
+        if not self._has_custom_spacing(style):
+            draw.text((x, y), text, font=font, fill=fill)
+            return self._char_spans(text, font, x)
+
+        spans, origins = self._styled_char_layout(text, font, x, style)
+        for (char, _, _), origin in zip(spans, origins):
+            if char != self.config.space_char:
+                draw.text((origin, y), char, font=font, fill=fill)
+        return spans
+
+    def _styled_char_layout(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        x: float,
+        style: TextRenderStyle,
+    ) -> tuple[list[tuple[str, float, float]], list[float]]:
+        spans: list[tuple[str, float, float]] = []
+        origins: list[float] = []
+        extra_before = 0.0
+
+        for char_index, char in enumerate(text):
+            prefix = text[:char_index]
+            next_prefix = text[: char_index + 1]
+            base_start = float(font.getlength(prefix))
+            base_end = float(font.getlength(next_prefix))
+            base_advance = max(1.0, base_end - base_start)
+            origin = x + base_start + extra_before
+            origins.append(origin)
+
+            if char == self.config.space_char:
+                span_width = max(1.0, base_advance * style.word_spacing_multiplier)
+                extra_after = span_width - base_advance
+            else:
+                span_width = base_advance
+                next_char = text[char_index + 1] if char_index + 1 < len(text) else None
+                extra_after = (
+                    style.char_spacing
+                    if next_char is not None and next_char != self.config.space_char
+                    else 0.0
+                )
+
+            start = origin
+            end = max(start + 1.0, origin + span_width)
+            spans.append((char, start, end))
+            extra_before += extra_after
+
+        return spans, origins
+
+    def _styled_text_bbox(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle,
+    ) -> tuple[float, float, float, float]:
+        spans, origins = self._styled_char_layout(text, font, 0.0, style)
+        left_values = [span[1] for span in spans]
+        right_values = [span[2] for span in spans]
+        top_values: list[float] = []
+        bottom_values: list[float] = []
+
+        for (char, _, _), origin in zip(spans, origins):
+            if char == self.config.space_char:
+                continue
+            char_bbox = self._plain_text_bbox(char, font)
+            left_values.append(origin + char_bbox[0])
+            right_values.append(origin + char_bbox[2])
+            top_values.append(float(char_bbox[1]))
+            bottom_values.append(float(char_bbox[3]))
+
+        if not top_values:
+            plain_bbox = self._plain_text_bbox(text, font)
+            top_values.append(float(plain_bbox[1]))
+            bottom_values.append(float(plain_bbox[3]))
+
+        return (
+            min(left_values),
+            min(top_values),
+            max(right_values),
+            max(bottom_values),
+        )
+
+    def _text_advance(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle | None = None,
+    ) -> float:
+        if not self._has_custom_spacing(style):
+            return max(1.0, float(font.getlength(text)))
+        spans, _ = self._styled_char_layout(text, font, 0.0, style)
+        return max(1.0, spans[-1][2] if spans else 1.0)
+
     def _load_font(self, rng: random.Random, size: int | None = None) -> ImageFont.FreeTypeFont:
         font_size = size or rng.randint(self.config.font_size_min, self.config.font_size_max)
         path = rng.choice(self.font_paths)
@@ -758,19 +915,34 @@ class SingleLineDataset(Dataset):
     def _char_advances(text: str, font: ImageFont.FreeTypeFont) -> list[float]:
         return [max(1.0, float(font.getlength(char))) for char in text]
 
-    def _text_fits(self, text: str, font: ImageFont.FreeTypeFont) -> bool:
-        bbox = self._text_bbox(text, font)
+    def _text_fits(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle | None = None,
+    ) -> bool:
+        bbox = self._text_bbox(text, font, style)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         max_width = self.config.image_width - 2 * self.config.horizontal_padding
         return text_width <= max_width and text_height <= self.config.image_height
 
     def _text_height_fits(self, text: str, font: ImageFont.FreeTypeFont) -> bool:
-        bbox = self._text_bbox(text, font)
+        bbox = self._plain_text_bbox(text, font)
         return bbox[3] - bbox[1] <= self.config.image_height
 
+    def _text_bbox(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle | None = None,
+    ) -> tuple[float, float, float, float]:
+        if self._has_custom_spacing(style):
+            return self._styled_text_bbox(text, font, style)
+        return tuple(float(value) for value in self._plain_text_bbox(text, font))
+
     @staticmethod
-    def _text_bbox(text: str, font: ImageFont.FreeTypeFont) -> tuple[int, int, int, int]:
+    def _plain_text_bbox(text: str, font: ImageFont.FreeTypeFont) -> tuple[int, int, int, int]:
         draw = ImageDraw.Draw(Image.new("L", (1, 1)))
         return draw.textbbox((0, 0), text, font=font)
 
