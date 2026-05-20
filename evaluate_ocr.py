@@ -212,6 +212,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
     print(f"scale_x:                    {metrics['scale_x']:+.5f}")
     print(f"y_pad:                      {metrics['y_pad']:+.5f}")
+    if "x_pad" in metrics:
+        print(f"x_pad:                      {metrics['x_pad']:.5f}")
     if "baseline_crop" in metrics:
         print(f"Baseline crop:              {metrics['baseline_crop']}")
     if output_csv is not None:
@@ -226,6 +228,7 @@ def evaluate_prepared(
     device: str | None,
     scale_x: float,
     y_pad: float,
+    x_pad: float,
     batch_size: int,
     log_every: int,
     verbose: bool,
@@ -246,6 +249,7 @@ def evaluate_prepared(
         verbose=verbose,
         scale_x=scale_x,
         y_pad=y_pad,
+        x_pad=x_pad,
         baseline_crop=baseline_crop,
         baseline_top_pad=baseline_top_pad,
         baseline_bottom_pad=baseline_bottom_pad,
@@ -263,6 +267,7 @@ def evaluate_prepared(
     metrics = compute_metrics(rows, elapsed)
     metrics["scale_x"] = float(scale_x)
     metrics["y_pad"] = float(y_pad)
+    metrics["x_pad"] = float(x_pad)
     metrics["baseline_crop"] = bool(baseline_crop)
 
     if output_csv is not None:
@@ -280,11 +285,11 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
     with path.open("a", encoding="utf-8") as file:
         if is_new_file:
             file.write(
-                "trial\tscale_x\ty_pad\tmetric\tline_accuracy\taverage_char_accuracy\t"
+                "trial\tscale_x\ty_pad\tx_pad\tmetric\tline_accuracy\taverage_char_accuracy\t"
                 "global_char_accuracy\taverage_levenshtein\ttotal_levenshtein\tspeed\n"
             )
         file.write(
-            f"{trial_number}\t{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t"
+            f"{trial_number}\t{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t{metrics.get('x_pad', 0.0):.8f}\t"
             f"{metrics[metric_name]:.8f}\t{metrics['line_accuracy']:.8f}\t"
             f"{metrics['average_char_accuracy']:.8f}\t{metrics['global_char_accuracy']:.8f}\t"
             f"{metrics['average_levenshtein']:.8f}\t{metrics['total_levenshtein']}\t"
@@ -305,6 +310,7 @@ def optimize_preprocess(
     scale_x_max: float,
     y_pad_min: float,
     y_pad_max: float,
+    x_pad: float,
     metric_name: str,
     log_every: int,
     trials_output: Path | None,
@@ -345,6 +351,7 @@ def optimize_preprocess(
             device=device,
             scale_x=scale_x,
             y_pad=y_pad,
+            x_pad=x_pad,
             batch_size=batch_size,
             log_every=0,
             verbose=False,
@@ -365,7 +372,7 @@ def optimize_preprocess(
         "Optuna preprocess search: "
         f"trials={trials}, metric={metric_name}, "
         f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
-        f"baseline_crop={baseline_crop}"
+        f"x_pad={x_pad}, baseline_crop={baseline_crop}"
     )
     study.optimize(objective, n_trials=trials)
 
@@ -384,6 +391,7 @@ def optimize_preprocess(
         device=device,
         scale_x=best_scale_x,
         y_pad=best_y_pad,
+        x_pad=x_pad,
         batch_size=batch_size,
         log_every=log_every,
         verbose=True,
@@ -407,6 +415,7 @@ def evaluate(
     device: str | None,
     scale_x: float,
     y_pad: float,
+    x_pad: float,
     batch_size: int,
     limit: int | None,
     log_every: int,
@@ -426,6 +435,7 @@ def evaluate(
         device=device,
         scale_x=scale_x,
         y_pad=y_pad,
+        x_pad=x_pad,
         batch_size=batch_size,
         log_every=log_every,
         verbose=verbose,
@@ -446,6 +456,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None, help="Device to use: cuda, cpu, or empty for auto.")
     parser.add_argument("--scale-x", type=float, default=0.0, help="Normalized horizontal inference scale.")
     parser.add_argument("--y-pad", type=float, default=0.0, help="Normalized vertical inference padding/crop.")
+    parser.add_argument("--x-pad", type=float, default=0.0, help="Normalized symmetric horizontal inference padding.")
     parser.add_argument("--baseline-crop", action="store_true", help="Use baseline detection/crop before y-pad and resize.")
     parser.add_argument("--baseline-top-pad", type=float, default=0.12)
     parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
@@ -492,6 +503,7 @@ def main() -> None:
             scale_x_max=args.optuna_scale_x_max,
             y_pad_min=args.optuna_y_pad_min,
             y_pad_max=args.optuna_y_pad_max,
+            x_pad=args.x_pad,
             metric_name=args.optuna_metric,
             log_every=args.log_every,
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
@@ -512,6 +524,7 @@ def main() -> None:
             device=args.device,
             scale_x=args.scale_x,
             y_pad=args.y_pad,
+            x_pad=args.x_pad,
             batch_size=args.batch_size,
             limit=args.limit,
             log_every=args.log_every,

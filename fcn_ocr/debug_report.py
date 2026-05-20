@@ -311,6 +311,14 @@ def save_debug_image(
         info_lines.append(f"scale_x: {float(metadata['scale_x']):+.4f}")
     if "y_pad" in metadata:
         info_lines.append(f"y_pad: {float(metadata['y_pad']):+.4f}")
+    if "x_pad" in metadata:
+        info_lines.append(f"x_pad: {float(metadata['x_pad']):.4f}")
+    if metadata.get("text_x_bounds") is not None:
+        info_lines.append(f"text x bounds: {metadata['text_x_bounds']}")
+    if metadata.get("text_x_bounds_confidence") is not None:
+        info_lines.append(f"text x bounds confidence: {float(metadata['text_x_bounds_confidence']):.3f}")
+    if metadata.get("text_x_bounds_status") is not None:
+        info_lines.append(f"text x bounds status: {metadata['text_x_bounds_status']}")
     if "baseline_crop" in metadata:
         info_lines.append(f"baseline crop: {metadata['baseline_crop']}")
     if metadata.get("baseline_status"):

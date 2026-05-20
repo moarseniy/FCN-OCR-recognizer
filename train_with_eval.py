@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-log-every", type=int, default=0)
     parser.add_argument("--scale-x", type=float, default=0.0)
     parser.add_argument("--y-pad", type=float, default=0.0)
+    parser.add_argument("--x-pad", type=float, default=0.0)
     parser.add_argument("--baseline-crop", action="store_true")
     parser.add_argument("--baseline-top-pad", type=float, default=0.12)
     parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
@@ -55,14 +56,14 @@ def append_eval_summary(log_path: Path, row: dict) -> None:
     with log_path.open("a", encoding="utf-8") as file:
         if is_new_file:
             file.write(
-                "epoch\tcheckpoint\tcsv\tscale_x\ty_pad\tbaseline_crop\tline_accuracy\t"
+                "epoch\tcheckpoint\tcsv\tscale_x\ty_pad\tx_pad\tbaseline_crop\tline_accuracy\t"
                 "average_char_accuracy\tglobal_char_accuracy\taverage_levenshtein\t"
                 "total_levenshtein\trecognized_samples\ttotal_samples\tspeed\t"
                 "optuna_trials\toptuna_metric\n"
             )
         file.write(
             f"{row['epoch']}\t{row['checkpoint']}\t{row['csv']}\t"
-            f"{row['scale_x']:.8f}\t{row['y_pad']:.8f}\t"
+            f"{row['scale_x']:.8f}\t{row['y_pad']:.8f}\t{row.get('x_pad', 0.0):.8f}\t"
             f"{row.get('baseline_crop', False)}\t"
             f"{row['line_accuracy']:.8f}\t{row['average_char_accuracy']:.8f}\t"
             f"{row['global_char_accuracy']:.8f}\t{row['average_levenshtein']:.8f}\t"
@@ -91,6 +92,7 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             scale_x_max=cli_args.optuna_scale_x_max,
             y_pad_min=cli_args.optuna_y_pad_min,
             y_pad_max=cli_args.optuna_y_pad_max,
+            x_pad=cli_args.x_pad,
             metric_name=cli_args.optuna_metric,
             log_every=cli_args.eval_log_every,
             trials_output=trials_output,
@@ -111,6 +113,7 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             device=cli_args.eval_device,
             scale_x=cli_args.scale_x,
             y_pad=cli_args.y_pad,
+            x_pad=cli_args.x_pad,
             batch_size=cli_args.eval_batch_size,
             limit=cli_args.eval_limit,
             log_every=cli_args.eval_log_every,

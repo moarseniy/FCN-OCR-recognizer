@@ -18,6 +18,7 @@ class VerticalSegmentator(TextRecognizer):
         verbose: bool = False,
         scale_x: float = 0.0,
         y_pad: float = 0.0,
+        x_pad: float = 0.0,
         baseline_crop: bool = False,
         baseline_top_pad: float = 0.12,
         baseline_bottom_pad: float = 0.18,
@@ -38,6 +39,7 @@ class VerticalSegmentator(TextRecognizer):
             verbose=False,
             scale_x=scale_x,
             y_pad=y_pad,
+            x_pad=x_pad,
             baseline_crop=baseline_crop,
             baseline_top_pad=baseline_top_pad,
             baseline_bottom_pad=baseline_bottom_pad,
@@ -170,6 +172,7 @@ class VerticalSegmentator(TextRecognizer):
         print(f"Segmentator checkpoint: {self.checkpoint_path}")
         print(f"Segmentator device: {self.device}")
         print(f"Segmentator input height: {self.image_height}")
+        print(f"Segmentator preprocess: scale_x={self.scale_x:+.4f}, y_pad={self.y_pad:+.4f}, x_pad={self.x_pad:.4f}")
         print(f"Segmentator mode: {self.target_format}")
         if self.target_format == "cut_projection":
             print("Segmentator output: cut projection, one sigmoid score per column")

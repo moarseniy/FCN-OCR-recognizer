@@ -143,6 +143,12 @@ def parse_args() -> argparse.Namespace:
         help="Normalized vertical inference padding/crop before resize. 0.2 pads, -0.2 crops.",
     )
     parser.add_argument(
+        "--x-pad",
+        type=float,
+        default=0.0,
+        help="Normalized symmetric horizontal inference padding after resize/scale. 0.05 adds 5%% width on each side.",
+    )
+    parser.add_argument(
         "--baseline-crop",
         action="store_true",
         help="Detect a text baseline, deskew/crop vertically by it, then apply y-pad and resize.",
@@ -198,6 +204,7 @@ def main() -> None:
         verbose=True,
         scale_x=args.scale_x,
         y_pad=args.y_pad,
+        x_pad=args.x_pad,
         baseline_crop=args.baseline_crop,
         baseline_top_pad=args.baseline_top_pad,
         baseline_bottom_pad=args.baseline_bottom_pad,
@@ -216,6 +223,7 @@ def main() -> None:
             verbose=True,
             scale_x=args.scale_x,
             y_pad=args.y_pad,
+            x_pad=args.x_pad,
             baseline_crop=args.baseline_crop,
             baseline_top_pad=args.baseline_top_pad,
             baseline_bottom_pad=args.baseline_bottom_pad,
@@ -254,6 +262,7 @@ def main() -> None:
             "device": str(recognizer.device),
             "scale_x": args.scale_x,
             "y_pad": args.y_pad,
+            "x_pad": args.x_pad,
             "debug_top_k": args.debug_top_k,
         }
         if preprocess_debug is not None:
@@ -294,6 +303,7 @@ def main() -> None:
             "device": str(recognizer.device),
             "scale_x": args.scale_x,
             "y_pad": args.y_pad,
+            "x_pad": args.x_pad,
             "expected_text": sample.text,
             "debug_top_k": args.debug_top_k,
         }
@@ -318,11 +328,20 @@ def main() -> None:
                 f"{len(segmentation_result.raw_indices)} timesteps"
             )
         if args.decode_with_segmentator:
+            text_bounds = recognizer.text_x_bounds_from_tensor(input_tensor)
+            if text_bounds["ok"]:
+                debug_metadata["text_x_bounds"] = (int(text_bounds["left"]), int(text_bounds["right"]))
+                debug_metadata["text_x_bounds_confidence"] = float(text_bounds["confidence"])
+                text_x_bounds = (int(text_bounds["left"]), int(text_bounds["right"]))
+            else:
+                debug_metadata["text_x_bounds_status"] = text_bounds["status"]
+                text_x_bounds = None
             cut_decoding_result = recognizer.decode_legacy_with_cuts(
                 ocr_logits,
                 segmentation_result,
                 input_width=int(input_tensor.shape[-1]),
                 top_k=args.segmentator_decode_top_k,
+                text_x_bounds=text_x_bounds,
             )
             debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
             debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
