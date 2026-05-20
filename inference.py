@@ -113,6 +113,29 @@ def parse_args() -> argparse.Namespace:
         default=8,
         help="Number of OCR class candidates to keep per legacy+cuts interval in --debug-image.",
     )
+    parser.add_argument(
+        "--no-segmentator-edge-trim",
+        action="store_true",
+        help="Disable foreground-based trimming of empty edge intervals in legacy+cuts decoding.",
+    )
+    parser.add_argument(
+        "--segmentator-edge-min-ink-ratio",
+        type=float,
+        default=0.035,
+        help="Minimum foreground-column ratio for keeping leading/trailing legacy+cuts intervals.",
+    )
+    parser.add_argument(
+        "--segmentator-edge-min-pixel-density",
+        type=float,
+        default=0.003,
+        help="Minimum foreground pixel density for keeping leading/trailing legacy+cuts intervals.",
+    )
+    parser.add_argument(
+        "--segmentator-edge-min-width",
+        type=int,
+        default=2,
+        help="Merge leading/trailing legacy+cuts intervals narrower than this many OCR timesteps into their neighbor.",
+    )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
         "--config",
@@ -342,10 +365,17 @@ def main() -> None:
                 input_width=int(input_tensor.shape[-1]),
                 top_k=args.segmentator_decode_top_k,
                 text_x_bounds=text_x_bounds,
+                input_tensor=input_tensor,
+                trim_empty_edges=not args.no_segmentator_edge_trim,
+                edge_min_ink_ratio=args.segmentator_edge_min_ink_ratio,
+                edge_min_pixel_density=args.segmentator_edge_min_pixel_density,
+                edge_min_width=args.segmentator_edge_min_width,
             )
             debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
             debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
             debug_metadata["legacy_cuts_raw_cuts"] = len(cut_decoding_result.cuts)
+            debug_metadata["legacy_cuts_edge_trim"] = not args.no_segmentator_edge_trim
+            debug_metadata["legacy_cuts_edge_min_width"] = args.segmentator_edge_min_width
             print(f"Recognized text (legacy+cuts): '{cut_decoding_result.text}'")
 
     print(f"Recognized text: '{result.text}'")

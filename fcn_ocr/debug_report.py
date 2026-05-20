@@ -365,6 +365,10 @@ def save_debug_image(
         info_lines.append(f"legacy+cuts raw cuts: {len(cut_decoding_result.cuts)}")
         info_lines.append(f"legacy+cuts OCR timesteps: {cut_decoding_result.ocr_width}")
         info_lines.append(f"legacy+cuts segmentator timesteps: {cut_decoding_result.segmentator_width}")
+        if "legacy_cuts_edge_trim" in metadata:
+            info_lines.append(f"legacy+cuts edge trim: {metadata['legacy_cuts_edge_trim']}")
+        if "legacy_cuts_edge_min_width" in metadata:
+            info_lines.append(f"legacy+cuts edge min width: {metadata['legacy_cuts_edge_min_width']}")
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)

@@ -106,6 +106,8 @@ class TextRecognizer:
         self.space_idx = self.alphabet.index(self.space_char) if self.space_char in self.alphabet else None
         self.image_height = int(checkpoint_config.get("image_height", 48))
         self.preprocess_fill = int(checkpoint_config.get("background", 255))
+        self.legacy_crop_left = int(checkpoint_config.get("legacy_crop_left", 0))
+        self.legacy_crop_right = int(checkpoint_config.get("legacy_crop_right", 0))
 
         self.model = create_model(
             self.architecture,
@@ -130,6 +132,8 @@ class TextRecognizer:
             print(f"Architecture params: {self.architecture_params}")
         print(f"Alphabet size: {len(self.alphabet)}")
         print(f"Loss mode: {self.loss_mode}")
+        if self.loss_mode in {"legacy", "legacy_logreg"}:
+            print(f"Legacy crop: [{self.legacy_crop_left}, -{self.legacy_crop_right}]")
         print(f"Blank index: {self.blank_idx if self.blank_idx is not None else 'none'}")
         print(f"Preprocess scale_x: {self.scale_x:+.4f}")
         print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
@@ -841,43 +845,38 @@ class TextRecognizer:
         mapped = int(round(float(boundary) * float(source_width) / float(target_width)))
         return max(0, min(source_width, mapped))
 
-    @staticmethod
-    def _map_input_boundary_to_ocr(boundary: int, input_width: int, ocr_width: int) -> int:
+    def _map_input_boundary_to_ocr(self, boundary: int, input_width: int, ocr_width: int) -> int:
         if input_width <= 0 or ocr_width <= 0:
             return 0
-        mapped = int(round(float(boundary) * float(ocr_width) / float(input_width)))
+        left = min(max(0, self.legacy_crop_left), max(0, input_width - 1))
+        right = max(left + 1, input_width - max(0, self.legacy_crop_right))
+        mapped = int(round((float(boundary) - float(left)) * float(ocr_width) / float(right - left)))
         return max(0, min(ocr_width, mapped))
 
-    def text_x_bounds_from_tensor(self, image_tensor: torch.Tensor) -> dict[str, Any]:
-        image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
-        if image.dim() == 4:
-            image = image[0]
-        if image.dim() != 3:
-            raise ValueError(f"Expected image tensor with shape (C,H,W) or (1,C,H,W), got {tuple(image_tensor.shape)}")
+    def _map_ocr_boundary_to_input(self, boundary: int, input_width: int, ocr_width: int) -> int:
+        if input_width <= 0 or ocr_width <= 0:
+            return 0
+        left = min(max(0, self.legacy_crop_left), max(0, input_width - 1))
+        right = max(left + 1, input_width - max(0, self.legacy_crop_right))
+        mapped = int(round(float(left) + float(boundary) * float(right - left) / float(ocr_width)))
+        return max(0, min(input_width, mapped))
 
-        if image.size(0) == 1:
-            gray = image[0].numpy()
-        else:
-            gray = image.mean(dim=0).numpy()
-        gray_u8 = (gray * 255.0).astype(np.uint8)
-        height, width = gray_u8.shape
+    def text_x_bounds_from_tensor(self, image_tensor: torch.Tensor) -> dict[str, Any]:
+        mask = self._foreground_mask_from_tensor(image_tensor)
+        height, width = mask.shape
         if width <= 0:
             return {"ok": False, "status": "empty_width", "left": 0, "right": 0, "confidence": 0.0}
 
-        border = np.concatenate((gray_u8[0, :], gray_u8[-1, :], gray_u8[:, 0], gray_u8[:, -1]))
-        background_is_bright = float(np.median(border)) >= 128.0
-        if cv2 is not None:
-            threshold_type = cv2.THRESH_BINARY_INV if background_is_bright else cv2.THRESH_BINARY
-            _, mask = cv2.threshold(gray_u8, 0, 255, threshold_type | cv2.THRESH_OTSU)
-        else:
-            threshold = float(np.mean(border))
-            mask = gray_u8 < threshold if background_is_bright else gray_u8 > threshold
-            mask = (mask.astype(np.uint8) * 255)
-
         column_counts = np.count_nonzero(mask, axis=0)
         min_column_pixels = max(1, int(round(height * 0.025)))
-        columns = np.flatnonzero(column_counts >= min_column_pixels)
-        if columns.size == 0:
+        active = column_counts >= min_column_pixels
+        active = self._close_boolean_gaps(active, max_gap=max(1, int(round(width * 0.01))))
+        runs = self._boolean_runs(active)
+        runs = [
+            (start, end) for start, end in runs
+            if end - start >= max(2, int(round(width * 0.015)))
+        ]
+        if not runs:
             return {
                 "ok": False,
                 "status": "no_foreground_columns",
@@ -886,11 +885,15 @@ class TextRecognizer:
                 "confidence": 0.0,
             }
 
-        left = int(columns.min())
-        right = int(columns.max()) + 1
-        foreground_columns_ratio = float(columns.size) / max(1.0, float(right - left))
+        left = min(start for start, _ in runs)
+        right = max(end for _, end in runs)
+        foreground_columns_ratio = float(np.count_nonzero(active[left:right])) / max(1.0, float(right - left))
         foreground_pixels = int(np.count_nonzero(mask[:, left:right]))
-        confidence = min(1.0, foreground_columns_ratio * 0.75 + min(1.0, foreground_pixels / max(1.0, height * (right - left) * 0.12)) * 0.25)
+        confidence = min(
+            1.0,
+            foreground_columns_ratio * 0.75
+            + min(1.0, foreground_pixels / max(1.0, height * (right - left) * 0.12)) * 0.25,
+        )
         if right - left < max(2, int(round(width * 0.02))):
             return {
                 "ok": False,
@@ -909,6 +912,83 @@ class TextRecognizer:
             "foreground_pixels": foreground_pixels,
         }
 
+    def _foreground_mask_from_tensor(self, image_tensor: torch.Tensor) -> np.ndarray:
+        image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
+        if image.dim() == 4:
+            image = image[0]
+        if image.dim() != 3:
+            raise ValueError(f"Expected image tensor with shape (C,H,W) or (1,C,H,W), got {tuple(image_tensor.shape)}")
+
+        if image.size(0) == 1:
+            gray = image[0].numpy()
+        else:
+            gray = image.mean(dim=0).numpy()
+        gray_u8 = (gray * 255.0).astype(np.uint8)
+        height, width = gray_u8.shape
+        if width <= 0:
+            return np.zeros((height, 0), dtype=np.uint8)
+
+        border = np.concatenate((gray_u8[0, :], gray_u8[-1, :], gray_u8[:, 0], gray_u8[:, -1]))
+        background_is_bright = float(np.median(border)) >= 128.0
+        if cv2 is not None:
+            threshold_type = cv2.THRESH_BINARY_INV if background_is_bright else cv2.THRESH_BINARY
+            _, mask = cv2.threshold(gray_u8, 0, 255, threshold_type | cv2.THRESH_OTSU)
+        else:
+            threshold = float(np.mean(border))
+            mask = gray_u8 < threshold if background_is_bright else gray_u8 > threshold
+            mask = (mask.astype(np.uint8) * 255)
+        return mask.astype(np.uint8)
+
+    @staticmethod
+    def _close_boolean_gaps(values: np.ndarray, max_gap: int) -> np.ndarray:
+        output = values.astype(bool).copy()
+        if max_gap <= 0 or output.size == 0:
+            return output
+
+        runs = TextRecognizer._boolean_runs(output)
+        for (_, prev_end), (next_start, _) in zip(runs, runs[1:]):
+            if next_start - prev_end <= max_gap:
+                output[prev_end:next_start] = True
+        return output
+
+    @staticmethod
+    def _boolean_runs(values: np.ndarray) -> list[tuple[int, int]]:
+        runs: list[tuple[int, int]] = []
+        start: int | None = None
+        for index, value in enumerate(values.astype(bool).tolist()):
+            if value and start is None:
+                start = index
+            elif not value and start is not None:
+                runs.append((start, index))
+                start = None
+        if start is not None:
+            runs.append((start, int(values.size)))
+        return runs
+
+    def _edge_interval_has_foreground(
+        self,
+        mask: np.ndarray,
+        start: int,
+        end: int,
+        input_width: int,
+        ocr_width: int,
+        min_ink_ratio: float,
+        min_pixel_density: float,
+    ) -> bool:
+        left = self._map_ocr_boundary_to_input(start, input_width, ocr_width)
+        right = self._map_ocr_boundary_to_input(end, input_width, ocr_width)
+        if right <= left:
+            return False
+
+        region = mask[:, left:right]
+        if region.size == 0:
+            return False
+        min_column_pixels = max(1, int(round(region.shape[0] * 0.025)))
+        ink_columns = np.count_nonzero(np.count_nonzero(region, axis=0) >= min_column_pixels)
+        ink_ratio = float(ink_columns) / max(1.0, float(region.shape[1]))
+        pixel_density = float(np.count_nonzero(region)) / float(region.size)
+        return ink_ratio >= min_ink_ratio or pixel_density >= min_pixel_density
+
     def decode_legacy_with_cuts(
         self,
         logits: torch.Tensor,
@@ -916,6 +996,11 @@ class TextRecognizer:
         input_width: int | None = None,
         top_k: int = 8,
         text_x_bounds: tuple[int, int] | None = None,
+        input_tensor: torch.Tensor | None = None,
+        trim_empty_edges: bool = True,
+        edge_min_ink_ratio: float = 0.035,
+        edge_min_pixel_density: float = 0.003,
+        edge_min_width: int = 2,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"} or self.blank_idx is not None:
             raise ValueError(
@@ -944,10 +1029,13 @@ class TextRecognizer:
             position for position in self._segmentation_cut_positions(segmentation_result)
             if 0 <= position < max(0, segmentator_width)
         ]
-        mapped_cuts = [
-            self._map_cut_to_boundary(position, segmentator_width, ocr_width)
-            for position in raw_cuts
-        ]
+        mapped_cuts = []
+        for position in raw_cuts:
+            if segmentator_width > 0:
+                input_position = int(round((float(position) + 0.5) * float(input_width) / float(segmentator_width)))
+            else:
+                input_position = 0
+            mapped_cuts.append(self._map_input_boundary_to_ocr(input_position, input_width, ocr_width))
         left_boundary = 0
         right_boundary = ocr_width
         if text_x_bounds is not None:
@@ -963,10 +1051,45 @@ class TextRecognizer:
             if left_boundary < cut < right_boundary
         ]
         boundaries = [left_boundary, *sorted(set(mapped_cuts)), right_boundary]
+        intervals = [
+            (start, end) for start, end in zip(boundaries, boundaries[1:])
+            if end > start
+        ]
+        if trim_empty_edges and input_tensor is not None and intervals:
+            mask = self._foreground_mask_from_tensor(input_tensor)
+            while intervals and not self._edge_interval_has_foreground(
+                mask,
+                intervals[0][0],
+                intervals[0][1],
+                input_width,
+                ocr_width,
+                edge_min_ink_ratio,
+                edge_min_pixel_density,
+            ):
+                intervals.pop(0)
+            while intervals and not self._edge_interval_has_foreground(
+                mask,
+                intervals[-1][0],
+                intervals[-1][1],
+                input_width,
+                ocr_width,
+                edge_min_ink_ratio,
+                edge_min_pixel_density,
+            ):
+                intervals.pop()
+            if intervals:
+                boundaries = [intervals[0][0], *[end for _, end in intervals]]
+            else:
+                boundaries = []
+        intervals = self._merge_narrow_edge_intervals(intervals, min_width=edge_min_width)
+        if intervals:
+            boundaries = [intervals[0][0], *[end for _, end in intervals]]
+        else:
+            boundaries = []
         top_k = max(1, min(int(top_k), probs.size(0)))
 
         symbols: list[CutDecodedSymbol] = []
-        for start, end in zip(boundaries, boundaries[1:]):
+        for start, end in intervals:
             if end <= start:
                 continue
             scores = probs[:, start:end].mean(dim=1)
@@ -1011,6 +1134,23 @@ class TextRecognizer:
             ocr_width=ocr_width,
             segmentator_width=segmentator_width,
         )
+
+    @staticmethod
+    def _merge_narrow_edge_intervals(
+        intervals: list[tuple[int, int]],
+        min_width: int,
+    ) -> list[tuple[int, int]]:
+        if min_width <= 1 or len(intervals) <= 1:
+            return intervals
+
+        output = list(intervals)
+        while len(output) > 1 and output[0][1] - output[0][0] < min_width:
+            output[1] = (output[0][0], output[1][1])
+            output.pop(0)
+        while len(output) > 1 and output[-1][1] - output[-1][0] < min_width:
+            output[-2] = (output[-2][0], output[-1][1])
+            output.pop()
+        return output
 
     @torch.no_grad()
     def logits_from_tensor(self, image_tensor: torch.Tensor) -> tuple[torch.Tensor, tuple[int, ...]]:
