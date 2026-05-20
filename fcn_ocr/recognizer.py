@@ -203,7 +203,11 @@ class TextRecognizer:
         top = delta // 2
         bottom = delta - top
         if self.y_pad > 0.0:
-            return ImageOps.expand(image, border=(0, top, 0, bottom), fill=self._pil_fill_value(image.mode))
+            return ImageOps.expand(
+                image,
+                border=(0, top, 0, bottom),
+                fill=self._background_fill_value(image),
+            )
 
         if delta >= image.height:
             delta = image.height - 1
@@ -269,6 +273,30 @@ class TextRecognizer:
             return (fill, fill, fill)
         return fill
 
+    def _background_fill_value(self, image: Image.Image) -> int | tuple[int, int, int]:
+        array = np.asarray(image)
+        if array.size == 0:
+            return self._pil_fill_value(image.mode)
+
+        if array.ndim == 2:
+            border = np.concatenate((array[0, :], array[-1, :], array[:, 0], array[:, -1]))
+            return int(np.median(border))
+
+        if array.ndim == 3 and array.shape[2] >= 3:
+            border = np.concatenate(
+                (
+                    array[0, :, :],
+                    array[-1, :, :],
+                    array[:, 0, :],
+                    array[:, -1, :],
+                ),
+                axis=0,
+            )
+            values = np.median(border[:, :3], axis=0).round().astype(np.uint8).tolist()
+            return tuple(int(value) for value in values[:3])
+
+        return self._pil_fill_value(image.mode)
+
     def _apply_baseline_crop(self, image: Image.Image, collect_debug: bool) -> tuple[Image.Image, PreprocessDebug]:
         if cv2 is None:
             raise RuntimeError("opencv-python is required for baseline_crop inference preprocessing")
@@ -308,7 +336,7 @@ class TextRecognizer:
                 original_angle,
                 expand=True,
                 resample=Image.Resampling.BICUBIC,
-                fillcolor=self._pil_fill_value(image.mode),
+                fillcolor=self._background_fill_value(image),
             )
             second = self._detect_baseline(rotated)
             if second["ok"]:
@@ -714,7 +742,7 @@ class TextRecognizer:
         left, top, right, bottom = box
         width = max(1, right - left)
         height = max(1, bottom - top)
-        output = Image.new(image.mode, (width, height), self._pil_fill_value(image.mode))
+        output = Image.new(image.mode, (width, height), self._background_fill_value(image))
         source_box = (
             max(0, left),
             max(0, top),
