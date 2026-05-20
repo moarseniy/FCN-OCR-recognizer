@@ -185,7 +185,10 @@ def parse_args() -> argparse.Namespace:
         "--x-pad",
         type=float,
         default=0.0,
-        help="Normalized symmetric horizontal inference padding after resize/scale. 0.05 adds 5%% width on each side.",
+        help=(
+            "Normalized symmetric horizontal inference padding after resize/scale. "
+            "0.05 adds 5%% width on each side, filled by replicated edge pixels."
+        ),
     )
     parser.add_argument(
         "--baseline-crop",

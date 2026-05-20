@@ -162,6 +162,7 @@ class TextRecognizer:
         debug_metadata: dict[str, Any] = {
             "baseline_crop": self.baseline_crop,
             "x_pad": self.x_pad,
+            "x_pad_mode": "edge",
         }
         debug_images: list[tuple[str, Image.Image]] = []
         image = image.convert("RGB" if self.in_channels == 3 else "L")
@@ -224,7 +225,17 @@ class TextRecognizer:
         delta = int(round(image.width * self.x_pad))
         if delta <= 0:
             return image
-        return ImageOps.expand(image, border=(delta, 0, delta, 0), fill=self._pil_fill_value(image.mode))
+
+        output = Image.new(image.mode, (image.width + delta * 2, image.height))
+        left_edge = image.crop((0, 0, 1, image.height)).resize((delta, image.height), Image.Resampling.NEAREST)
+        right_edge = image.crop((image.width - 1, 0, image.width, image.height)).resize(
+            (delta, image.height),
+            Image.Resampling.NEAREST,
+        )
+        output.paste(left_edge, (0, 0))
+        output.paste(image, (delta, 0))
+        output.paste(right_edge, (delta + image.width, 0))
+        return output
 
     def _pil_fill_value(self, mode: str) -> int | tuple[int, int, int]:
         fill = max(0, min(255, self.preprocess_fill))
