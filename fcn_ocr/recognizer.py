@@ -162,7 +162,7 @@ class TextRecognizer:
         debug_metadata: dict[str, Any] = {
             "baseline_crop": self.baseline_crop,
             "x_pad": self.x_pad,
-            "x_pad_mode": "reflect_original",
+            "x_pad_mode": "border_median_original",
         }
         debug_images: list[tuple[str, Image.Image]] = []
         image = image.convert("RGB" if self.in_channels == 3 else "L")
@@ -174,7 +174,7 @@ class TextRecognizer:
 
         image = self._apply_x_pad(image)
         if collect_debug and self.x_pad > 0.0:
-            debug_images.append(("x-pad reflect from original geometry", image))
+            debug_images.append(("x-pad border median from original geometry", image))
 
         image = self._apply_y_pad(image)
 
@@ -230,14 +230,38 @@ class TextRecognizer:
             return image
 
         array = np.asarray(image)
-        mode = "reflect" if image.width > 1 else "edge"
+        left_fill, right_fill = self._side_background_values(array)
         if array.ndim == 2:
-            padded = np.pad(array, ((0, 0), (delta, delta)), mode=mode)
+            padded = np.empty((array.shape[0], array.shape[1] + delta * 2), dtype=array.dtype)
+            padded[:, :delta] = left_fill
+            padded[:, delta : delta + array.shape[1]] = array
+            padded[:, delta + array.shape[1] :] = right_fill
         elif array.ndim == 3:
-            padded = np.pad(array, ((0, 0), (delta, delta), (0, 0)), mode=mode)
+            padded = np.empty((array.shape[0], array.shape[1] + delta * 2, array.shape[2]), dtype=array.dtype)
+            padded[:, :delta, :] = left_fill
+            padded[:, delta : delta + array.shape[1], :] = array
+            padded[:, delta + array.shape[1] :, :] = right_fill
         else:
             raise ValueError(f"Unsupported image array shape for x_pad: {array.shape}")
         return Image.fromarray(padded, mode=image.mode)
+
+    @staticmethod
+    def _side_background_values(array: np.ndarray) -> tuple[np.ndarray | int, np.ndarray | int]:
+        width = int(array.shape[1])
+        band_width = max(1, min(width, max(3, int(round(width * 0.04)))))
+        left_band = array[:, :band_width]
+        right_band = array[:, width - band_width :]
+
+        if array.ndim == 2:
+            return (
+                np.asarray(np.median(left_band), dtype=array.dtype),
+                np.asarray(np.median(right_band), dtype=array.dtype),
+            )
+
+        return (
+            np.asarray(np.median(left_band.reshape(-1, array.shape[2]), axis=0), dtype=array.dtype),
+            np.asarray(np.median(right_band.reshape(-1, array.shape[2]), axis=0), dtype=array.dtype),
+        )
 
     def _pil_fill_value(self, mode: str) -> int | tuple[int, int, int]:
         fill = max(0, min(255, self.preprocess_fill))

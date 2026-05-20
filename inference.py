@@ -187,7 +187,7 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help=(
             "Normalized symmetric horizontal inference padding before resize/scale. "
-            "0.05 adds 5%% width on each side before resize/scale, filled by reflected source pixels."
+            "0.05 adds 5%% width on each side before resize/scale, filled by side background median."
         ),
     )
     parser.add_argument(
