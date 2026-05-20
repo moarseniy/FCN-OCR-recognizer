@@ -369,6 +369,13 @@ def save_debug_image(
             info_lines.append(f"legacy+cuts edge trim: {metadata['legacy_cuts_edge_trim']}")
         if "legacy_cuts_edge_min_width" in metadata:
             info_lines.append(f"legacy+cuts edge min width: {metadata['legacy_cuts_edge_min_width']}")
+        if "legacy_cuts_boundary_cuts" in metadata:
+            info_lines.append(f"legacy+cuts boundary cuts: {metadata['legacy_cuts_boundary_cuts']}")
+        if "legacy_cuts_boundary_cut_max_gap_ratio" in metadata:
+            info_lines.append(
+                "legacy+cuts boundary cut ratio: "
+                f"{float(metadata['legacy_cuts_boundary_cut_max_gap_ratio']):.3f}"
+            )
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)

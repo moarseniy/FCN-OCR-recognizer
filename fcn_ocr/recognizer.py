@@ -974,6 +974,67 @@ class TextRecognizer:
         pixel_density = float(np.count_nonzero(region)) / float(region.size)
         return ink_ratio >= min_ink_ratio or pixel_density >= min_pixel_density
 
+    @staticmethod
+    def _typical_cut_width(cuts: list[int], left_boundary: int, right_boundary: int) -> float:
+        widths = [
+            right - left
+            for left, right in zip(cuts, cuts[1:])
+            if right > left
+        ]
+        if not widths and right_boundary > left_boundary:
+            widths = [right_boundary - left_boundary]
+        if not widths:
+            return 0.0
+        return float(np.median(np.asarray(widths, dtype=np.float32)))
+
+    @classmethod
+    def _promote_edge_cuts_to_bounds(
+        cls,
+        mapped_cuts: list[int],
+        left_boundary: int,
+        right_boundary: int,
+        mode: str,
+        max_gap_ratio: float,
+        min_gap_width: int,
+    ) -> tuple[int, int, list[int]]:
+        mode = mode.lower()
+        if mode not in {"off", "auto", "on"}:
+            raise ValueError("boundary_cuts mode must be 'off', 'auto', or 'on'")
+
+        cuts = [
+            cut for cut in sorted(set(mapped_cuts))
+            if left_boundary < cut < right_boundary
+        ]
+        if len(cuts) < 2 or mode == "off":
+            return left_boundary, right_boundary, cuts
+
+        if mode == "on":
+            return cuts[0], cuts[-1], cuts[1:-1]
+
+        typical_width = cls._typical_cut_width(cuts, left_boundary, right_boundary)
+        if typical_width <= 0.0:
+            return left_boundary, right_boundary, cuts
+        if max_gap_ratio < 0.0:
+            raise ValueError("boundary_cut_max_gap_ratio must be non-negative")
+
+        threshold = max(float(min_gap_width), typical_width * float(max_gap_ratio))
+        left_gap = cuts[0] - left_boundary
+        right_gap = right_boundary - cuts[-1]
+
+        # In auto mode we promote both edges only when both outer intervals look
+        # much smaller than a normal character interval. This catches outputs
+        # like |A|B|C| without deleting a real narrow first/last glyph by itself.
+        if left_gap <= threshold and right_gap <= threshold:
+            left_boundary = cuts[0]
+            right_boundary = cuts[-1]
+            cuts = cuts[1:-1]
+
+        cuts = [
+            cut for cut in cuts
+            if left_boundary < cut < right_boundary
+        ]
+        return left_boundary, right_boundary, cuts
+
     def decode_legacy_with_cuts(
         self,
         logits: torch.Tensor,
@@ -986,6 +1047,8 @@ class TextRecognizer:
         edge_min_ink_ratio: float = 0.035,
         edge_min_pixel_density: float = 0.003,
         edge_min_width: int = 2,
+        boundary_cuts: str = "auto",
+        boundary_cut_max_gap_ratio: float = 0.45,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -1031,10 +1094,14 @@ class TextRecognizer:
                 left_boundary = 0
                 right_boundary = ocr_width
 
-        mapped_cuts = [
-            cut for cut in mapped_cuts
-            if left_boundary < cut < right_boundary
-        ]
+        left_boundary, right_boundary, mapped_cuts = self._promote_edge_cuts_to_bounds(
+            mapped_cuts,
+            left_boundary,
+            right_boundary,
+            mode=boundary_cuts,
+            max_gap_ratio=boundary_cut_max_gap_ratio,
+            min_gap_width=edge_min_width,
+        )
         boundaries = [left_boundary, *sorted(set(mapped_cuts)), right_boundary]
         intervals = [
             (start, end) for start, end in zip(boundaries, boundaries[1:])

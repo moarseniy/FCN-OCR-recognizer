@@ -682,9 +682,16 @@ class SingleLineDataset(Dataset):
         labels = torch.empty(width, dtype=torch.long)
         centers = [0.5 * (start + end) for _, start, end in spans]
         last_span_index = len(spans) - 1
+        space_index = self.char_to_index[self.config.space_char]
+        left_text = spans[0][1]
+        right_text = spans[-1][2]
 
         for x in range(width):
             position = x + 0.5
+            if position < left_text or position >= right_text:
+                labels[x] = space_index
+                continue
+
             chosen_index = None
             for span_index, (_, start, end) in enumerate(spans):
                 if start <= position < end:
