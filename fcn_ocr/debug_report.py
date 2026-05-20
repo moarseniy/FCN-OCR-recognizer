@@ -317,6 +317,14 @@ def save_debug_image(
         info_lines.append(f"baseline status: {metadata['baseline_status']}")
     if metadata.get("baseline_angle_degrees") is not None:
         info_lines.append(f"baseline angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
+    if metadata.get("baseline_confidence") is not None:
+        info_lines.append(f"baseline confidence: {float(metadata['baseline_confidence']):.3f}")
+    if metadata.get("baseline_inlier_ratio") is not None:
+        info_lines.append(f"baseline inlier ratio: {float(metadata['baseline_inlier_ratio']):.3f}")
+    if metadata.get("baseline_profile_coverage") is not None:
+        info_lines.append(f"baseline profile coverage: {float(metadata['baseline_profile_coverage']):.3f}")
+    if metadata.get("baseline_residual_mad") is not None:
+        info_lines.append(f"baseline residual MAD: {float(metadata['baseline_residual_mad']):.3f}")
     if metadata.get("baseline_crop_box") is not None:
         info_lines.append(f"baseline crop box: {metadata['baseline_crop_box']}")
     if metadata.get("baseline_text_height") is not None:
