@@ -9,7 +9,7 @@ from .results import SegmentationRun, VerticalSegmentationResult
 
 
 class VerticalSegmentator(TextRecognizer):
-    """Binary FCN segmentator for vertical gaps between characters."""
+    """FCN segmentator for vertical gaps or cut-point projections."""
 
     def __init__(
         self,
@@ -39,23 +39,37 @@ class VerticalSegmentator(TextRecognizer):
             baseline_deskew=baseline_deskew,
             baseline_max_angle=baseline_max_angle,
         )
+        checkpoint_config = self.checkpoint.get("config", {})
+        model_config = self.checkpoint.get("model_config", {})
         self.legacy_target_mode = str(
             self.checkpoint.get("model_config", {}).get(
                 "legacy_target_mode",
-                self.checkpoint.get("config", {}).get("legacy_target_mode", ""),
+                checkpoint_config.get("legacy_target_mode", ""),
             )
         ).lower()
-        if self.num_classes != 2:
+        self.target_format = str(
+            model_config.get("target_format", checkpoint_config.get("target_format", self.legacy_target_mode))
+        ).lower()
+        if self.loss_mode == "cut_projection" or self.num_classes == 1:
+            self.target_format = "cut_projection"
+        elif self.target_format in {"", "none"}:
+            self.target_format = "binary_gaps"
+
+        if self.target_format == "cut_projection":
+            if self.num_classes != 1:
+                raise ValueError(
+                    f"Cut projection segmentator expects num_classes=1, got {self.num_classes}"
+                )
+        elif self.num_classes != 2:
             raise ValueError(
                 f"VerticalSegmentator expects a binary checkpoint with num_classes=2, got {self.num_classes}"
             )
-        if self.legacy_target_mode and self.legacy_target_mode != "binary_gaps":
+        if self.target_format != "cut_projection" and self.legacy_target_mode and self.legacy_target_mode != "binary_gaps":
             raise ValueError(
                 "VerticalSegmentator expects legacy_target_mode=binary_gaps, "
                 f"got {self.legacy_target_mode!r}"
             )
 
-        checkpoint_config = self.checkpoint.get("config", {})
         self.gap_threshold = self._resolve_gap_threshold(gap_threshold, checkpoint_config)
         self.min_gap_width = self._resolve_non_negative_int(
             min_gap_width,
@@ -70,6 +84,13 @@ class VerticalSegmentator(TextRecognizer):
             "segmentator_merge_gap_width",
             default=0,
             min_value=0,
+        )
+        self.peak_min_distance = self._resolve_non_negative_int(
+            min_gap_width,
+            checkpoint_config,
+            "segmentator_peak_min_distance",
+            default=self.min_gap_width,
+            min_value=1,
         )
 
         if verbose:
@@ -103,21 +124,32 @@ class VerticalSegmentator(TextRecognizer):
         print(f"Segmentator checkpoint: {self.checkpoint_path}")
         print(f"Segmentator device: {self.device}")
         print(f"Segmentator input height: {self.image_height}")
-        print(f"Segmentator classes: non-gap=0, gap=1")
-        print(
-            "Segmentator params: "
-            f"gap_threshold={self.gap_threshold:.3f}, "
-            f"min_gap_width={self.min_gap_width}, "
-            f"merge_gap_width={self.merge_gap_width}"
-        )
+        print(f"Segmentator mode: {self.target_format}")
+        if self.target_format == "cut_projection":
+            print("Segmentator output: cut projection, one sigmoid score per column")
+            print(
+                "Segmentator params: "
+                f"cut_threshold={self.gap_threshold:.3f}, "
+                f"peak_min_distance={self.peak_min_distance}"
+            )
+        else:
+            print(f"Segmentator classes: non-gap=0, gap=1")
+            print(
+                "Segmentator params: "
+                f"gap_threshold={self.gap_threshold:.3f}, "
+                f"min_gap_width={self.min_gap_width}, "
+                f"merge_gap_width={self.merge_gap_width}"
+            )
 
     def analyze_segmentation_logits(
         self,
         logits: torch.Tensor,
         input_shape: tuple[int, ...],
     ) -> VerticalSegmentationResult:
+        if logits.size(1) == 1:
+            return self._analyze_cut_projection_logits(logits, input_shape)
         if logits.size(1) != 2:
-            raise ValueError(f"Expected binary segmentation logits with 2 classes, got {tuple(logits.shape)}")
+            raise ValueError(f"Expected segmentation logits with 1 or 2 classes, got {tuple(logits.shape)}")
 
         probs = torch.softmax(logits, dim=1)
         gap_probs = probs[:, 1, :]
@@ -141,7 +173,70 @@ class VerticalSegmentator(TextRecognizer):
             merge_gap_width=self.merge_gap_width,
             input_shape=input_shape,
             logits_shape=tuple(logits.shape),
+            mode="binary_gaps",
+            cut_positions=None,
+            peak_min_distance=None,
         )
+
+    def _analyze_cut_projection_logits(
+        self,
+        logits: torch.Tensor,
+        input_shape: tuple[int, ...],
+    ) -> VerticalSegmentationResult:
+        cut_scores_tensor = torch.sigmoid(logits[:, 0, :])
+        cut_scores = [float(value) for value in cut_scores_tensor[0].detach().cpu().tolist()]
+        cut_positions = self._select_cut_peaks(
+            cut_scores,
+            threshold=self.gap_threshold,
+            min_distance=self.peak_min_distance,
+        )
+        cut_set = set(cut_positions)
+        raw_indices = [1 if index in cut_set else 0 for index in range(len(cut_scores))]
+        raw_confidences = [
+            float(score if label == 1 else 1.0 - score)
+            for label, score in zip(raw_indices, cut_scores)
+        ]
+        runs = self._make_runs(raw_indices, raw_confidences, cut_scores)
+
+        return VerticalSegmentationResult(
+            raw_indices=raw_indices,
+            raw_confidences=raw_confidences,
+            gap_probabilities=cut_scores,
+            runs=runs,
+            gap_threshold=self.gap_threshold,
+            min_gap_width=self.min_gap_width,
+            merge_gap_width=self.merge_gap_width,
+            input_shape=input_shape,
+            logits_shape=tuple(logits.shape),
+            mode="cut_projection",
+            cut_positions=cut_positions,
+            peak_min_distance=self.peak_min_distance,
+        )
+
+    @staticmethod
+    def _select_cut_peaks(
+        scores: list[float],
+        threshold: float,
+        min_distance: int,
+    ) -> list[int]:
+        if not scores:
+            return []
+
+        candidates: list[tuple[float, int]] = []
+        last_index = len(scores) - 1
+        for index, score in enumerate(scores):
+            if score < threshold:
+                continue
+            left = scores[index - 1] if index > 0 else float("-inf")
+            right = scores[index + 1] if index < last_index else float("-inf")
+            if score >= left and score >= right:
+                candidates.append((float(score), index))
+
+        selected: list[int] = []
+        for _, index in sorted(candidates, reverse=True):
+            if all(abs(index - previous) >= min_distance for previous in selected):
+                selected.append(index)
+        return sorted(selected)
 
     def _postprocess_labels(self, labels: list[int]) -> list[int]:
         if not labels:

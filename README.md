@@ -24,6 +24,9 @@
 stride=(4, 1), padding=(1, 0))` и `cropX=[6, -5]`. Для вертикального
 сегментатора есть `legacy_target_mode: binary_gaps`: `final` имеет 2 выхода,
 а таргет содержит 0/1 по X-колонкам, где `1` означает промежуток между
+символами. Для сегментатора в стиле cut-projection есть
+`loss_mode: cut_projection`: `final` имеет 1 выход, а таргет содержит
+одномерную heatmap-проекцию с пиками в координатах правильных разрезов между
 символами. Для текущих текстовых чанков доступен
 `legacy_target_mode: uniform_text`, который равномерно раскладывает строку по
 выходной ширине модели. Это удобный режим для проверки идеи, но CTC остается более корректным
@@ -182,20 +185,24 @@ word_spacing_multiplier_max: 1.7
 ```yaml
 save_dense_targets: true
 save_binary_gap_targets: true
+save_cut_projection_targets: true
 binary_gap_min_width: 1
 binary_gap_include_spaces: false
 binary_gap_include_margins: false
+cut_projection_peak_radius: 1
+cut_projection_include_margins: false
 ```
 
 Тогда в чанки также попадет `dense_targets` (`N x W`) — класс символа для
 каждой X-колонки исходного кропа. Если включен `save_binary_gap_targets`, в
 чанки попадет `binary_gap_targets` (`N x W`) — бинарная разметка промежутков
-между символами. При обучении loss делает legacy-crop и при необходимости
+между символами. Если включен `save_cut_projection_targets`, в чанки попадет
+`cut_projection_targets` (`N x W`, `uint8`) — heatmap правильных вертикальных
+разрезов. При обучении loss делает crop и при необходимости
 пересэмплирует эту разметку к выходной ширине сети `T`. Для
 `vertical_segmentator_fcn` ширина выхода сохраняется 1:1, поэтому в конфиге
-используются `legacy_crop_left: 0`, `legacy_crop_right: 0` и
-`legacy_strict_width: true`. Рядом создается
-`metadata.yaml` с параметрами
+используются crop `0/0` и strict-width. Рядом создается `metadata.yaml` с
+параметрами.
 датасета: алфавитом, `space_char`, размерами картинок, числом каналов и
 максимальной длиной текста. Настройки обучения и настройки аугментаций в
 offline-датасет не сохраняются. `output_dir`, `chunk_size`, `num_workers` и
@@ -273,6 +280,21 @@ segmentator_merge_gap_width: 0
 ```
 
 Пример конфига: `configs/eng_train_101_gaps.yaml`.
+
+Для обучения вертикального сегментатора на heatmap разрезов:
+
+```yaml
+loss_mode: cut_projection
+cut_projection_crop_left: 0
+cut_projection_crop_right: 0
+cut_projection_strict_width: true
+cut_projection_loss: mse
+cut_projection_positive_weight: 4.0
+segmentator_gap_threshold: 0.35
+segmentator_peak_min_distance: 3
+```
+
+Пример конфига: `configs/eng_train_101_cuts.yaml`.
 
 Подобрать параметры вертикального сегментатора без OCR, сравнивая число
 предсказанных межбуквенных промежутков с длиной строки из Label Studio:

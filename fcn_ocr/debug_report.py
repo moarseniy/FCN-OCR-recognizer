@@ -99,7 +99,12 @@ def format_raw_run(result: RecognitionResult, start: int, end: int) -> str:
 def segmentation_runs_summary(result: VerticalSegmentationResult) -> str:
     gap_runs = [run for run in result.runs if run.label == 1]
     if not gap_runs:
-        return "no gap runs"
+        return "no cuts" if result.mode == "cut_projection" else "no gap runs"
+    if result.mode == "cut_projection":
+        return "    ".join(
+            f"{run.start} cut={run.gap_probability:.3f}"
+            for run in gap_runs
+        )
     return "    ".join(
         f"{run.start}-{run.end} gap={run.gap_probability:.3f} conf={run.confidence:.3f}"
         for run in gap_runs
@@ -154,7 +159,7 @@ def render_segmentation_panel(
     title_height = text_height(probe, font) + 6
     summary_lines = wrapped_lines(
         probe,
-        f"gap runs: {segmentation_runs_summary(result)}",
+        f"{'cuts' if result.mode == 'cut_projection' else 'gap runs'}: {segmentation_runs_summary(result)}",
         small_font,
         max(120, image.width - padding * 2),
     )
@@ -165,7 +170,8 @@ def render_segmentation_panel(
     y = padding
     title = (
         f"vertical segmentator input; logits {result.logits_shape}; "
-        f"T={len(result.raw_indices)}; threshold={result.gap_threshold:.3f}"
+        f"T={len(result.raw_indices)}; "
+        f"{'cut' if result.mode == 'cut_projection' else 'gap'} threshold={result.gap_threshold:.3f}"
     )
     draw.text((padding, y), title, fill=(55, 55, 55), font=font)
     y += title_height
@@ -305,13 +311,19 @@ def save_debug_image(
         info_lines.append(f"expected text: {metadata['expected_text']!r}")
     if segmentation_result is not None:
         info_lines.append(f"segmentator checkpoint: {metadata.get('segmentator_checkpoint', '-')}")
+        info_lines.append(f"segmentator mode: {segmentation_result.mode}")
         info_lines.append(f"segmentator input tensor shape: {segmentation_result.input_shape}")
         info_lines.append(f"segmentator logits shape: {segmentation_result.logits_shape}")
         info_lines.append(f"segmentator timesteps: {len(segmentation_result.raw_indices)}")
-        info_lines.append(f"segmentator gap runs: {sum(1 for run in segmentation_result.runs if run.label == 1)}")
-        info_lines.append(f"segmentator gap threshold: {segmentation_result.gap_threshold:.3f}")
-        info_lines.append(f"segmentator min gap width: {segmentation_result.min_gap_width}")
-        info_lines.append(f"segmentator merge gap width: {segmentation_result.merge_gap_width}")
+        if segmentation_result.mode == "cut_projection":
+            info_lines.append(f"segmentator cuts: {len(segmentation_result.cut_positions or [])}")
+            info_lines.append(f"segmentator cut threshold: {segmentation_result.gap_threshold:.3f}")
+            info_lines.append(f"segmentator peak min distance: {segmentation_result.peak_min_distance}")
+        else:
+            info_lines.append(f"segmentator gap runs: {sum(1 for run in segmentation_result.runs if run.label == 1)}")
+            info_lines.append(f"segmentator gap threshold: {segmentation_result.gap_threshold:.3f}")
+            info_lines.append(f"segmentator min gap width: {segmentation_result.min_gap_width}")
+            info_lines.append(f"segmentator merge gap width: {segmentation_result.merge_gap_width}")
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)

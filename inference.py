@@ -50,19 +50,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--segmentator-checkpoint",
         default=None,
-        help="Optional binary vertical segmentator checkpoint. If --debug-image is set, its gap map is rendered too.",
+        help="Optional vertical segmentator checkpoint. If --debug-image is set, its gap/cut map is rendered too.",
     )
     parser.add_argument(
         "--segmentator-gap-threshold",
         type=float,
         default=None,
-        help="Override segmentator gap probability threshold from checkpoint config.",
+        help="Override segmentator gap/cut probability threshold from checkpoint config.",
     )
     parser.add_argument(
         "--segmentator-min-gap-width",
         type=int,
         default=None,
-        help="Override minimum gap run width in segmentator output timesteps.",
+        help="Override minimum gap run width, or peak min distance for cut-projection segmentators.",
     )
     parser.add_argument(
         "--segmentator-merge-gap-width",
@@ -254,11 +254,18 @@ def main() -> None:
         segmentator_input_image = tensor_to_pil(segmentator_input_tensor)
         segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
         debug_metadata["segmentator_checkpoint"] = str(segmentator_checkpoint_path)
-        print(
-            "Segmentator: "
-            f"{sum(1 for run in segmentation_result.runs if run.label == 1)} gap runs, "
-            f"{len(segmentation_result.raw_indices)} timesteps"
-        )
+        if segmentation_result.mode == "cut_projection":
+            print(
+                "Segmentator: "
+                f"{len(segmentation_result.cut_positions or [])} cuts, "
+                f"{len(segmentation_result.raw_indices)} timesteps"
+            )
+        else:
+            print(
+                "Segmentator: "
+                f"{sum(1 for run in segmentation_result.runs if run.label == 1)} gap runs, "
+                f"{len(segmentation_result.raw_indices)} timesteps"
+            )
 
     print(f"Recognized text: '{result.text}'")
 

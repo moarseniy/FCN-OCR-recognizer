@@ -96,9 +96,12 @@ class SingleLineDatasetConfig(BaseModel):
     overwrite: bool = False
     save_dense_targets: bool = False
     save_binary_gap_targets: bool = False
+    save_cut_projection_targets: bool = False
     binary_gap_min_width: int = Field(default=1, ge=0)
     binary_gap_include_spaces: bool = False
     binary_gap_include_margins: bool = False
+    cut_projection_peak_radius: int = Field(default=1, ge=0)
+    cut_projection_include_margins: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -288,6 +291,7 @@ class GeneratedLineSample:
     length: int
     dense_target: torch.Tensor | None
     binary_gap_target: torch.Tensor | None
+    cut_projection_target: torch.Tensor | None
 
 
 class SingleLineDataset(Dataset):
@@ -296,8 +300,8 @@ class SingleLineDataset(Dataset):
     def __init__(self, config: SingleLineDatasetConfig, target_format: str = "text"):
         self.config = config
         self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols", "binary_gaps"}:
-            raise ValueError("target_format must be 'text', 'dense_symbols', or 'binary_gaps'")
+        if self.target_format not in {"text", "dense_symbols", "binary_gaps", "cut_projection"}:
+            raise ValueError("target_format must be 'text', 'dense_symbols', 'binary_gaps', or 'cut_projection'")
         self.alphabet = config.alphabet or config.sample_alphabet
         self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
@@ -337,6 +341,10 @@ class SingleLineDataset(Dataset):
             if sample.binary_gap_target is None:
                 raise RuntimeError("binary gap target was not generated for this sample")
             return sample.image, sample.binary_gap_target, torch.tensor(-1, dtype=torch.long)
+        if self.target_format == "cut_projection":
+            if sample.cut_projection_target is None:
+                raise RuntimeError("cut projection target was not generated for this sample")
+            return sample.image, sample.cut_projection_target, torch.tensor(-1, dtype=torch.long)
         return sample.image, sample.target, torch.tensor(sample.length, dtype=torch.long)
 
     def generate_sample_from_index(self, index: int) -> GeneratedLineSample:
@@ -635,6 +643,9 @@ class SingleLineDataset(Dataset):
         binary_gap_target = None
         if self.target_format == "binary_gaps" or self.config.save_binary_gap_targets:
             binary_gap_target = self._encode_binary_gaps(spans, image.width)
+        cut_projection_target = None
+        if self.target_format == "cut_projection" or self.config.save_cut_projection_targets:
+            cut_projection_target = self._encode_cut_projection(spans, image.width)
         length = len(text)
 
         if self.config.channels == 3:
@@ -651,6 +662,7 @@ class SingleLineDataset(Dataset):
             length=length,
             dense_target=dense_target,
             binary_gap_target=binary_gap_target,
+            cut_projection_target=cut_projection_target,
         )
 
     def _encode_text(self, text: str) -> torch.Tensor:
@@ -737,6 +749,39 @@ class SingleLineDataset(Dataset):
                 mark_center((prev_end + next_start) * 0.5)
 
         return labels
+
+    def _encode_cut_projection(
+        self,
+        spans: list[tuple[str, float, float]],
+        width: int,
+    ) -> torch.Tensor:
+        if not spans:
+            raise ValueError("cannot encode cut projection for an empty span list")
+
+        projection = torch.zeros(width, dtype=torch.float32)
+        radius = self.config.cut_projection_peak_radius
+
+        def mark_peak(center: float) -> None:
+            center_index = int(round(center - 0.5))
+            if radius == 0:
+                if 0 <= center_index < width:
+                    projection[center_index] = 1.0
+                return
+
+            for offset in range(-radius, radius + 1):
+                x = center_index + offset
+                if 0 <= x < width:
+                    value = 1.0 - (abs(offset) / float(radius + 1))
+                    projection[x] = max(float(projection[x]), value)
+
+        if self.config.cut_projection_include_margins:
+            mark_peak(spans[0][1])
+            mark_peak(spans[-1][2])
+
+        for (_, _, prev_end), (_, next_start, _) in zip(spans, spans[1:]):
+            mark_peak((prev_end + next_start) * 0.5)
+
+        return projection
 
     def _char_spans(
         self,

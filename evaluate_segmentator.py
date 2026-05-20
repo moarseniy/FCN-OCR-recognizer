@@ -67,8 +67,16 @@ def build_rows_and_jobs(
     return rows, jobs
 
 
-def gap_runs_text(runs) -> str:
-    return " ".join(f"{run.start}-{run.end}:{run.gap_probability:.3f}" for run in runs if run.label == 1)
+def gap_runs_text(result) -> str:
+    if result.mode == "cut_projection":
+        return " ".join(f"{run.start}:{run.gap_probability:.3f}" for run in result.runs if run.label == 1)
+    return " ".join(f"{run.start}-{run.end}:{run.gap_probability:.3f}" for run in result.runs if run.label == 1)
+
+
+def segment_count(result) -> int:
+    if result.mode == "cut_projection":
+        return len(result.cut_positions or [])
+    return sum(1 for run in result.runs if run.label == 1)
 
 
 def segment_images(
@@ -137,25 +145,20 @@ def segment_batch(
         batch[batch_index, :, :, : tensor.size(2)] = tensor
 
     logits = segmentator.model(batch)
-    probs = torch.softmax(logits, dim=1)
-    gap_probs = probs[:, 1, :]
 
     predictions: dict[int, dict[str, Any]] = {}
     for batch_index, ((row_index, _), output_length) in enumerate(zip(batch_jobs, output_lengths)):
-        sample_gap_probs = [float(value) for value in gap_probs[batch_index, :output_length].detach().cpu().tolist()]
-        raw_indices = [1 if value >= segmentator.gap_threshold else 0 for value in sample_gap_probs]
-        raw_indices = segmentator._postprocess_labels(raw_indices)
-        raw_confidences = [
-            float(gap_probability if label == 1 else 1.0 - gap_probability)
-            for label, gap_probability in zip(raw_indices, sample_gap_probs)
-        ]
-        runs = segmentator._make_runs(raw_indices, raw_confidences, sample_gap_probs)
-        gap_count = sum(1 for run in runs if run.label == 1)
-        pred_len = gap_count + 1 if raw_indices else 0
+        sample_logits = logits[batch_index : batch_index + 1, :, :output_length]
+        result = segmentator.analyze_segmentation_logits(
+            sample_logits,
+            input_shape=(1, segmentator.in_channels, segmentator.image_height, tensors[batch_index].size(2)),
+        )
+        gap_count = segment_count(result)
+        pred_len = gap_count + 1 if result.raw_indices else 0
         predictions[row_index] = {
             "pred_len": pred_len,
             "gap_count": gap_count,
-            "gap_runs": gap_runs_text(runs),
+            "gap_runs": gap_runs_text(result),
         }
 
     return predictions
@@ -231,9 +234,12 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Normalized length error:    {metrics['normalized_length_error']:.4f}")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
+    print(f"segmentator_mode:           {metrics.get('segmentator_mode', 'binary_gaps')}")
     print(f"gap_threshold:              {metrics['gap_threshold']:.5f}")
     print(f"min_gap_width:              {metrics['min_gap_width']}")
     print(f"merge_gap_width:            {metrics['merge_gap_width']}")
+    if metrics.get("segmentator_mode") == "cut_projection":
+        print(f"peak_min_distance:          {metrics['peak_min_distance']}")
     print(f"scale_x:                    {metrics['scale_x']:+.5f}")
     print(f"y_pad:                      {metrics['y_pad']:+.5f}")
     print(f"baseline_crop:              {metrics['baseline_crop']}")
@@ -287,6 +293,8 @@ def configure_segmentator(
         default=0,
         min_value=0,
     )
+    if getattr(segmentator, "target_format", "") == "cut_projection":
+        segmentator.peak_min_distance = segmentator.min_gap_width
     segmentator.scale_x = float(scale_x)
     segmentator.y_pad = float(y_pad)
     segmentator.baseline_crop = bool(baseline_crop)
@@ -316,9 +324,11 @@ def evaluate_with_segmentator(
         rows[row_index]["error"] = error
 
     metrics = compute_metrics(rows, elapsed)
+    metrics["segmentator_mode"] = getattr(segmentator, "target_format", "binary_gaps")
     metrics["gap_threshold"] = float(segmentator.gap_threshold)
     metrics["min_gap_width"] = int(segmentator.min_gap_width)
     metrics["merge_gap_width"] = int(segmentator.merge_gap_width)
+    metrics["peak_min_distance"] = int(getattr(segmentator, "peak_min_distance", segmentator.min_gap_width))
     metrics["scale_x"] = float(segmentator.scale_x)
     metrics["y_pad"] = float(segmentator.y_pad)
     metrics["baseline_crop"] = bool(segmentator.baseline_crop)

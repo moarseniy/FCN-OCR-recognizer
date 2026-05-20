@@ -44,8 +44,8 @@ class ChunkedLineDataset(Dataset):
         self.cache_size = max(1, cache_size)
         self.config = config
         self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols", "binary_gaps"}:
-            raise ValueError("target_format must be 'text', 'dense_symbols', or 'binary_gaps'")
+        if self.target_format not in {"text", "dense_symbols", "binary_gaps", "cut_projection"}:
+            raise ValueError("target_format must be 'text', 'dense_symbols', 'binary_gaps', or 'cut_projection'")
         self.metadata = load_chunk_metadata(self.root_dir)
         self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)} if config else {}
         chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
@@ -86,6 +86,8 @@ class ChunkedLineDataset(Dataset):
             return self._make_dense_symbol_target(image, chunk, local_idx)
         if self.target_format == "binary_gaps":
             return self._make_binary_gap_target(image, chunk, local_idx)
+        if self.target_format == "cut_projection":
+            return self._make_cut_projection_target(image, chunk, local_idx)
         return self._make_target_from_text(image, chunk["texts"][local_idx])
 
     def iter_texts(self):
@@ -142,6 +144,8 @@ class ChunkedLineDataset(Dataset):
             raise ValueError(f"Chunk {path} has inconsistent dense_targets first dimension")
         if "binary_gap_targets" in chunk and chunk["binary_gap_targets"].shape[0] != sample_count:
             raise ValueError(f"Chunk {path} has inconsistent binary_gap_targets first dimension")
+        if "cut_projection_targets" in chunk and chunk["cut_projection_targets"].shape[0] != sample_count:
+            raise ValueError(f"Chunk {path} has inconsistent cut_projection_targets first dimension")
 
     def _make_target_from_text(self, image: torch.Tensor, text: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.config is None:
@@ -202,6 +206,29 @@ class ChunkedLineDataset(Dataset):
                 f"binary gap target width {target.size(0)} does not match image width {image.shape[-1]}"
             )
         return image, target, torch.tensor(-1, dtype=torch.long)
+
+    def _make_cut_projection_target(
+        self,
+        image: torch.Tensor,
+        chunk: dict,
+        local_idx: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if "cut_projection_targets" not in chunk:
+            raise KeyError(
+                "Chunk does not contain cut_projection_targets. Regenerate the dataset with "
+                "save_cut_projection_targets: true in the generation config."
+            )
+        raw_target = chunk["cut_projection_targets"][local_idx]
+        target = raw_target.float()
+        if raw_target.dtype == torch.uint8:
+            target = target / 255.0
+        if target.dim() != 1:
+            raise ValueError(f"cut projection target must have shape (W,), got {tuple(target.shape)}")
+        if target.size(0) != image.shape[-1]:
+            raise ValueError(
+                f"cut projection target width {target.size(0)} does not match image width {image.shape[-1]}"
+            )
+        return image, target.contiguous(), torch.tensor(-1, dtype=torch.long)
 
     def _normalize_text(self, text: str) -> str:
         if self.config is None:

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
 from fcn_architectures import available_architectures, create_model, normalize_architecture_name
-from loss import ctc_loss, legacy_logreg_loss
+from loss import ctc_loss, cut_projection_loss, legacy_logreg_loss
 
 from datetime import datetime
 import os
@@ -27,8 +27,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
-SUPPORTED_LOSS_MODES = ("ctc", "legacy_logreg")
+SUPPORTED_LOSS_MODES = ("ctc", "legacy_logreg", "cut_projection")
 SUPPORTED_LEGACY_TARGET_MODES = ("uniform_text", "dense_symbols", "binary_gaps")
+SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 
 
 class TrainingConfig(BaseModel):
@@ -65,9 +66,15 @@ class TrainingConfig(BaseModel):
     legacy_crop_left: int = Field(default=6, ge=0)
     legacy_crop_right: int = Field(default=5, ge=0)
     legacy_strict_width: bool = False
+    cut_projection_crop_left: int = Field(default=0, ge=0)
+    cut_projection_crop_right: int = Field(default=0, ge=0)
+    cut_projection_strict_width: bool = True
+    cut_projection_loss: str = "mse"
+    cut_projection_positive_weight: float = Field(default=1.0, ge=1.0)
     segmentator_gap_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)
     segmentator_min_gap_width: int = Field(default=1, ge=1)
     segmentator_merge_gap_width: int = Field(default=0, ge=0)
+    segmentator_peak_min_distance: int = Field(default=1, ge=1)
     scheduler: str = "reduce_on_plateau"
     scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     scheduler_patience: int = Field(default=3, ge=0)
@@ -171,6 +178,14 @@ class TrainingConfig(BaseModel):
             raise ValueError(f"legacy_target_mode must be one of {SUPPORTED_LEGACY_TARGET_MODES}")
         return value
 
+    @field_validator("cut_projection_loss")
+    @classmethod
+    def cut_projection_loss_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_CUT_PROJECTION_LOSSES:
+            raise ValueError(f"cut_projection_loss must be one of {SUPPORTED_CUT_PROJECTION_LOSSES}")
+        return value
+
     @field_validator("augmentation_probabilities")
     @classmethod
     def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
@@ -195,6 +210,8 @@ def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "
     loss_mode = loss_mode.lower()
     if loss_mode == "ctc":
         return len(alphabet) + 1
+    if loss_mode == "cut_projection":
+        return 1
     if loss_mode == "legacy_logreg":
         if legacy_target_mode.lower() == "binary_gaps":
             return 2
@@ -282,6 +299,12 @@ def build_checkpoint(
             'blank_idx': blank_index_for_loss(alphabet, loss_mode),
             'loss_mode': loss_mode,
             'legacy_target_mode': legacy_target_mode,
+            'target_format': (
+                'cut_projection'
+                if loss_mode == 'cut_projection'
+                else legacy_target_mode if loss_mode == 'legacy_logreg' else 'text'
+            ),
+            'cut_projection_loss': config.get('cut_projection_loss', 'mse'),
         },
         'train_losses': train_losses,
         'val_losses': val_losses,
@@ -442,6 +465,25 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
     output_width = output_width_for_model(model, dataset_config.image_width)
     print(f"Model output width: {output_width} for input width {dataset_config.image_width}")
 
+    if config.loss_mode == "cut_projection":
+        target_width = dataset_config.image_width - config.cut_projection_crop_left - config.cut_projection_crop_right
+        if target_width <= 0:
+            raise ValueError(
+                "Cut projection target crop is empty: "
+                f"image_width={dataset_config.image_width}, "
+                f"cut_projection_crop_left={config.cut_projection_crop_left}, "
+                f"cut_projection_crop_right={config.cut_projection_crop_right}"
+            )
+        print(f"Cut projection target width: {target_width}")
+        if config.cut_projection_strict_width and output_width != target_width:
+            raise ValueError(
+                "cut_projection_strict_width requires model output width to match target width, "
+                f"but architecture={config.architecture!r} gives T={output_width} while "
+                f"targets have width {target_width}. Use a width-preserving architecture such as "
+                "vertical_segmentator_fcn, or set cut_projection_strict_width: false."
+            )
+        return
+
     if config.loss_mode != "legacy_logreg":
         return
     if config.legacy_target_mode not in {"dense_symbols", "binary_gaps"}:
@@ -479,6 +521,11 @@ def compute_loss(
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
+    cut_projection_crop_left=0,
+    cut_projection_crop_right=0,
+    cut_projection_strict_width=True,
+    cut_projection_loss_name="mse",
+    cut_projection_positive_weight=1.0,
 ):
     loss_mode = loss_mode.lower()
     if loss_mode == "ctc":
@@ -495,6 +542,16 @@ def compute_loss(
             crop_right=legacy_crop_right,
             strict_width=legacy_strict_width,
         )
+    if loss_mode == "cut_projection":
+        return cut_projection_loss(
+            logits,
+            targets,
+            crop_left=cut_projection_crop_left,
+            crop_right=cut_projection_crop_right,
+            strict_width=cut_projection_strict_width,
+            loss=cut_projection_loss_name,
+            positive_weight=cut_projection_positive_weight,
+        )
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
 
@@ -504,7 +561,7 @@ def prepare_batch(imgs, targets, lengths, device):
         imgs = imgs.float().div_(255.0)
     else:
         imgs = imgs.float()
-    targets = targets.to(device=device, dtype=torch.long, non_blocking=True)
+    targets = targets.to(device=device, non_blocking=True)
     lengths = lengths.to(device=device, dtype=torch.long, non_blocking=True)
     return imgs, targets, lengths
 
@@ -523,6 +580,11 @@ def validate(
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
+    cut_projection_crop_left=0,
+    cut_projection_crop_right=0,
+    cut_projection_strict_width=True,
+    cut_projection_loss_name="mse",
+    cut_projection_positive_weight=1.0,
 ):
     """Валидация модели"""
     model.eval()
@@ -556,6 +618,11 @@ def validate(
                 legacy_crop_left=legacy_crop_left,
                 legacy_crop_right=legacy_crop_right,
                 legacy_strict_width=legacy_strict_width,
+                cut_projection_crop_left=cut_projection_crop_left,
+                cut_projection_crop_right=cut_projection_crop_right,
+                cut_projection_strict_width=cut_projection_strict_width,
+                cut_projection_loss_name=cut_projection_loss_name,
+                cut_projection_positive_weight=cut_projection_positive_weight,
             )
             total_loss += loss.item()
             batches += 1
@@ -595,6 +662,11 @@ def train_one_epoch(
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
+    cut_projection_crop_left=0,
+    cut_projection_crop_right=0,
+    cut_projection_strict_width=True,
+    cut_projection_loss_name="mse",
+    cut_projection_positive_weight=1.0,
 ):
     model.train()
     total_loss = 0.0
@@ -626,6 +698,11 @@ def train_one_epoch(
             legacy_crop_left=legacy_crop_left,
             legacy_crop_right=legacy_crop_right,
             legacy_strict_width=legacy_strict_width,
+            cut_projection_crop_left=cut_projection_crop_left,
+            cut_projection_crop_right=cut_projection_crop_right,
+            cut_projection_strict_width=cut_projection_strict_width,
+            cut_projection_loss_name=cut_projection_loss_name,
+            cut_projection_positive_weight=cut_projection_positive_weight,
         )
 
         # print(torch.isnan(loss), torch.isinf(loss))
@@ -669,6 +746,10 @@ def tensor_to_pil(image_tensor):
 
 def decode_target_for_preview(target, length, alphabet):
     if int(length) < 0:
+        if torch.is_floating_point(target):
+            peak_count = int((target > 0.5).sum().item())
+            max_value = float(target.max().item()) if target.numel() else 0.0
+            return f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
         unique_values = set(target.detach().cpu().unique().tolist())
         if unique_values.issubset({0, 1}):
             return f"<binary_gaps positives={int(target.sum().item())}/{target.numel()}>"
@@ -698,7 +779,7 @@ class InputPreviewSaver:
 
             filename = f"{self.saved:04d}.png"
             text = decode_target_for_preview(
-                target.long(),
+                target,
                 int(length),
                 self.alphabet,
             )
@@ -921,7 +1002,9 @@ def effective_training_config_data(config: TrainingConfig, dataset_config: Singl
 
 
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
-    if config.loss_mode == "legacy_logreg" and config.legacy_target_mode in {"dense_symbols", "binary_gaps"}:
+    if config.loss_mode == "cut_projection":
+        target_format = "cut_projection"
+    elif config.loss_mode == "legacy_logreg" and config.legacy_target_mode in {"dense_symbols", "binary_gaps"}:
         target_format = config.legacy_target_mode
     else:
         target_format = "text"
@@ -943,6 +1026,11 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
         raise ValueError(
             "Training config requests legacy_target_mode=binary_gaps, but chunk metadata says "
             "binary_gap_targets are absent. Regenerate the dataset with save_binary_gap_targets: true."
+        )
+    if target_format == "cut_projection" and not metadata.get("cut_projection_targets", False):
+        raise ValueError(
+            "Training config requests loss_mode=cut_projection, but chunk metadata says "
+            "cut_projection_targets are absent. Regenerate the dataset with save_cut_projection_targets: true."
         )
     dataset = ChunkedLineDataset(
         config.chunks_dir,
@@ -1122,6 +1210,17 @@ def run_training(
         print("Architecture params: ", args.architecture_params)
     if blank_idx is not None:
         print("Blank index: ", blank_idx)
+    elif args.loss_mode == "cut_projection":
+        print("Blank index: none")
+        print("Batch targets: cut projection heatmaps from generator/chunks")
+        print(
+            f"Cut projection crop: [{args.cut_projection_crop_left}, "
+            f"-{args.cut_projection_crop_right}]"
+        )
+        print(
+            f"Cut projection loss: {args.cut_projection_loss} "
+            f"positive_weight={args.cut_projection_positive_weight:g}"
+        )
     else:
         print("Blank index: none")
         print("Legacy target mode: ", args.legacy_target_mode)
@@ -1270,6 +1369,11 @@ def run_training(
                 args.legacy_crop_left,
                 args.legacy_crop_right,
                 args.legacy_strict_width,
+                args.cut_projection_crop_left,
+                args.cut_projection_crop_right,
+                args.cut_projection_strict_width,
+                args.cut_projection_loss,
+                args.cut_projection_positive_weight,
             )
             train_loss = train_stats["loss"]
             train_losses.append(train_loss)
@@ -1288,6 +1392,11 @@ def run_training(
                 args.legacy_crop_left,
                 args.legacy_crop_right,
                 args.legacy_strict_width,
+                args.cut_projection_crop_left,
+                args.cut_projection_crop_right,
+                args.cut_projection_strict_width,
+                args.cut_projection_loss,
+                args.cut_projection_positive_weight,
             )
             val_loss = val_stats["loss"]
             val_losses.append(val_loss)

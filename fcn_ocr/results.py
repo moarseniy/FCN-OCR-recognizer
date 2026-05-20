@@ -59,6 +59,9 @@ class VerticalSegmentationResult:
     merge_gap_width: int
     input_shape: tuple[int, ...]
     logits_shape: tuple[int, ...]
+    mode: str = "binary_gaps"
+    cut_positions: list[int] | None = None
+    peak_min_distance: int | None = None
 
 
 @dataclass(frozen=True)
