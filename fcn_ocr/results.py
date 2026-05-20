@@ -6,7 +6,6 @@ from typing import Any
 from PIL import Image
 
 
-BLANK_SYMBOL = "∅"
 SPACE_SYMBOL = "␠"
 
 

@@ -1,4 +1,3 @@
-
 # train.py
 from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset, load_chunk_metadata
 from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
@@ -14,7 +13,7 @@ from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
 from fcn_architectures import available_architectures, create_model, normalize_architecture_name
-from loss import ctc_loss, cut_projection_loss, legacy_logreg_loss
+from loss import cut_projection_loss, legacy_logreg_loss
 
 from datetime import datetime
 import os
@@ -27,8 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
-SUPPORTED_LOSS_MODES = ("ctc", "legacy_logreg", "cut_projection")
-SUPPORTED_LEGACY_TARGET_MODES = ("uniform_text", "dense_symbols", "binary_gaps")
+SUPPORTED_LOSS_MODES = ("legacy_logreg", "cut_projection")
+SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols", "binary_gaps")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS = ("peaks", "widths")
 
@@ -62,8 +61,8 @@ class TrainingConfig(BaseModel):
     rmsprop_alpha: float = Field(default=0.99, gt=0.0, lt=1.0)
     rmsprop_momentum: float = Field(default=0.0, ge=0.0)
     rmsprop_eps: float = Field(default=1e-8, gt=0.0)
-    loss_mode: str = "ctc"
-    legacy_target_mode: str = "uniform_text"
+    loss_mode: str = "legacy_logreg"
+    legacy_target_mode: str = "dense_symbols"
     legacy_crop_left: int = Field(default=6, ge=0)
     legacy_crop_right: int = Field(default=5, ge=0)
     legacy_strict_width: bool = False
@@ -220,10 +219,8 @@ class TrainingConfig(BaseModel):
         return value
 
 
-def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "uniform_text") -> int:
+def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "dense_symbols") -> int:
     loss_mode = loss_mode.lower()
-    if loss_mode == "ctc":
-        return len(alphabet) + 1
     if loss_mode == "cut_projection":
         return 1
     if loss_mode == "legacy_logreg":
@@ -231,10 +228,6 @@ def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "
             return 2
         return len(alphabet)
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
-
-
-def blank_index_for_loss(alphabet: str, loss_mode: str) -> int | None:
-    return len(alphabet) if loss_mode.lower() == "ctc" else None
 
 
 def save_checkpoint(
@@ -292,8 +285,8 @@ def build_checkpoint(
     val_losses,
     scheduler=None,
 ):
-    loss_mode = str(config.get("loss_mode", "ctc")).lower()
-    legacy_target_mode = str(config.get("legacy_target_mode", "uniform_text")).lower()
+    loss_mode = str(config.get("loss_mode", "legacy_logreg")).lower()
+    legacy_target_mode = str(config.get("legacy_target_mode", "dense_symbols")).lower()
     architecture = normalize_architecture_name(str(config.get("architecture", "legacy_fcn")))
     architecture_params = dict(config.get("architecture_params") or {})
     return {
@@ -310,13 +303,12 @@ def build_checkpoint(
             'architecture_params': architecture_params,
             'in_channels': config.get('channels', 3),
             'num_classes': model_num_classes(alphabet, loss_mode, legacy_target_mode),
-            'blank_idx': blank_index_for_loss(alphabet, loss_mode),
             'loss_mode': loss_mode,
             'legacy_target_mode': legacy_target_mode,
             'target_format': (
                 'cut_projection'
                 if loss_mode == 'cut_projection'
-                else legacy_target_mode if loss_mode == 'legacy_logreg' else 'text'
+                else legacy_target_mode
             ),
             'cut_projection_loss': config.get('cut_projection_loss', 'mse'),
         },
@@ -529,9 +521,8 @@ def compute_loss(
     logits,
     targets,
     lengths,
-    blank_idx,
-    loss_mode="ctc",
-    legacy_target_mode="uniform_text",
+    loss_mode="legacy_logreg",
+    legacy_target_mode="dense_symbols",
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
@@ -542,10 +533,6 @@ def compute_loss(
     cut_projection_positive_weight=1.0,
 ):
     loss_mode = loss_mode.lower()
-    if loss_mode == "ctc":
-        if blank_idx is None:
-            raise ValueError("blank_idx is required for CTC loss")
-        return ctc_loss(logits, targets, lengths, blank_idx)
     if loss_mode == "legacy_logreg":
         return legacy_logreg_loss(
             logits,
@@ -584,13 +571,12 @@ def validate(
     model,
     loader,
     device,
-    blank_idx,
     max_batches=50,
     preview_saver=None,
     log_every=0,
     augmenter=None,
-    loss_mode="ctc",
-    legacy_target_mode="uniform_text",
+    loss_mode="legacy_logreg",
+    legacy_target_mode="dense_symbols",
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
@@ -626,7 +612,6 @@ def validate(
                 logits,
                 targets,
                 lengths,
-                blank_idx,
                 loss_mode=loss_mode,
                 legacy_target_mode=legacy_target_mode,
                 legacy_crop_left=legacy_crop_left,
@@ -666,13 +651,12 @@ def train_one_epoch(
     loader,
     optimizer,
     device,
-    blank_idx,
     max_batches=None,
     preview_saver=None,
     log_every=0,
     augmenter=None,
-    loss_mode="ctc",
-    legacy_target_mode="uniform_text",
+    loss_mode="legacy_logreg",
+    legacy_target_mode="dense_symbols",
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
@@ -706,7 +690,6 @@ def train_one_epoch(
             logits,
             targets,
             lengths,
-            blank_idx,
             loss_mode=loss_mode,
             legacy_target_mode=legacy_target_mode,
             legacy_crop_left=legacy_crop_left,
@@ -1018,10 +1001,10 @@ def effective_training_config_data(config: TrainingConfig, dataset_config: Singl
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
     if config.loss_mode == "cut_projection":
         target_format = "cut_projection"
-    elif config.loss_mode == "legacy_logreg" and config.legacy_target_mode in {"dense_symbols", "binary_gaps"}:
+    elif config.loss_mode == "legacy_logreg":
         target_format = config.legacy_target_mode
     else:
-        target_format = "text"
+        raise ValueError(f"Unsupported loss_mode: {config.loss_mode}")
 
     if not config.chunks_dir:
         raise ValueError(
@@ -1213,7 +1196,6 @@ def run_training(
     print(f"Validation samples: {len(val_dataset)}")
 
     alphabet = dataset_config.alphabet
-    blank_idx = blank_index_for_loss(alphabet, args.loss_mode)
     num_classes = model_num_classes(alphabet, args.loss_mode, args.legacy_target_mode)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
@@ -1222,10 +1204,7 @@ def run_training(
     print("Architecture: ", args.architecture)
     if args.architecture_params:
         print("Architecture params: ", args.architecture_params)
-    if blank_idx is not None:
-        print("Blank index: ", blank_idx)
-    elif args.loss_mode == "cut_projection":
-        print("Blank index: none")
+    if args.loss_mode == "cut_projection":
         print("Batch targets: cut projection heatmaps from generator/chunks")
         print(
             f"Cut projection crop: [{args.cut_projection_crop_left}, "
@@ -1244,7 +1223,6 @@ def run_training(
             f"smooth_radius={args.segmentator_cut_smooth_radius}"
         )
     else:
-        print("Blank index: none")
         print("Legacy target mode: ", args.legacy_target_mode)
         if args.legacy_target_mode == "dense_symbols":
             print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
@@ -1252,8 +1230,6 @@ def run_training(
         elif args.legacy_target_mode == "binary_gaps":
             print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
             print("Batch targets: binary gap labels from generator/chunks")
-        else:
-            print("Legacy text alignment: uniform projection over model output width")
 
     train_loader = make_data_loader(
         dataset,
@@ -1381,7 +1357,6 @@ def run_training(
                 train_loader,
                 optimizer,
                 device,
-                blank_idx,
                 args.max_train_batches,
                 train_preview_saver,
                 args.log_every,
@@ -1404,7 +1379,6 @@ def run_training(
                 model,
                 val_loader,
                 device,
-                blank_idx,
                 args.max_val_batches,
                 val_preview_saver,
                 args.log_every,

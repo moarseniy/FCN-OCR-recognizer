@@ -295,7 +295,7 @@ class GeneratedLineSample:
 
 
 class SingleLineDataset(Dataset):
-    """Renders synthetic text lines with CTC-friendly sequence labels."""
+    """Renders synthetic text lines with OCR sequence labels."""
 
     def __init__(self, config: SingleLineDatasetConfig, target_format: str = "text"):
         self.config = config

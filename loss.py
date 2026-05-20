@@ -1,86 +1,5 @@
-
 import torch
 import torch.nn.functional as F
-
-
-def ctc_loss(logits, targets, lengths, blank_idx):
-    """
-    logits:  (B, C, T)
-    targets: (B, Lmax), padded with any non-blank value
-    lengths: (B,), real target lengths
-    """
-    log_probs = F.log_softmax(logits, dim=1).permute(2, 0, 1)
-    input_lengths = torch.full(
-        size=(logits.size(0),),
-        fill_value=logits.size(2),
-        dtype=torch.long,
-        device=logits.device,
-    )
-    targets = targets.to(device=logits.device, dtype=torch.long)
-    target_lengths = lengths.to(device=logits.device, dtype=torch.long)
-    target_positions = torch.arange(targets.size(1), device=logits.device).unsqueeze(0)
-    flat_targets = targets[target_positions < target_lengths.unsqueeze(1)]
-    return F.ctc_loss(
-        log_probs,
-        flat_targets,
-        input_lengths,
-        target_lengths,
-        blank=blank_idx,
-        reduction="mean",
-        zero_infinity=True,
-    )
-
-
-def text_targets_to_dense_labels(
-    targets: torch.Tensor,
-    lengths: torch.Tensor,
-    output_width: int,
-    ignore_index: int = -100,
-) -> torch.Tensor:
-    """
-    Projects sequence targets to per-output-column labels.
-
-    This is a CTC-free approximation for the legacy dense logreg head when the
-    dataset only contains text strings, not old-style dense symbol maps.
-
-    targets:      (B, Lmax)
-    lengths:      (B,)
-    output_width: output T from the model
-    returns:      (B, T)
-    """
-    if targets.dim() != 2:
-        raise ValueError(f"text targets must have shape (B, Lmax), got {tuple(targets.shape)}")
-    if output_width <= 0:
-        raise ValueError("output_width must be positive")
-
-    targets = targets.long()
-    lengths = lengths.to(device=targets.device, dtype=torch.long)
-    labels = torch.full(
-        (targets.size(0), output_width),
-        fill_value=ignore_index,
-        dtype=torch.long,
-        device=targets.device,
-    )
-    time_positions = torch.arange(output_width, device=targets.device)
-
-    for batch_idx, target_length_tensor in enumerate(lengths):
-        target_length = int(target_length_tensor.item())
-        if target_length <= 0:
-            continue
-        if target_length > output_width:
-            raise ValueError(
-                f"legacy_logreg/uniform_text cannot align target length {target_length} "
-                f"to model output width {output_width}"
-            )
-
-        char_positions = torch.div(
-            time_positions * target_length,
-            output_width,
-            rounding_mode="floor",
-        ).clamp(max=target_length - 1)
-        labels[batch_idx] = targets[batch_idx, char_positions]
-
-    return labels
 
 
 def legacy_dense_symbols_to_labels(
@@ -299,35 +218,24 @@ def legacy_logreg_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     lengths: torch.Tensor | None = None,
-    target_mode: str = "uniform_text",
+    target_mode: str = "dense_symbols",
     crop_left: int = 6,
     crop_right: int = 5,
     strict_width: bool = False,
     ignore_index: int = -100,
 ) -> torch.Tensor:
     """
-    CTC-free dense classification loss, analogous to the old final+softmax+logreg
-    branch.
+    Dense classification loss, analogous to the old final+softmax+logreg branch.
 
     logits: (B, C, T)
 
     target_mode:
-      - "uniform_text": current text targets are projected uniformly over T.
       - "dense_symbols": targets are old-style symbol maps and are aligned by
         maxpool + cropX([crop_left, -crop_right]).
       - "binary_gaps": targets are 0/1 column labels for vertical gaps.
     """
     target_mode = target_mode.lower()
-    if target_mode == "uniform_text":
-        if lengths is None:
-            raise ValueError("lengths are required for legacy_logreg target_mode=uniform_text")
-        labels = text_targets_to_dense_labels(
-            targets.to(device=logits.device),
-            lengths.to(device=logits.device),
-            output_width=logits.size(2),
-            ignore_index=ignore_index,
-        )
-    elif target_mode == "dense_symbols":
+    if target_mode == "dense_symbols":
         labels = legacy_dense_symbols_to_labels(
             targets.to(device=logits.device),
             crop_left=crop_left,
@@ -340,7 +248,7 @@ def legacy_logreg_loss(
             crop_right=crop_right,
         )
     else:
-        raise ValueError("target_mode must be 'uniform_text', 'dense_symbols', or 'binary_gaps'")
+        raise ValueError("target_mode must be 'dense_symbols' or 'binary_gaps'")
 
     logits, labels = _align_logits_and_labels(logits, labels, strict_width=strict_width)
     return F.cross_entropy(logits, labels.to(device=logits.device), ignore_index=ignore_index)

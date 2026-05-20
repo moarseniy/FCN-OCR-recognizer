@@ -23,7 +23,6 @@ architecture_params:
 Одна и та же архитектура может использоваться и для OCR, и для вертикального
 сегментатора. Это определяется не файлом архитектуры, а training-конфигом:
 
-- OCR CTC: `loss_mode: ctc`
 - legacy OCR: `loss_mode: legacy_logreg`, `legacy_target_mode: dense_symbols`
 - вертикальный сегментатор: `loss_mode: legacy_logreg`, `legacy_target_mode: binary_gaps`
 - вертикальный сегментатор разрезов: `loss_mode: cut_projection`

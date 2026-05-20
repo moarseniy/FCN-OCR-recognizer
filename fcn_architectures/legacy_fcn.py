@@ -14,8 +14,9 @@ class LegacyFCN(nn.Module):
     Полносверточный распознаватель строк.
       - in_channels: 1 (grayscale) или 3 (RGB)
       - num_classes: число выходных классов final 1x1 conv
-        * CTC: len(alphabet) + 1, последний класс -- blank
-        * legacy_logreg: len(alphabet), без blank
+        * legacy OCR: len(alphabet)
+        * binary gaps: 2
+        * cut projection обычно использует отдельную архитектуру с 1 выходом
       - input height должен быть заранее подобран так, чтобы сеть могла
         свести высоту к 1 (см. stride по высоте в conv1 и т.д.)
     """

@@ -81,7 +81,7 @@ class ChunkedLineDataset(Dataset):
         image = chunk["images"][local_idx]
 
         if self.config is None:
-            raise RuntimeError("config is required to encode chunk texts into CTC targets")
+            raise RuntimeError("config is required to encode chunk targets")
         if self.target_format == "dense_symbols":
             return self._make_dense_symbol_target(image, chunk, local_idx)
         if self.target_format == "binary_gaps":

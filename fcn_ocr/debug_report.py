@@ -510,7 +510,7 @@ def save_debug_image(
 
     if not rows:
         x = padding
-        empty_row = ["-", "<empty>", "-", "-", "no decoded non-blank symbols"]
+        empty_row = ["-", "<empty>", "-", "-", "no decoded symbols"]
         row_height = row_heights[0]
         for cell, width in zip(empty_row, column_widths):
             draw.rectangle((x, y, x + width, y + row_height), fill=(255, 255, 255), outline=(190, 190, 190))

@@ -14,9 +14,7 @@ from PIL import Image, ImageDraw, ImageOps
 import torch
 
 from fcn_architectures import create_model, normalize_architecture_name
-from model import decode_greedy_batch_tensor
 from .results import (
-    BLANK_SYMBOL,
     ClassConfidence,
     CutDecodedSymbol,
     CutDecodingResult,
@@ -97,11 +95,8 @@ class TextRecognizer:
             or {}
         )
         self.in_channels = int(model_config.get("in_channels", 3))
-        self.num_classes = int(model_config.get("num_classes", len(self.alphabet) + 1))
-        self.loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", "ctc"))).lower()
-        default_blank_idx = len(self.alphabet) if self.loss_mode == "ctc" else None
-        blank_idx_value = model_config.get("blank_idx", default_blank_idx)
-        self.blank_idx = int(blank_idx_value) if blank_idx_value is not None else None
+        self.num_classes = int(model_config.get("num_classes", len(self.alphabet)))
+        self.loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", "legacy_logreg"))).lower()
         self.space_char = checkpoint_config.get("space_char", " ")
         self.space_idx = self.alphabet.index(self.space_char) if self.space_char in self.alphabet else None
         self.image_height = int(checkpoint_config.get("image_height", 48))
@@ -134,7 +129,6 @@ class TextRecognizer:
         print(f"Loss mode: {self.loss_mode}")
         if self.loss_mode in {"legacy", "legacy_logreg"}:
             print(f"Legacy crop: [{self.legacy_crop_left}, -{self.legacy_crop_right}]")
-        print(f"Blank index: {self.blank_idx if self.blank_idx is not None else 'none'}")
         print(f"Preprocess scale_x: {self.scale_x:+.4f}")
         print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
         print(f"Preprocess x_pad:   {self.x_pad:.4f}")
@@ -147,8 +141,6 @@ class TextRecognizer:
             )
 
     def class_label(self, index: int) -> str:
-        if self.blank_idx is not None and index == self.blank_idx:
-            return BLANK_SYMBOL
         return display_char(self.idx_to_char.get(index, f"<{index}>"))
 
     def preprocess_pil(self, image: Image.Image) -> torch.Tensor:
@@ -735,7 +727,7 @@ class TextRecognizer:
             text = "".join(
                 self.idx_to_char[class_index]
                 for class_index in collapsed_ids
-                if (self.blank_idx is None or class_index != self.blank_idx) and class_index in self.idx_to_char
+                if class_index in self.idx_to_char
             )
             decoded.append((text, raw_ids))
         return decoded
@@ -759,7 +751,6 @@ class TextRecognizer:
     def analyze_logits(self, logits: torch.Tensor, input_shape: tuple[int, ...], top_k: int = 8) -> RecognitionResult:
         probs = torch.softmax(logits, dim=1)
         confidences, pred_ids = probs.max(dim=1)
-        collapsed, lengths = decode_greedy_batch_tensor(pred_ids)
         top_k = max(1, min(int(top_k), probs.size(1)))
         top_confidences, top_indices = probs.topk(top_k, dim=1)
 
@@ -788,8 +779,6 @@ class TextRecognizer:
 
         for timestep in keep.nonzero(as_tuple=False).flatten().detach().cpu().tolist():
             class_index = raw_indices[timestep]
-            if self.blank_idx is not None and class_index == self.blank_idx:
-                continue
             char = self.idx_to_char.get(class_index)
             if char is None:
                 continue
@@ -803,11 +792,7 @@ class TextRecognizer:
                 )
             )
 
-        text = "".join(
-            self.idx_to_char[idx]
-            for idx in collapsed[0, : lengths[0]].detach().cpu().tolist()
-            if (self.blank_idx is None or idx != self.blank_idx) and idx in self.idx_to_char
-        )
+        text = "".join(symbol.char for symbol in decoded_symbols)
         return RecognitionResult(
             text=text,
             raw_indices=raw_indices,
@@ -1002,10 +987,10 @@ class TextRecognizer:
         edge_min_pixel_density: float = 0.003,
         edge_min_width: int = 2,
     ) -> CutDecodingResult:
-        if self.loss_mode not in {"legacy", "legacy_logreg"} or self.blank_idx is not None:
+        if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
-                "legacy+cuts decoding expects a legacy OCR checkpoint without CTC blank; "
-                f"got loss_mode={self.loss_mode!r}, blank_idx={self.blank_idx!r}"
+                "legacy+cuts decoding expects a legacy OCR checkpoint; "
+                f"got loss_mode={self.loss_mode!r}"
             )
         if logits.dim() != 3 or logits.size(0) != 1:
             raise ValueError(f"legacy+cuts decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
@@ -1095,8 +1080,6 @@ class TextRecognizer:
             scores = probs[:, start:end].mean(dim=1)
             top_confidences, top_indices = scores.topk(top_k)
             class_index = int(top_indices[0].detach().cpu().item())
-            if self.blank_idx is not None and class_index == self.blank_idx:
-                continue
             char = self.idx_to_char.get(class_index)
             if char is None:
                 continue
