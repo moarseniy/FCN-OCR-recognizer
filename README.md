@@ -292,9 +292,19 @@ cut_projection_loss: mse
 cut_projection_positive_weight: 4.0
 segmentator_gap_threshold: 0.35
 segmentator_peak_min_distance: 3
+segmentator_cut_postprocess: widths
+segmentator_cut_min_width: 3
+segmentator_cut_max_width: 24
+segmentator_cut_candidate_threshold: 0.12
+segmentator_cut_smooth_radius: 1
 ```
 
 Пример конфига: `configs/eng_train_101_cuts.yaml`.
+
+Для уже обученного cuts-чекпоинта эти параметры можно переопределять прямо в
+`inference.py`: `--segmentator-cut-postprocess`, `--segmentator-cut-min-width`,
+`--segmentator-cut-max-width`, `--segmentator-cut-candidate-threshold` и
+`--segmentator-cut-smooth-radius`.
 
 Подобрать параметры вертикального сегментатора без OCR, сравнивая число
 предсказанных межбуквенных промежутков с длиной строки из Label Studio:

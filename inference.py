@@ -70,6 +70,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override maximum non-gap distance for merging nearby gap runs in output timesteps.",
     )
+    parser.add_argument(
+        "--segmentator-cut-postprocess",
+        choices=("peaks", "widths"),
+        default=None,
+        help="Cut-projection postprocessing: raw local peaks or width-constrained cuts.",
+    )
+    parser.add_argument(
+        "--segmentator-cut-min-width",
+        type=int,
+        default=None,
+        help="Minimum distance between cut-projection cuts in output timesteps.",
+    )
+    parser.add_argument(
+        "--segmentator-cut-max-width",
+        type=int,
+        default=None,
+        help="Maximum allowed distance between neighboring cuts; 0 disables cut insertion.",
+    )
+    parser.add_argument(
+        "--segmentator-cut-candidate-threshold",
+        type=float,
+        default=None,
+        help="Lower threshold for candidate cut peaks used by width-constrained postprocessing.",
+    )
+    parser.add_argument(
+        "--segmentator-cut-smooth-radius",
+        type=int,
+        default=None,
+        help="Triangular smoothing radius for cut projection scores before peak selection.",
+    )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
         "--config",
@@ -181,6 +211,11 @@ def main() -> None:
             gap_threshold=args.segmentator_gap_threshold,
             min_gap_width=args.segmentator_min_gap_width,
             merge_gap_width=args.segmentator_merge_gap_width,
+            cut_postprocess=args.segmentator_cut_postprocess,
+            cut_min_width=args.segmentator_cut_min_width,
+            cut_max_width=args.segmentator_cut_max_width,
+            cut_candidate_threshold=args.segmentator_cut_candidate_threshold,
+            cut_smooth_radius=args.segmentator_cut_smooth_radius,
         )
 
     segmentation_result = None

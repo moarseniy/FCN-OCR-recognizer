@@ -26,6 +26,11 @@ class VerticalSegmentator(TextRecognizer):
         gap_threshold: float | None = None,
         min_gap_width: int | None = None,
         merge_gap_width: int | None = None,
+        cut_postprocess: str | None = None,
+        cut_min_width: int | None = None,
+        cut_max_width: int | None = None,
+        cut_candidate_threshold: float | None = None,
+        cut_smooth_radius: int | None = None,
     ):
         super().__init__(
             checkpoint_path=checkpoint_path,
@@ -92,6 +97,33 @@ class VerticalSegmentator(TextRecognizer):
             default=self.min_gap_width,
             min_value=1,
         )
+        self.cut_postprocess = self._resolve_cut_postprocess(cut_postprocess, checkpoint_config)
+        effective_cut_min_width = cut_min_width if cut_min_width is not None else min_gap_width
+        self.cut_min_width = self._resolve_non_negative_int(
+            effective_cut_min_width,
+            checkpoint_config,
+            "segmentator_cut_min_width",
+            default=self.peak_min_distance,
+            min_value=1,
+        )
+        self.cut_max_width = self._resolve_non_negative_int(
+            cut_max_width,
+            checkpoint_config,
+            "segmentator_cut_max_width",
+            default=0,
+            min_value=0,
+        )
+        self.cut_candidate_threshold = self._resolve_cut_candidate_threshold(
+            cut_candidate_threshold,
+            checkpoint_config,
+        )
+        self.cut_smooth_radius = self._resolve_non_negative_int(
+            cut_smooth_radius,
+            checkpoint_config,
+            "segmentator_cut_smooth_radius",
+            default=0,
+            min_value=0,
+        )
 
         if verbose:
             self.print_summary()
@@ -101,6 +133,20 @@ class VerticalSegmentator(TextRecognizer):
         resolved = float(config.get("segmentator_gap_threshold", 0.5) if value is None else value)
         if not 0.0 < resolved < 1.0:
             raise ValueError("segmentator gap_threshold must be between 0 and 1")
+        return resolved
+
+    @staticmethod
+    def _resolve_cut_candidate_threshold(value: float | None, config: dict) -> float:
+        resolved = float(config.get("segmentator_cut_candidate_threshold", 0.1) if value is None else value)
+        if not 0.0 <= resolved < 1.0:
+            raise ValueError("segmentator cut candidate threshold must be in [0, 1)")
+        return resolved
+
+    @staticmethod
+    def _resolve_cut_postprocess(value: str | None, config: dict) -> str:
+        resolved = str(config.get("segmentator_cut_postprocess", "widths") if value is None else value).lower()
+        if resolved not in {"peaks", "widths"}:
+            raise ValueError("segmentator cut postprocess must be 'peaks' or 'widths'")
         return resolved
 
     @staticmethod
@@ -130,7 +176,12 @@ class VerticalSegmentator(TextRecognizer):
             print(
                 "Segmentator params: "
                 f"cut_threshold={self.gap_threshold:.3f}, "
-                f"peak_min_distance={self.peak_min_distance}"
+                f"peak_min_distance={self.peak_min_distance}, "
+                f"postprocess={self.cut_postprocess}, "
+                f"cut_min_width={self.cut_min_width}, "
+                f"cut_max_width={self.cut_max_width}, "
+                f"candidate_threshold={self.cut_candidate_threshold:.3f}, "
+                f"smooth_radius={self.cut_smooth_radius}"
             )
         else:
             print(f"Segmentator classes: non-gap=0, gap=1")
@@ -176,6 +227,12 @@ class VerticalSegmentator(TextRecognizer):
             mode="binary_gaps",
             cut_positions=None,
             peak_min_distance=None,
+            candidate_cut_positions=None,
+            cut_postprocess=None,
+            cut_candidate_threshold=None,
+            cut_min_width=None,
+            cut_max_width=None,
+            cut_smooth_radius=None,
         )
 
     def _analyze_cut_projection_logits(
@@ -185,11 +242,26 @@ class VerticalSegmentator(TextRecognizer):
     ) -> VerticalSegmentationResult:
         cut_scores_tensor = torch.sigmoid(logits[:, 0, :])
         cut_scores = [float(value) for value in cut_scores_tensor[0].detach().cpu().tolist()]
+        postprocess_scores = self._smooth_scores(cut_scores, self.cut_smooth_radius)
+        candidate_positions = self._select_cut_peaks(
+            postprocess_scores,
+            threshold=self.cut_candidate_threshold,
+            min_distance=self.peak_min_distance,
+        )
         cut_positions = self._select_cut_peaks(
-            cut_scores,
+            postprocess_scores,
             threshold=self.gap_threshold,
             min_distance=self.peak_min_distance,
         )
+        if self.cut_postprocess == "widths":
+            cut_positions = self._postprocess_cut_widths(
+                cut_positions,
+                candidate_positions,
+                postprocess_scores,
+                min_width=self.cut_min_width,
+                max_width=self.cut_max_width,
+                candidate_threshold=self.cut_candidate_threshold,
+            )
         cut_set = set(cut_positions)
         raw_indices = [1 if index in cut_set else 0 for index in range(len(cut_scores))]
         raw_confidences = [
@@ -211,7 +283,131 @@ class VerticalSegmentator(TextRecognizer):
             mode="cut_projection",
             cut_positions=cut_positions,
             peak_min_distance=self.peak_min_distance,
+            candidate_cut_positions=candidate_positions,
+            cut_postprocess=self.cut_postprocess,
+            cut_candidate_threshold=self.cut_candidate_threshold,
+            cut_min_width=self.cut_min_width,
+            cut_max_width=self.cut_max_width,
+            cut_smooth_radius=self.cut_smooth_radius,
         )
+
+    @staticmethod
+    def _smooth_scores(scores: list[float], radius: int) -> list[float]:
+        if radius <= 0 or len(scores) <= 2:
+            return list(scores)
+
+        smoothed: list[float] = []
+        for index in range(len(scores)):
+            total = 0.0
+            weight_total = 0.0
+            for offset in range(-radius, radius + 1):
+                position = index + offset
+                if position < 0 or position >= len(scores):
+                    continue
+                weight = float(radius + 1 - abs(offset))
+                total += scores[position] * weight
+                weight_total += weight
+            smoothed.append(total / max(1.0, weight_total))
+        return smoothed
+
+    @classmethod
+    def _postprocess_cut_widths(
+        cls,
+        cuts: list[int],
+        candidates: list[int],
+        scores: list[float],
+        min_width: int,
+        max_width: int,
+        candidate_threshold: float,
+    ) -> list[int]:
+        if not scores:
+            return []
+
+        output = cls._enforce_min_cut_width(sorted(set(cuts)), scores, min_width)
+        if max_width > 0:
+            output = cls._insert_missing_cuts_by_width(
+                output,
+                candidates,
+                scores,
+                min_width,
+                max_width,
+                candidate_threshold,
+            )
+            output = cls._enforce_min_cut_width(output, scores, min_width)
+        return output
+
+    @staticmethod
+    def _enforce_min_cut_width(cuts: list[int], scores: list[float], min_width: int) -> list[int]:
+        output = sorted(set(cuts))
+        if min_width <= 1:
+            return output
+
+        changed = True
+        while changed and len(output) > 1:
+            changed = False
+            for index in range(1, len(output)):
+                if output[index] - output[index - 1] >= min_width:
+                    continue
+                left = output[index - 1]
+                right = output[index]
+                remove_index = index - 1 if scores[left] <= scores[right] else index
+                output.pop(remove_index)
+                changed = True
+                break
+        return output
+
+    @classmethod
+    def _insert_missing_cuts_by_width(
+        cls,
+        cuts: list[int],
+        candidates: list[int],
+        scores: list[float],
+        min_width: int,
+        max_width: int,
+        candidate_threshold: float,
+    ) -> list[int]:
+        output = sorted(set(cuts))
+        candidate_set = set(candidates)
+        width = len(scores)
+
+        while True:
+            boundaries = [0, *output, width - 1]
+            widest_interval: tuple[int, int] | None = None
+            widest_distance = 0
+            for left, right in zip(boundaries, boundaries[1:]):
+                distance = right - left
+                if distance > max_width and distance > widest_distance:
+                    widest_interval = (left, right)
+                    widest_distance = distance
+
+            if widest_interval is None:
+                return output
+
+            left, right = widest_interval
+            lower = left + min_width
+            upper = right - min_width
+            if lower > upper:
+                return output
+
+            interval_candidates = [
+                candidate for candidate in candidate_set
+                if lower <= candidate <= upper and candidate not in output
+            ]
+            if not interval_candidates:
+                interval_candidates = [
+                    position for position in range(lower, upper + 1)
+                    if position not in output and scores[position] >= candidate_threshold
+                ]
+            if not interval_candidates:
+                return output
+
+            center = (left + right) * 0.5
+            chosen = max(
+                interval_candidates,
+                key=lambda position: (scores[position], -abs(position - center)),
+            )
+            output.append(int(chosen))
+            output = cls._enforce_min_cut_width(sorted(set(output)), scores, min_width)
 
     @staticmethod
     def _select_cut_peaks(

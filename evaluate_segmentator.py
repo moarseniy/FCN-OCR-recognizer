@@ -295,6 +295,7 @@ def configure_segmentator(
     )
     if getattr(segmentator, "target_format", "") == "cut_projection":
         segmentator.peak_min_distance = segmentator.min_gap_width
+        segmentator.cut_min_width = segmentator.min_gap_width
     segmentator.scale_x = float(scale_x)
     segmentator.y_pad = float(y_pad)
     segmentator.baseline_crop = bool(baseline_crop)

@@ -62,6 +62,12 @@ class VerticalSegmentationResult:
     mode: str = "binary_gaps"
     cut_positions: list[int] | None = None
     peak_min_distance: int | None = None
+    candidate_cut_positions: list[int] | None = None
+    cut_postprocess: str | None = None
+    cut_candidate_threshold: float | None = None
+    cut_min_width: int | None = None
+    cut_max_width: int | None = None
+    cut_smooth_radius: int | None = None
 
 
 @dataclass(frozen=True)

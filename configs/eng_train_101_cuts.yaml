@@ -34,6 +34,11 @@ segmentator_gap_threshold: 0.35
 segmentator_min_gap_width: 3
 segmentator_merge_gap_width: 0
 segmentator_peak_min_distance: 3
+segmentator_cut_postprocess: widths
+segmentator_cut_min_width: 3
+segmentator_cut_max_width: 24
+segmentator_cut_candidate_threshold: 0.12
+segmentator_cut_smooth_radius: 1
 
 num_workers: 0
 drop_last: false

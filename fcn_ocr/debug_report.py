@@ -173,6 +173,8 @@ def render_segmentation_panel(
         f"T={len(result.raw_indices)}; "
         f"{'cut' if result.mode == 'cut_projection' else 'gap'} threshold={result.gap_threshold:.3f}"
     )
+    if result.mode == "cut_projection" and result.cut_postprocess:
+        title += f"; postprocess={result.cut_postprocess}"
     draw.text((padding, y), title, fill=(55, 55, 55), font=font)
     y += title_height
     panel.paste(image_with_lines, (padding, y))
@@ -317,8 +319,14 @@ def save_debug_image(
         info_lines.append(f"segmentator timesteps: {len(segmentation_result.raw_indices)}")
         if segmentation_result.mode == "cut_projection":
             info_lines.append(f"segmentator cuts: {len(segmentation_result.cut_positions or [])}")
+            info_lines.append(f"segmentator candidates: {len(segmentation_result.candidate_cut_positions or [])}")
             info_lines.append(f"segmentator cut threshold: {segmentation_result.gap_threshold:.3f}")
             info_lines.append(f"segmentator peak min distance: {segmentation_result.peak_min_distance}")
+            info_lines.append(f"segmentator cut postprocess: {segmentation_result.cut_postprocess}")
+            info_lines.append(f"segmentator cut candidate threshold: {segmentation_result.cut_candidate_threshold:.3f}")
+            info_lines.append(f"segmentator cut min width: {segmentation_result.cut_min_width}")
+            info_lines.append(f"segmentator cut max width: {segmentation_result.cut_max_width}")
+            info_lines.append(f"segmentator cut smooth radius: {segmentation_result.cut_smooth_radius}")
         else:
             info_lines.append(f"segmentator gap runs: {sum(1 for run in segmentation_result.runs if run.label == 1)}")
             info_lines.append(f"segmentator gap threshold: {segmentation_result.gap_threshold:.3f}")
