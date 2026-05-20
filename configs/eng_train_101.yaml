@@ -1,5 +1,4 @@
 chunks_dir: ../data/eng_101
-generator_config: null
 architecture: legacy_fcn
 architecture_params: {}
 

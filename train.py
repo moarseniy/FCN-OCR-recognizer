@@ -1,7 +1,7 @@
 
 # train.py
 from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset, load_chunk_metadata
-from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig, SingleLineDataset
+from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
 from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 import argparse
 from collections import Counter
@@ -45,7 +45,6 @@ class TrainingConfig(BaseModel):
     architecture_params: dict[str, Any] = Field(default_factory=dict)
 
     chunks_dir: str | None = None
-    generator_config: str | None = None
 
     epochs: int = Field(default=50, ge=1)
     batch_size: int = Field(default=128, ge=1)
@@ -105,8 +104,15 @@ class TrainingConfig(BaseModel):
     @classmethod
     def model_validate_with_paths(cls, data: Any, config_path: str | Path) -> "TrainingConfig":
         data = dict(data)
+        generator_config = data.pop("generator_config", None)
+        if generator_config:
+            raise ValueError(
+                "Training-time online generation via generator_config was removed. "
+                "Generate chunks first with synth_generators.line_generator.generate_dataset "
+                "and set chunks_dir in the training config."
+            )
         config_dir = Path(config_path).resolve().parent
-        for key in ("chunks_dir", "generator_config", "checkpoint_dir", "preview_dir"):
+        for key in ("chunks_dir", "checkpoint_dir", "preview_dir"):
             value = data.get(key)
             if value:
                 path = Path(value)
@@ -871,43 +877,36 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
     else:
         target_format = "text"
 
-    if config.chunks_dir:
-        metadata = load_chunk_metadata(config.chunks_dir)
-        dataset_config = dataset_config_from_training_config(config, metadata)
-        if target_format == "dense_symbols" and not metadata.get("dense_targets", False):
-            raise ValueError(
-                "Training config requests legacy_target_mode=dense_symbols, but chunk metadata says "
-                "dense_targets are absent. Regenerate the dataset with save_dense_targets: true."
-            )
-        if target_format == "binary_gaps" and not metadata.get("binary_gap_targets", False):
-            raise ValueError(
-                "Training config requests legacy_target_mode=binary_gaps, but chunk metadata says "
-                "binary_gap_targets are absent. Regenerate the dataset with save_binary_gap_targets: true."
-            )
-        dataset = ChunkedLineDataset(
-            config.chunks_dir,
-            cache_size=config.chunk_cache_size,
-            config=dataset_config,
-            target_format=target_format,
+    if not config.chunks_dir:
+        raise ValueError(
+            "Training config must contain chunks_dir. "
+            "Online generation during training is not supported anymore."
         )
-        print(f"Dataset source: chunks ({config.chunks_dir})")
-        if metadata:
-            print(f"Dataset metadata: {Path(config.chunks_dir) / 'metadata.yaml'}")
-        else:
-            print("Dataset metadata: not found; using training config/defaults")
-        return dataset, dataset_config
 
-    if not config.generator_config:
-        raise ValueError("Training config must contain either chunks_dir or generator_config")
-
-    with Path(config.generator_config).open("r") as file:
-        generator_data = yaml.safe_load(file)
-    generator_config = SingleLineDatasetConfig.model_validate_with_paths(generator_data, config.generator_config)
-    generator_config = dataset_config_from_training_config(config, generator_config.model_dump())
-
-    dataset = SingleLineDataset(generator_config, target_format=target_format)
-    print(f"Dataset source: online generator ({config.generator_config})")
-    return dataset, generator_config
+    metadata = load_chunk_metadata(config.chunks_dir)
+    dataset_config = dataset_config_from_training_config(config, metadata)
+    if target_format == "dense_symbols" and not metadata.get("dense_targets", False):
+        raise ValueError(
+            "Training config requests legacy_target_mode=dense_symbols, but chunk metadata says "
+            "dense_targets are absent. Regenerate the dataset with save_dense_targets: true."
+        )
+    if target_format == "binary_gaps" and not metadata.get("binary_gap_targets", False):
+        raise ValueError(
+            "Training config requests legacy_target_mode=binary_gaps, but chunk metadata says "
+            "binary_gap_targets are absent. Regenerate the dataset with save_binary_gap_targets: true."
+        )
+    dataset = ChunkedLineDataset(
+        config.chunks_dir,
+        cache_size=config.chunk_cache_size,
+        config=dataset_config,
+        target_format=target_format,
+    )
+    print(f"Dataset source: chunks ({config.chunks_dir})")
+    if metadata:
+        print(f"Dataset metadata: {Path(config.chunks_dir) / 'metadata.yaml'}")
+    else:
+        print("Dataset metadata: not found; using training config/defaults")
+    return dataset, dataset_config
 
 
 def make_data_loader(dataset, split_dataset, args, shuffle, seed, batch_count=None):

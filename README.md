@@ -176,8 +176,11 @@ binary_gap_include_margins: false
 Тогда в чанки также попадет `dense_targets` (`N x W`) — класс символа для
 каждой X-колонки исходного кропа. Если включен `save_binary_gap_targets`, в
 чанки попадет `binary_gap_targets` (`N x W`) — бинарная разметка промежутков
-между символами. При обучении loss делает legacy-crop и пересэмплирует эту
-разметку к выходной ширине сети `T`. Рядом создается
+между символами. При обучении loss делает legacy-crop и при необходимости
+пересэмплирует эту разметку к выходной ширине сети `T`. Для
+`vertical_segmentator_fcn` ширина выхода сохраняется 1:1, поэтому в конфиге
+используются `legacy_crop_left: 0`, `legacy_crop_right: 0` и
+`legacy_strict_width: true`. Рядом создается
 `metadata.yaml` с параметрами
 датасета: алфавитом, `space_char`, размерами картинок, числом каналов и
 максимальной длиной текста. Настройки обучения и настройки аугментаций в
@@ -271,12 +274,13 @@ python evaluate_segmentator.py \
 Оцениваемая длина считается как `число gap-runs + 1`, поэтому пробел в
 разметке считается обычным символом.
 
-В training-конфиге задаются `chunks_dir` или `generator_config`, optimizer,
-learning rate, batch size, workers, checkpoint path, preview-настройки и
-GPU-аугментации.
+В training-конфиге задаются `chunks_dir`, optimizer, learning rate, batch size,
+workers, checkpoint path, preview-настройки и GPU-аугментации. Online-генерация
+во время обучения удалена: данные нужно сначала сохранить чанками через
+`synth_generators.line_generator.generate_dataset`.
 Алфавит, размеры картинок, число каналов и `max_text_length` берутся из
-`metadata.yaml` в папке чанков или из `generator_config`. При необходимости эти
-поля можно явно указать в training-конфиге как override. При старте обучения
+`metadata.yaml` в папке чанков. При необходимости эти поля можно явно указать в
+training-конфиге как override. При старте обучения
 `train.py` читает `texts` из датасета, сравнивает символы с effective-алфавитом
 и сохраняет статистику в:
 
