@@ -166,23 +166,63 @@ class TextRecognizer:
         }
         debug_images: list[tuple[str, Image.Image]] = []
         image = image.convert("RGB" if self.in_channels == 3 else "L")
+        self._append_preprocess_debug_image(
+            debug_images,
+            collect_debug,
+            "preprocess 00 input converted",
+            image,
+        )
 
         if self.baseline_crop:
             image, baseline_debug = self._apply_baseline_crop(image, collect_debug=collect_debug)
             debug_metadata.update(baseline_debug.metadata)
             debug_images.extend(baseline_debug.images)
+            self._append_preprocess_debug_image(
+                debug_images,
+                collect_debug,
+                "preprocess 01 after baseline crop",
+                image,
+            )
 
         image = self._apply_x_pad(image)
         if collect_debug and self.x_pad > 0.0:
-            debug_images.append(("x-pad border median from original geometry", image))
+            debug_images.append(("preprocess 02 x-pad border median", image.copy()))
 
+        before_y_pad_size = image.size
         image = self._apply_y_pad(image)
+        if image.size != before_y_pad_size:
+            self._append_preprocess_debug_image(
+                debug_images,
+                collect_debug,
+                "preprocess 03 after y-pad/crop",
+                image,
+            )
 
         if image.height != self.image_height:
             new_width = max(1, round(image.width * self.image_height / image.height))
             image = image.resize((new_width, self.image_height), Image.Resampling.BICUBIC)
+            self._append_preprocess_debug_image(
+                debug_images,
+                collect_debug,
+                "preprocess 04 resize to network height",
+                image,
+            )
 
+        before_scale_x_size = image.size
         image = self._apply_scale_x(image)
+        if image.size != before_scale_x_size:
+            self._append_preprocess_debug_image(
+                debug_images,
+                collect_debug,
+                "preprocess 05 after scale-x",
+                image,
+            )
+        self._append_preprocess_debug_image(
+            debug_images,
+            collect_debug,
+            "preprocess 99 final network input",
+            image,
+        )
 
         array = np.asarray(image, dtype=np.float32) / 255.0
         if self.in_channels == 1:
@@ -191,6 +231,16 @@ class TextRecognizer:
             tensor = torch.from_numpy(array).permute(2, 0, 1)
 
         return tensor.to(self.device), PreprocessDebug(metadata=debug_metadata, images=debug_images)
+
+    @staticmethod
+    def _append_preprocess_debug_image(
+        debug_images: list[tuple[str, Image.Image]],
+        collect_debug: bool,
+        title: str,
+        image: Image.Image,
+    ) -> None:
+        if collect_debug:
+            debug_images.append((title, image.copy()))
 
     def _apply_y_pad(self, image: Image.Image) -> Image.Image:
         if self.y_pad == 0.0:
