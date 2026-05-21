@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
 SUPPORTED_LOSS_MODES = ("legacy_logreg", "cut_projection")
-SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols", "binary_gaps")
+SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols",)
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS = ("peaks", "widths")
 
@@ -71,9 +71,7 @@ class TrainingConfig(BaseModel):
     cut_projection_strict_width: bool = True
     cut_projection_loss: str = "mse"
     cut_projection_positive_weight: float = Field(default=1.0, ge=1.0)
-    segmentator_gap_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)
-    segmentator_min_gap_width: int = Field(default=1, ge=1)
-    segmentator_merge_gap_width: int = Field(default=0, ge=0)
+    segmentator_cut_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)
     segmentator_peak_min_distance: int = Field(default=1, ge=1)
     segmentator_cut_postprocess: str = "widths"
     segmentator_cut_min_width: int = Field(default=1, ge=1)
@@ -224,8 +222,6 @@ def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "
     if loss_mode == "cut_projection":
         return 1
     if loss_mode == "legacy_logreg":
-        if legacy_target_mode.lower() == "binary_gaps":
-            return 2
         return len(alphabet)
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
@@ -492,7 +488,7 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
 
     if config.loss_mode != "legacy_logreg":
         return
-    if config.legacy_target_mode not in {"dense_symbols", "binary_gaps"}:
+    if config.legacy_target_mode != "dense_symbols":
         return
 
     target_width = dataset_config.image_width - config.legacy_crop_left - config.legacy_crop_right
@@ -511,7 +507,7 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
     raise ValueError(
         "legacy_strict_width requires model output width to match target width, "
         f"but architecture={config.architecture!r} gives T={output_width} while "
-        f"targets have width {target_width}. For width-preserving gap segmentation "
+        f"targets have width {target_width}. For width-preserving cut segmentation "
         "use architecture: vertical_segmentator_fcn with legacy_crop_left: 0 and "
         "legacy_crop_right: 0, or set legacy_strict_width: false to allow label resampling."
     )
@@ -747,9 +743,6 @@ def decode_target_for_preview(target, length, alphabet):
             peak_count = int((target > 0.5).sum().item())
             max_value = float(target.max().item()) if target.numel() else 0.0
             return f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
-        unique_values = set(target.detach().cpu().unique().tolist())
-        if unique_values.issubset({0, 1}):
-            return f"<binary_gaps positives={int(target.sum().item())}/{target.numel()}>"
         return "<dense_symbols>"
     return "".join(alphabet[idx] for idx in target[:length].tolist())
 
@@ -1019,11 +1012,6 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
             "Training config requests legacy_target_mode=dense_symbols, but chunk metadata says "
             "dense_targets are absent. Regenerate the dataset with save_dense_targets: true."
         )
-    if target_format == "binary_gaps" and not metadata.get("binary_gap_targets", False):
-        raise ValueError(
-            "Training config requests legacy_target_mode=binary_gaps, but chunk metadata says "
-            "binary_gap_targets are absent. Regenerate the dataset with save_binary_gap_targets: true."
-        )
     if target_format == "cut_projection" and not metadata.get("cut_projection_targets", False):
         raise ValueError(
             "Training config requests loss_mode=cut_projection, but chunk metadata says "
@@ -1217,6 +1205,8 @@ def run_training(
         print(
             "Cut postprocess: "
             f"{args.segmentator_cut_postprocess} "
+            f"threshold={args.segmentator_cut_threshold:g} "
+            f"peak_min_distance={args.segmentator_peak_min_distance} "
             f"min_width={args.segmentator_cut_min_width} "
             f"max_width={args.segmentator_cut_max_width} "
             f"candidate_threshold={args.segmentator_cut_candidate_threshold:g} "
@@ -1227,9 +1217,6 @@ def run_training(
         if args.legacy_target_mode == "dense_symbols":
             print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
             print("Batch targets: dense symbol labels from generator/chunks")
-        elif args.legacy_target_mode == "binary_gaps":
-            print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
-            print("Batch targets: binary gap labels from generator/chunks")
 
     train_loader = make_data_loader(
         dataset,

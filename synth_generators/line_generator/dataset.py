@@ -95,11 +95,7 @@ class SingleLineDatasetConfig(BaseModel):
     num_workers: int = Field(default=0, ge=0)
     overwrite: bool = False
     save_dense_targets: bool = False
-    save_binary_gap_targets: bool = False
     save_cut_projection_targets: bool = False
-    binary_gap_min_width: int = Field(default=1, ge=0)
-    binary_gap_include_spaces: bool = False
-    binary_gap_include_margins: bool = False
     cut_projection_peak_radius: int = Field(default=1, ge=0)
     cut_projection_include_margins: bool = False
 
@@ -290,7 +286,6 @@ class GeneratedLineSample:
     target: torch.Tensor
     length: int
     dense_target: torch.Tensor | None
-    binary_gap_target: torch.Tensor | None
     cut_projection_target: torch.Tensor | None
 
 
@@ -300,8 +295,8 @@ class SingleLineDataset(Dataset):
     def __init__(self, config: SingleLineDatasetConfig, target_format: str = "text"):
         self.config = config
         self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols", "binary_gaps", "cut_projection"}:
-            raise ValueError("target_format must be 'text', 'dense_symbols', 'binary_gaps', or 'cut_projection'")
+        if self.target_format not in {"text", "dense_symbols", "cut_projection"}:
+            raise ValueError("target_format must be 'text', 'dense_symbols', or 'cut_projection'")
         self.alphabet = config.alphabet or config.sample_alphabet
         self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
@@ -337,10 +332,6 @@ class SingleLineDataset(Dataset):
             if sample.dense_target is None:
                 raise RuntimeError("dense target was not generated for this sample")
             return sample.image, sample.dense_target, torch.tensor(-1, dtype=torch.long)
-        if self.target_format == "binary_gaps":
-            if sample.binary_gap_target is None:
-                raise RuntimeError("binary gap target was not generated for this sample")
-            return sample.image, sample.binary_gap_target, torch.tensor(-1, dtype=torch.long)
         if self.target_format == "cut_projection":
             if sample.cut_projection_target is None:
                 raise RuntimeError("cut projection target was not generated for this sample")
@@ -640,9 +631,6 @@ class SingleLineDataset(Dataset):
         dense_target = None
         if self.target_format == "dense_symbols" or self.config.save_dense_targets:
             dense_target = self._encode_dense_symbols(spans, image.width)
-        binary_gap_target = None
-        if self.target_format == "binary_gaps" or self.config.save_binary_gap_targets:
-            binary_gap_target = self._encode_binary_gaps(spans, image.width)
         cut_projection_target = None
         if self.target_format == "cut_projection" or self.config.save_cut_projection_targets:
             cut_projection_target = self._encode_cut_projection(spans, image.width)
@@ -661,7 +649,6 @@ class SingleLineDataset(Dataset):
             target=target,
             length=length,
             dense_target=dense_target,
-            binary_gap_target=binary_gap_target,
             cut_projection_target=cut_projection_target,
         )
 
@@ -704,56 +691,6 @@ class SingleLineDataset(Dataset):
                 )
             char = spans[min(chosen_index, last_span_index)][0]
             labels[x] = self.char_to_index[char]
-
-        return labels
-
-    def _encode_binary_gaps(
-        self,
-        spans: list[tuple[str, float, float]],
-        width: int,
-    ) -> torch.Tensor:
-        if not spans:
-            raise ValueError("cannot encode binary gaps for an empty span list")
-
-        labels = torch.zeros(width, dtype=torch.long)
-        min_width = self.config.binary_gap_min_width
-
-        def mark_range(start: float, end: float) -> None:
-            left = max(0, int(math.floor(start)))
-            right = min(width, int(math.ceil(end)))
-            if right > left:
-                labels[left:right] = 1
-
-        def mark_center(center: float) -> None:
-            if min_width <= 0:
-                return
-            left = int(math.floor(center - min_width / 2.0))
-            right = left + min_width
-            if left < 0:
-                right -= left
-                left = 0
-            if right > width:
-                left = max(0, left - (right - width))
-                right = width
-            if right > left:
-                labels[left:right] = 1
-
-        if self.config.binary_gap_include_margins:
-            mark_range(0.0, spans[0][1])
-            mark_range(spans[-1][2], float(width))
-
-        if self.config.binary_gap_include_spaces:
-            for char, start, end in spans:
-                if char == self.config.space_char:
-                    mark_range(start, end)
-                    mark_center((start + end) * 0.5)
-
-        for (_, _, prev_end), (_, next_start, _) in zip(spans, spans[1:]):
-            if next_start > prev_end:
-                mark_range(prev_end, next_start)
-                mark_center((prev_end + next_start) * 0.5)
-            else:
-                mark_center((prev_end + next_start) * 0.5)
 
         return labels
 

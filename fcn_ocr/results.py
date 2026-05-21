@@ -67,23 +67,21 @@ class SegmentationRun:
     start: int
     end: int
     confidence: float
-    gap_probability: float
+    score: float
 
 
 @dataclass(frozen=True)
 class VerticalSegmentationResult:
     raw_indices: list[int]
     raw_confidences: list[float]
-    gap_probabilities: list[float]
+    cut_scores: list[float]
     runs: list[SegmentationRun]
-    gap_threshold: float
-    min_gap_width: int
-    merge_gap_width: int
+    cut_threshold: float
+    peak_min_distance: int
     input_shape: tuple[int, ...]
     logits_shape: tuple[int, ...]
-    mode: str = "binary_gaps"
+    mode: str = "cut_projection"
     cut_positions: list[int] | None = None
-    peak_min_distance: int | None = None
     candidate_cut_positions: list[int] | None = None
     cut_postprocess: str | None = None
     cut_candidate_threshold: float | None = None

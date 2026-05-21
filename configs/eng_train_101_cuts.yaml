@@ -30,9 +30,7 @@ cut_projection_crop_right: 0
 cut_projection_strict_width: true
 cut_projection_loss: mse
 cut_projection_positive_weight: 4.0
-segmentator_gap_threshold: 0.35
-segmentator_min_gap_width: 3
-segmentator_merge_gap_width: 0
+segmentator_cut_threshold: 0.35
 segmentator_peak_min_distance: 3
 segmentator_cut_postprocess: widths
 segmentator_cut_min_width: 3

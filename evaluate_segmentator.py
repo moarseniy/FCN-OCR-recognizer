@@ -52,10 +52,10 @@ def build_rows_and_jobs(
             "gt": gt,
             "gt_len": len(gt),
             "pred_len": 0,
-            "gap_count": 0,
+            "cut_count": 0,
             "length_error": 0,
             "abs_length_error": 0,
-            "gap_runs": "",
+            "cuts": "",
             "error": "",
         }
         if image_path.exists():
@@ -67,16 +67,12 @@ def build_rows_and_jobs(
     return rows, jobs
 
 
-def gap_runs_text(result) -> str:
-    if result.mode == "cut_projection":
-        return " ".join(f"{run.start}:{run.gap_probability:.3f}" for run in result.runs if run.label == 1)
-    return " ".join(f"{run.start}-{run.end}:{run.gap_probability:.3f}" for run in result.runs if run.label == 1)
+def cuts_text(result) -> str:
+    return " ".join(f"{run.start}:{run.score:.3f}" for run in result.runs if run.label == 1)
 
 
 def segment_count(result) -> int:
-    if result.mode == "cut_projection":
-        return len(result.cut_positions or [])
-    return sum(1 for run in result.runs if run.label == 1)
+    return len(result.cut_positions or [])
 
 
 def segment_images(
@@ -153,12 +149,12 @@ def segment_batch(
             sample_logits,
             input_shape=(1, segmentator.in_channels, segmentator.image_height, tensors[batch_index].size(2)),
         )
-        gap_count = segment_count(result)
-        pred_len = gap_count + 1 if result.raw_indices else 0
+        cut_count = segment_count(result)
+        pred_len = cut_count + 1 if result.raw_indices else 0
         predictions[row_index] = {
             "pred_len": pred_len,
-            "gap_count": gap_count,
-            "gap_runs": gap_runs_text(result),
+            "cut_count": cut_count,
+            "cuts": cuts_text(result),
         }
 
     return predictions
@@ -211,10 +207,10 @@ def write_rows_csv(rows: list[dict[str, Any]], output_csv: Path) -> None:
                 "gt",
                 "gt_len",
                 "pred_len",
-                "gap_count",
+                "cut_count",
                 "length_error",
                 "abs_length_error",
-                "gap_runs",
+                "cuts",
                 "error",
             ],
         )
@@ -234,12 +230,9 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Normalized length error:    {metrics['normalized_length_error']:.4f}")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
-    print(f"segmentator_mode:           {metrics.get('segmentator_mode', 'binary_gaps')}")
-    print(f"gap_threshold:              {metrics['gap_threshold']:.5f}")
-    print(f"min_gap_width:              {metrics['min_gap_width']}")
-    print(f"merge_gap_width:            {metrics['merge_gap_width']}")
-    if metrics.get("segmentator_mode") == "cut_projection":
-        print(f"peak_min_distance:          {metrics['peak_min_distance']}")
+    print(f"segmentator_mode:           {metrics.get('segmentator_mode', 'cut_projection')}")
+    print(f"cut_threshold:              {metrics['cut_threshold']:.5f}")
+    print(f"peak_min_distance:          {metrics['peak_min_distance']}")
     print(f"scale_x:                    {metrics['scale_x']:+.5f}")
     print(f"y_pad:                      {metrics['y_pad']:+.5f}")
     print(f"baseline_crop:              {metrics['baseline_crop']}")
@@ -253,9 +246,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
 
 def configure_segmentator(
     segmentator: VerticalSegmentator,
-    gap_threshold: float | None,
-    min_gap_width: int | None,
-    merge_gap_width: int | None,
+    cut_threshold: float | None,
+    peak_min_distance: int | None,
     scale_x: float,
     y_pad: float,
     baseline_crop: bool,
@@ -275,27 +267,17 @@ def configure_segmentator(
     if baseline_max_angle <= 0.0:
         raise ValueError("baseline_max_angle must be > 0")
 
-    segmentator.gap_threshold = segmentator._resolve_gap_threshold(
-        gap_threshold,
-        {"segmentator_gap_threshold": segmentator.gap_threshold},
+    segmentator.cut_threshold = segmentator._resolve_cut_threshold(
+        cut_threshold,
+        {"segmentator_cut_threshold": segmentator.cut_threshold},
     )
-    segmentator.min_gap_width = segmentator._resolve_non_negative_int(
-        min_gap_width,
-        {"segmentator_min_gap_width": segmentator.min_gap_width},
-        "segmentator_min_gap_width",
-        default=1,
+    segmentator.peak_min_distance = segmentator._resolve_non_negative_int(
+        peak_min_distance,
+        {"segmentator_peak_min_distance": segmentator.peak_min_distance},
+        "segmentator_peak_min_distance",
+        default=segmentator.peak_min_distance,
         min_value=1,
     )
-    segmentator.merge_gap_width = segmentator._resolve_non_negative_int(
-        merge_gap_width,
-        {"segmentator_merge_gap_width": segmentator.merge_gap_width},
-        "segmentator_merge_gap_width",
-        default=0,
-        min_value=0,
-    )
-    if getattr(segmentator, "target_format", "") == "cut_projection":
-        segmentator.peak_min_distance = segmentator.min_gap_width
-        segmentator.cut_min_width = segmentator.min_gap_width
     segmentator.scale_x = float(scale_x)
     segmentator.y_pad = float(y_pad)
     segmentator.baseline_crop = bool(baseline_crop)
@@ -325,11 +307,9 @@ def evaluate_with_segmentator(
         rows[row_index]["error"] = error
 
     metrics = compute_metrics(rows, elapsed)
-    metrics["segmentator_mode"] = getattr(segmentator, "target_format", "binary_gaps")
-    metrics["gap_threshold"] = float(segmentator.gap_threshold)
-    metrics["min_gap_width"] = int(segmentator.min_gap_width)
-    metrics["merge_gap_width"] = int(segmentator.merge_gap_width)
-    metrics["peak_min_distance"] = int(getattr(segmentator, "peak_min_distance", segmentator.min_gap_width))
+    metrics["segmentator_mode"] = getattr(segmentator, "target_format", "cut_projection")
+    metrics["cut_threshold"] = float(segmentator.cut_threshold)
+    metrics["peak_min_distance"] = int(segmentator.peak_min_distance)
     metrics["scale_x"] = float(segmentator.scale_x)
     metrics["y_pad"] = float(segmentator.y_pad)
     metrics["baseline_crop"] = bool(segmentator.baseline_crop)
@@ -354,9 +334,8 @@ def evaluate_prepared(
     batch_size: int,
     log_every: int,
     verbose: bool,
-    gap_threshold: float | None,
-    min_gap_width: int | None,
-    merge_gap_width: int | None,
+    cut_threshold: float | None,
+    peak_min_distance: int | None,
     scale_x: float,
     y_pad: float,
     baseline_crop: bool,
@@ -368,9 +347,8 @@ def evaluate_prepared(
     segmentator = VerticalSegmentator(checkpoint_path, device=device, verbose=False)
     configure_segmentator(
         segmentator,
-        gap_threshold=gap_threshold,
-        min_gap_width=min_gap_width,
-        merge_gap_width=merge_gap_width,
+        cut_threshold=cut_threshold,
+        peak_min_distance=peak_min_distance,
         scale_x=scale_x,
         y_pad=y_pad,
         baseline_crop=baseline_crop,
@@ -398,14 +376,14 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
     with path.open("a", encoding="utf-8") as file:
         if is_new_file:
             file.write(
-                "trial\tgap_threshold\tmin_gap_width\tmerge_gap_width\tscale_x\ty_pad\t"
+                "trial\tcut_threshold\tpeak_min_distance\tscale_x\ty_pad\t"
                 "baseline_crop\tbaseline_top_pad\tbaseline_bottom_pad\tbaseline_deskew\tbaseline_max_angle\t"
                 "metric\tlength_accuracy\taverage_abs_length_error\ttotal_abs_length_error\t"
                 "average_signed_length_error\tnormalized_length_error\tspeed\n"
             )
         file.write(
-            f"{trial_number}\t{metrics['gap_threshold']:.8f}\t{metrics['min_gap_width']}\t"
-            f"{metrics['merge_gap_width']}\t{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t"
+            f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['peak_min_distance']}\t"
+            f"{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t"
             f"{int(metrics['baseline_crop'])}\t{metrics['baseline_top_pad']:.8f}\t"
             f"{metrics['baseline_bottom_pad']:.8f}\t{int(metrics['baseline_deskew'])}\t"
             f"{metrics['baseline_max_angle']:.8f}\t{metrics[metric_name]:.8f}\t"
@@ -427,12 +405,10 @@ def optimize(
     metric_name: str,
     log_every: int,
     trials_output: Path | None,
-    gap_threshold_min: float,
-    gap_threshold_max: float,
-    min_gap_width_min: int,
-    min_gap_width_max: int,
-    merge_gap_width_min: int,
-    merge_gap_width_max: int,
+    cut_threshold_min: float,
+    cut_threshold_max: float,
+    peak_min_distance_min: int,
+    peak_min_distance_max: int,
     scale_x_min: float,
     scale_x_max: float,
     y_pad_min: float,
@@ -505,9 +481,8 @@ def optimize(
         )
         configure_segmentator(
             segmentator,
-            gap_threshold=trial.suggest_float("gap_threshold", gap_threshold_min, gap_threshold_max),
-            min_gap_width=trial.suggest_int("min_gap_width", min_gap_width_min, min_gap_width_max),
-            merge_gap_width=trial.suggest_int("merge_gap_width", merge_gap_width_min, merge_gap_width_max),
+            cut_threshold=trial.suggest_float("cut_threshold", cut_threshold_min, cut_threshold_max),
+            peak_min_distance=trial.suggest_int("peak_min_distance", peak_min_distance_min, peak_min_distance_max),
             scale_x=trial.suggest_float("scale_x", scale_x_min, scale_x_max),
             y_pad=trial.suggest_float("y_pad", y_pad_min, y_pad_max),
             baseline_crop=bool(trial_baseline_crop),
@@ -535,9 +510,8 @@ def optimize(
     print(
         "Optuna segmentator search: "
         f"trials={trials}, metric={metric_name}, "
-        f"gap_threshold=[{gap_threshold_min}, {gap_threshold_max}], "
-        f"min_gap_width=[{min_gap_width_min}, {min_gap_width_max}], "
-        f"merge_gap_width=[{merge_gap_width_min}, {merge_gap_width_max}], "
+        f"cut_threshold=[{cut_threshold_min}, {cut_threshold_max}], "
+        f"peak_min_distance=[{peak_min_distance_min}, {peak_min_distance_max}], "
         f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
         f"tune_baseline_crop={tune_baseline_crop}, "
         f"tune_baseline_params={tune_baseline_params}, "
@@ -560,9 +534,8 @@ def optimize(
 
     configure_segmentator(
         segmentator,
-        gap_threshold=float(best_params["gap_threshold"]),
-        min_gap_width=int(best_params["min_gap_width"]),
-        merge_gap_width=int(best_params["merge_gap_width"]),
+        cut_threshold=float(best_params["cut_threshold"]),
+        peak_min_distance=int(best_params["peak_min_distance"]),
         scale_x=float(best_params["scale_x"]),
         y_pad=float(best_params["y_pad"]),
         baseline_crop=bool(best_params["baseline_crop"]),
@@ -595,9 +568,8 @@ def evaluate(
     batch_size: int,
     limit: int | None,
     log_every: int,
-    gap_threshold: float | None,
-    min_gap_width: int | None,
-    merge_gap_width: int | None,
+    cut_threshold: float | None,
+    peak_min_distance: int | None,
     scale_x: float,
     y_pad: float,
     baseline_crop: bool,
@@ -616,9 +588,8 @@ def evaluate(
         batch_size=batch_size,
         log_every=log_every,
         verbose=True,
-        gap_threshold=gap_threshold,
-        min_gap_width=min_gap_width,
-        merge_gap_width=merge_gap_width,
+        cut_threshold=cut_threshold,
+        peak_min_distance=peak_min_distance,
         scale_x=scale_x,
         y_pad=y_pad,
         baseline_crop=baseline_crop,
@@ -633,16 +604,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Tune/evaluate vertical segmentator using Label Studio text lengths.")
     parser.add_argument("--json", required=True, help="Path to Label Studio export JSON.")
     parser.add_argument("--images", required=True, help="Folder with images.")
-    parser.add_argument("--checkpoint", required=True, help="Path to binary vertical segmentator checkpoint.")
+    parser.add_argument("--checkpoint", required=True, help="Path to vertical cut segmentator checkpoint.")
     parser.add_argument("--out", default="segmentator_length_metrics.csv", help="Output CSV path.")
     parser.add_argument("--device", default=None, help="Device to use: cuda, cpu, or empty for auto.")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=100)
 
-    parser.add_argument("--gap-threshold", type=float, default=None)
-    parser.add_argument("--min-gap-width", type=int, default=None)
-    parser.add_argument("--merge-gap-width", type=int, default=None)
+    parser.add_argument("--cut-threshold", type=float, default=None)
+    parser.add_argument("--peak-min-distance", type=int, default=None)
     parser.add_argument("--scale-x", type=float, default=0.0)
     parser.add_argument("--y-pad", type=float, default=0.0)
     parser.add_argument("--baseline-crop", action="store_true")
@@ -662,12 +632,10 @@ def parse_args() -> argparse.Namespace:
             "normalized_length_error",
         ],
     )
-    parser.add_argument("--optuna-gap-threshold-min", type=float, default=0.25)
-    parser.add_argument("--optuna-gap-threshold-max", type=float, default=0.85)
-    parser.add_argument("--optuna-min-gap-width-min", type=int, default=1)
-    parser.add_argument("--optuna-min-gap-width-max", type=int, default=4)
-    parser.add_argument("--optuna-merge-gap-width-min", type=int, default=0)
-    parser.add_argument("--optuna-merge-gap-width-max", type=int, default=3)
+    parser.add_argument("--optuna-cut-threshold-min", type=float, default=0.25)
+    parser.add_argument("--optuna-cut-threshold-max", type=float, default=0.85)
+    parser.add_argument("--optuna-peak-min-distance-min", type=int, default=1)
+    parser.add_argument("--optuna-peak-min-distance-max", type=int, default=4)
     parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
     parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
     parser.add_argument("--optuna-y-pad-min", type=float, default=-0.25)
@@ -710,12 +678,10 @@ def main() -> None:
             metric_name=args.optuna_metric,
             log_every=args.log_every,
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
-            gap_threshold_min=args.optuna_gap_threshold_min,
-            gap_threshold_max=args.optuna_gap_threshold_max,
-            min_gap_width_min=args.optuna_min_gap_width_min,
-            min_gap_width_max=args.optuna_min_gap_width_max,
-            merge_gap_width_min=args.optuna_merge_gap_width_min,
-            merge_gap_width_max=args.optuna_merge_gap_width_max,
+            cut_threshold_min=args.optuna_cut_threshold_min,
+            cut_threshold_max=args.optuna_cut_threshold_max,
+            peak_min_distance_min=args.optuna_peak_min_distance_min,
+            peak_min_distance_max=args.optuna_peak_min_distance_max,
             scale_x_min=args.optuna_scale_x_min,
             scale_x_max=args.optuna_scale_x_max,
             y_pad_min=args.optuna_y_pad_min,
@@ -747,9 +713,8 @@ def main() -> None:
             batch_size=args.batch_size,
             limit=args.limit,
             log_every=args.log_every,
-            gap_threshold=args.gap_threshold,
-            min_gap_width=args.min_gap_width,
-            merge_gap_width=args.merge_gap_width,
+            cut_threshold=args.cut_threshold,
+            peak_min_distance=args.peak_min_distance,
             scale_x=args.scale_x,
             y_pad=args.y_pad,
             baseline_crop=args.baseline_crop,

@@ -1244,15 +1244,7 @@ class TextRecognizer:
 
     @staticmethod
     def _segmentation_cut_positions(segmentation_result: VerticalSegmentationResult) -> list[int]:
-        if segmentation_result.cut_positions is not None:
-            return [int(position) for position in segmentation_result.cut_positions]
-
-        cuts: list[int] = []
-        for run in segmentation_result.runs:
-            if run.label != 1:
-                continue
-            cuts.append(int(round((run.start + run.end + 1) * 0.5)))
-        return cuts
+        return [int(position) for position in segmentation_result.cut_positions or []]
 
     @staticmethod
     def _map_cut_to_boundary(cut_position: int, source_width: int, target_width: int) -> int:
@@ -1293,7 +1285,7 @@ class TextRecognizer:
         column_counts = np.count_nonzero(mask, axis=0)
         min_column_pixels = max(1, int(round(height * 0.025)))
         active = column_counts >= min_column_pixels
-        active = self._close_boolean_gaps(active, max_gap=max(1, int(round(width * 0.01))))
+        active = self._close_boolean_holes(active, max_hole=max(1, int(round(width * 0.01))))
         runs = self._boolean_runs(active)
         runs = [
             (start, end) for start, end in runs
@@ -1363,14 +1355,14 @@ class TextRecognizer:
         return mask.astype(np.uint8)
 
     @staticmethod
-    def _close_boolean_gaps(values: np.ndarray, max_gap: int) -> np.ndarray:
+    def _close_boolean_holes(values: np.ndarray, max_hole: int) -> np.ndarray:
         output = values.astype(bool).copy()
-        if max_gap <= 0 or output.size == 0:
+        if max_hole <= 0 or output.size == 0:
             return output
 
         runs = TextRecognizer._boolean_runs(output)
         for (_, prev_end), (next_start, _) in zip(runs, runs[1:]):
-            if next_start - prev_end <= max_gap:
+            if next_start - prev_end <= max_hole:
                 output[prev_end:next_start] = True
         return output
 
@@ -1432,8 +1424,8 @@ class TextRecognizer:
         left_boundary: int,
         right_boundary: int,
         mode: str,
-        max_gap_ratio: float,
-        min_gap_width: int,
+        max_edge_ratio: float,
+        min_edge_width: int,
     ) -> tuple[int, int, list[int]]:
         mode = mode.lower()
         if mode not in {"off", "auto", "on"}:
@@ -1452,17 +1444,17 @@ class TextRecognizer:
         typical_width = cls._typical_cut_width(cuts, left_boundary, right_boundary)
         if typical_width <= 0.0:
             return left_boundary, right_boundary, cuts
-        if max_gap_ratio < 0.0:
-            raise ValueError("boundary_cut_max_gap_ratio must be non-negative")
+        if max_edge_ratio < 0.0:
+            raise ValueError("boundary_cut_max_edge_ratio must be non-negative")
 
-        threshold = max(float(min_gap_width), typical_width * float(max_gap_ratio))
-        left_gap = cuts[0] - left_boundary
-        right_gap = right_boundary - cuts[-1]
+        threshold = max(float(min_edge_width), typical_width * float(max_edge_ratio))
+        left_edge_width = cuts[0] - left_boundary
+        right_edge_width = right_boundary - cuts[-1]
 
         # In auto mode we promote both edges only when both outer intervals look
         # much smaller than a normal character interval. This catches outputs
         # like |A|B|C| without deleting a real narrow first/last glyph by itself.
-        if left_gap <= threshold and right_gap <= threshold:
+        if left_edge_width <= threshold and right_edge_width <= threshold:
             left_boundary = cuts[0]
             right_boundary = cuts[-1]
             cuts = cuts[1:-1]
@@ -1486,7 +1478,7 @@ class TextRecognizer:
         edge_min_pixel_density: float = 0.003,
         edge_min_width: int = 2,
         boundary_cuts: str = "auto",
-        boundary_cut_max_gap_ratio: float = 0.45,
+        boundary_cut_max_edge_ratio: float = 0.45,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -1537,8 +1529,8 @@ class TextRecognizer:
             left_boundary,
             right_boundary,
             mode=boundary_cuts,
-            max_gap_ratio=boundary_cut_max_gap_ratio,
-            min_gap_width=edge_min_width,
+            max_edge_ratio=boundary_cut_max_edge_ratio,
+            min_edge_width=edge_min_width,
         )
         boundaries = [left_boundary, *sorted(set(mapped_cuts)), right_boundary]
         intervals = [

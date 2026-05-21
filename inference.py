@@ -52,25 +52,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--segmentator-checkpoint",
         default=None,
-        help="Optional vertical segmentator checkpoint. If --debug-image is set, its gap/cut map is rendered too.",
+        help="Optional vertical cut segmentator checkpoint. If --debug-image is set, its cut map is rendered too.",
     )
     parser.add_argument(
-        "--segmentator-gap-threshold",
+        "--segmentator-cut-threshold",
         type=float,
         default=None,
-        help="Override segmentator gap/cut probability threshold from checkpoint config.",
+        help="Override segmentator cut probability threshold from checkpoint config.",
     )
     parser.add_argument(
-        "--segmentator-min-gap-width",
+        "--segmentator-peak-min-distance",
         type=int,
         default=None,
-        help="Override minimum gap run width, or peak min distance for cut-projection segmentators.",
-    )
-    parser.add_argument(
-        "--segmentator-merge-gap-width",
-        type=int,
-        default=None,
-        help="Override maximum non-gap distance for merging nearby gap runs in output timesteps.",
+        help="Override minimum distance between neighboring cut peaks in output timesteps.",
     )
     parser.add_argument(
         "--segmentator-cut-postprocess",
@@ -147,7 +141,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--segmentator-boundary-cut-max-gap-ratio",
+        "--segmentator-boundary-cut-max-edge-ratio",
         type=float,
         default=0.45,
         help="Auto boundary-cut promotion threshold relative to a typical character interval width.",
@@ -271,9 +265,8 @@ def main() -> None:
             baseline_bottom_pad=args.baseline_bottom_pad,
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
-            gap_threshold=args.segmentator_gap_threshold,
-            min_gap_width=args.segmentator_min_gap_width,
-            merge_gap_width=args.segmentator_merge_gap_width,
+            cut_threshold=args.segmentator_cut_threshold,
+            peak_min_distance=args.segmentator_peak_min_distance,
             cut_postprocess=args.segmentator_cut_postprocess,
             cut_min_width=args.segmentator_cut_min_width,
             cut_max_width=args.segmentator_cut_max_width,
@@ -357,18 +350,11 @@ def main() -> None:
         segmentator_input_image = tensor_to_pil(segmentator_input_tensor)
         segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
         debug_metadata["segmentator_checkpoint"] = str(segmentator_checkpoint_path)
-        if segmentation_result.mode == "cut_projection":
-            print(
-                "Segmentator: "
-                f"{len(segmentation_result.cut_positions or [])} cuts, "
-                f"{len(segmentation_result.raw_indices)} timesteps"
-            )
-        else:
-            print(
-                "Segmentator: "
-                f"{sum(1 for run in segmentation_result.runs if run.label == 1)} gap runs, "
-                f"{len(segmentation_result.raw_indices)} timesteps"
-            )
+        print(
+            "Segmentator: "
+            f"{len(segmentation_result.cut_positions or [])} cuts, "
+            f"{len(segmentation_result.raw_indices)} timesteps"
+        )
         if args.decode_with_segmentator:
             text_bounds = recognizer.text_x_bounds_from_tensor(input_tensor)
             if text_bounds["ok"]:
@@ -390,7 +376,7 @@ def main() -> None:
                 edge_min_pixel_density=args.segmentator_edge_min_pixel_density,
                 edge_min_width=args.segmentator_edge_min_width,
                 boundary_cuts=args.segmentator_boundary_cuts,
-                boundary_cut_max_gap_ratio=args.segmentator_boundary_cut_max_gap_ratio,
+                boundary_cut_max_edge_ratio=args.segmentator_boundary_cut_max_edge_ratio,
             )
             debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
             debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
@@ -398,7 +384,7 @@ def main() -> None:
             debug_metadata["legacy_cuts_edge_trim"] = not args.no_segmentator_edge_trim
             debug_metadata["legacy_cuts_edge_min_width"] = args.segmentator_edge_min_width
             debug_metadata["legacy_cuts_boundary_cuts"] = args.segmentator_boundary_cuts
-            debug_metadata["legacy_cuts_boundary_cut_max_gap_ratio"] = args.segmentator_boundary_cut_max_gap_ratio
+            debug_metadata["legacy_cuts_boundary_cut_max_edge_ratio"] = args.segmentator_boundary_cut_max_edge_ratio
             print(f"Recognized text (legacy+cuts): '{cut_decoding_result.text}'")
 
     print(f"Recognized text: '{result.text}'")

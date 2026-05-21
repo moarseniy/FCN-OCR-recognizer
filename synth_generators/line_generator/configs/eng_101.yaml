@@ -6,11 +6,7 @@ chunk_size: 1024
 num_workers: 4
 overwrite: false
 save_dense_targets: true
-save_binary_gap_targets: true
 save_cut_projection_targets: true
-binary_gap_min_width: 1
-binary_gap_include_spaces: false
-binary_gap_include_margins: false
 cut_projection_peak_radius: 1
 cut_projection_include_margins: false
 image_height: 48

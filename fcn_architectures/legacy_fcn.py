@@ -15,7 +15,6 @@ class LegacyFCN(nn.Module):
       - in_channels: 1 (grayscale) или 3 (RGB)
       - num_classes: число выходных классов final 1x1 conv
         * legacy OCR: len(alphabet)
-        * binary gaps: 2
         * cut projection обычно использует отдельную архитектуру с 1 выходом
       - input height должен быть заранее подобран так, чтобы сеть могла
         свести высоту к 1 (см. stride по высоте в conv1 и т.д.)

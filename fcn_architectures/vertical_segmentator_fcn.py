@@ -31,10 +31,10 @@ def _conv_bn_relu(
 
 class VerticalSegmentatorFCN(nn.Module):
     """
-    Width-preserving FCN for binary vertical gap segmentation.
+    Width-preserving FCN for vertical cut projection segmentation.
 
     The network reduces only the vertical dimension. Output timestep T is equal
-    to the input image width, so binary gap targets can be trained without
+    to the input image width, so cut projection targets can be trained without
     horizontal resampling or legacy crop offsets.
     """
 

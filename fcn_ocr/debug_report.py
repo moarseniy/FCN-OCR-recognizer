@@ -97,17 +97,12 @@ def format_raw_run(result: RecognitionResult, start: int, end: int) -> str:
 
 
 def segmentation_runs_summary(result: VerticalSegmentationResult) -> str:
-    gap_runs = [run for run in result.runs if run.label == 1]
-    if not gap_runs:
-        return "no cuts" if result.mode == "cut_projection" else "no gap runs"
-    if result.mode == "cut_projection":
-        return "    ".join(
-            f"{run.start} cut={run.gap_probability:.3f}"
-            for run in gap_runs
-        )
+    cut_runs = [run for run in result.runs if run.label == 1]
+    if not cut_runs:
+        return "no cuts"
     return "    ".join(
-        f"{run.start}-{run.end} gap={run.gap_probability:.3f} conf={run.confidence:.3f}"
-        for run in gap_runs
+        f"{run.start} cut={run.score:.3f}"
+        for run in cut_runs
     )
 
 
@@ -159,7 +154,7 @@ def render_segmentation_panel(
     title_height = text_height(probe, font) + 6
     summary_lines = wrapped_lines(
         probe,
-        f"{'cuts' if result.mode == 'cut_projection' else 'gap runs'}: {segmentation_runs_summary(result)}",
+        f"cuts: {segmentation_runs_summary(result)}",
         small_font,
         max(120, image.width - padding * 2),
     )
@@ -171,9 +166,9 @@ def render_segmentation_panel(
     title = (
         f"vertical segmentator input; logits {result.logits_shape}; "
         f"T={len(result.raw_indices)}; "
-        f"{'cut' if result.mode == 'cut_projection' else 'gap'} threshold={result.gap_threshold:.3f}"
+        f"cut threshold={result.cut_threshold:.3f}"
     )
-    if result.mode == "cut_projection" and result.cut_postprocess:
+    if result.cut_postprocess:
         title += f"; postprocess={result.cut_postprocess}"
     draw.text((padding, y), title, fill=(55, 55, 55), font=font)
     y += title_height
@@ -185,18 +180,18 @@ def render_segmentation_panel(
     timesteps = max(1, len(result.raw_indices))
     for x in range(image.width):
         timestep = min(timesteps - 1, int((x + 0.5) * timesteps / max(1, image.width)))
-        gap_probability = result.gap_probabilities[timestep] if result.gap_probabilities else 0.0
+        cut_score = result.cut_scores[timestep] if result.cut_scores else 0.0
         label = result.raw_indices[timestep] if result.raw_indices else 0
         if label == 1:
             color = (
                 255,
-                int(round(220 - 140 * gap_probability)),
-                int(round(210 - 150 * gap_probability)),
+                int(round(220 - 140 * cut_score)),
+                int(round(210 - 150 * cut_score)),
             )
         else:
             color = (
-                int(round(235 - 70 * gap_probability)),
-                int(round(245 - 40 * gap_probability)),
+                int(round(235 - 70 * cut_score)),
+                int(round(245 - 40 * cut_score)),
                 235,
             )
         band_draw.line((x, 0, x, band_height), fill=color)
@@ -357,21 +352,15 @@ def save_debug_image(
         info_lines.append(f"segmentator input tensor shape: {segmentation_result.input_shape}")
         info_lines.append(f"segmentator logits shape: {segmentation_result.logits_shape}")
         info_lines.append(f"segmentator timesteps: {len(segmentation_result.raw_indices)}")
-        if segmentation_result.mode == "cut_projection":
-            info_lines.append(f"segmentator cuts: {len(segmentation_result.cut_positions or [])}")
-            info_lines.append(f"segmentator candidates: {len(segmentation_result.candidate_cut_positions or [])}")
-            info_lines.append(f"segmentator cut threshold: {segmentation_result.gap_threshold:.3f}")
-            info_lines.append(f"segmentator peak min distance: {segmentation_result.peak_min_distance}")
-            info_lines.append(f"segmentator cut postprocess: {segmentation_result.cut_postprocess}")
-            info_lines.append(f"segmentator cut candidate threshold: {segmentation_result.cut_candidate_threshold:.3f}")
-            info_lines.append(f"segmentator cut min width: {segmentation_result.cut_min_width}")
-            info_lines.append(f"segmentator cut max width: {segmentation_result.cut_max_width}")
-            info_lines.append(f"segmentator cut smooth radius: {segmentation_result.cut_smooth_radius}")
-        else:
-            info_lines.append(f"segmentator gap runs: {sum(1 for run in segmentation_result.runs if run.label == 1)}")
-            info_lines.append(f"segmentator gap threshold: {segmentation_result.gap_threshold:.3f}")
-            info_lines.append(f"segmentator min gap width: {segmentation_result.min_gap_width}")
-            info_lines.append(f"segmentator merge gap width: {segmentation_result.merge_gap_width}")
+        info_lines.append(f"segmentator cuts: {len(segmentation_result.cut_positions or [])}")
+        info_lines.append(f"segmentator candidates: {len(segmentation_result.candidate_cut_positions or [])}")
+        info_lines.append(f"segmentator cut threshold: {segmentation_result.cut_threshold:.3f}")
+        info_lines.append(f"segmentator peak min distance: {segmentation_result.peak_min_distance}")
+        info_lines.append(f"segmentator cut postprocess: {segmentation_result.cut_postprocess}")
+        info_lines.append(f"segmentator cut candidate threshold: {segmentation_result.cut_candidate_threshold:.3f}")
+        info_lines.append(f"segmentator cut min width: {segmentation_result.cut_min_width}")
+        info_lines.append(f"segmentator cut max width: {segmentation_result.cut_max_width}")
+        info_lines.append(f"segmentator cut smooth radius: {segmentation_result.cut_smooth_radius}")
     if cut_decoding_result is not None:
         info_lines.append(f"legacy+cuts symbols: {len(cut_decoding_result.symbols)}")
         info_lines.append(f"legacy+cuts raw cuts: {len(cut_decoding_result.cuts)}")
@@ -383,10 +372,10 @@ def save_debug_image(
             info_lines.append(f"legacy+cuts edge min width: {metadata['legacy_cuts_edge_min_width']}")
         if "legacy_cuts_boundary_cuts" in metadata:
             info_lines.append(f"legacy+cuts boundary cuts: {metadata['legacy_cuts_boundary_cuts']}")
-        if "legacy_cuts_boundary_cut_max_gap_ratio" in metadata:
+        if "legacy_cuts_boundary_cut_max_edge_ratio" in metadata:
             info_lines.append(
                 "legacy+cuts boundary cut ratio: "
-                f"{float(metadata['legacy_cuts_boundary_cut_max_gap_ratio']):.3f}"
+                f"{float(metadata['legacy_cuts_boundary_cut_max_edge_ratio']):.3f}"
             )
 
     expected_text = metadata.get("expected_text")
