@@ -329,6 +329,12 @@ def save_debug_image(
         info_lines.append(f"baseline angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
     if metadata.get("baseline_confidence") is not None:
         info_lines.append(f"baseline confidence: {float(metadata['baseline_confidence']):.3f}")
+    if metadata.get("baseline_method") is not None:
+        info_lines.append(f"baseline method: {metadata['baseline_method']}")
+    if metadata.get("baseline_mask") is not None:
+        info_lines.append(f"baseline mask: {metadata['baseline_mask']}")
+    if metadata.get("baseline_candidate_count") is not None:
+        info_lines.append(f"baseline candidates: {metadata['baseline_candidate_count']}")
     if metadata.get("baseline_inlier_ratio") is not None:
         info_lines.append(f"baseline inlier ratio: {float(metadata['baseline_inlier_ratio']):.3f}")
     if metadata.get("baseline_profile_coverage") is not None:
@@ -339,6 +345,10 @@ def save_debug_image(
         info_lines.append(f"baseline crop box: {metadata['baseline_crop_box']}")
     if metadata.get("baseline_text_height") is not None:
         info_lines.append(f"baseline text height: {metadata['baseline_text_height']}")
+    if metadata.get("baseline_rejected_angle_degrees") is not None:
+        info_lines.append(f"baseline rejected angle: {float(metadata['baseline_rejected_angle_degrees']):+.3f} deg")
+    if metadata.get("baseline_rejected_confidence") is not None:
+        info_lines.append(f"baseline rejected confidence: {float(metadata['baseline_rejected_confidence']):.3f}")
     if "expected_text" in metadata:
         info_lines.append(f"expected text: {metadata['expected_text']!r}")
     if segmentation_result is not None:

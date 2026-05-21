@@ -316,6 +316,9 @@ class TextRecognizer:
                 ("baseline_inlier_ratio", "baseline_inlier_ratio"),
                 ("baseline_profile_coverage", "baseline_profile_coverage"),
                 ("baseline_residual_mad", "baseline_residual_mad"),
+                ("candidate_count", "baseline_candidate_count"),
+                ("method", "baseline_method"),
+                ("mask_name", "baseline_mask"),
             ):
                 if source_key in first:
                     metadata[target_key] = first[source_key]
@@ -366,102 +369,267 @@ class TextRecognizer:
             "baseline_profile_coverage": float(detection["profile_coverage"]),
             "baseline_residual_mad": float(detection["residual_mad"]),
             "baseline_residual_rmse": float(detection["residual_rmse"]),
+            "baseline_candidate_count": int(detection.get("candidate_count", 0)),
+            "baseline_method": detection.get("method", "unknown"),
+            "baseline_mask": detection.get("mask_name", "unknown"),
         }
+        if "rejected_baseline_angle_degrees" in detection:
+            metadata["baseline_rejected_angle_degrees"] = float(detection["rejected_baseline_angle_degrees"])
+        if "rejected_baseline_confidence" in detection:
+            metadata["baseline_rejected_confidence"] = float(detection["rejected_baseline_confidence"])
         return cropped, PreprocessDebug(metadata=metadata, images=debug_images)
 
     def _detect_baseline(self, image: Image.Image) -> dict[str, Any]:
         gray = np.asarray(image.convert("L"), dtype=np.uint8)
-        mask = self._make_text_mask(gray)
-        cleaned_mask = self._clean_text_mask(mask)
-        foreground_pixels = int(np.count_nonzero(cleaned_mask))
-        if foreground_pixels < max(4, int(round(gray.size * 0.00005))):
+        detections: list[dict[str, Any]] = []
+        bbox_fallbacks: list[dict[str, Any]] = []
+        best_cleaned_mask: np.ndarray | None = None
+        max_foreground_pixels = 0
+
+        for mask_name, raw_mask in self._make_text_mask_candidates(gray):
+            cleaned_mask = self._clean_text_mask(raw_mask)
+            foreground_pixels = int(np.count_nonzero(cleaned_mask))
+            if foreground_pixels > max_foreground_pixels:
+                max_foreground_pixels = foreground_pixels
+                best_cleaned_mask = cleaned_mask
+            if foreground_pixels < max(4, int(round(gray.size * 0.00005))):
+                continue
+
+            bounds = self._mask_bounds(cleaned_mask)
+            if bounds is None:
+                continue
+            x_min, x_max, y_min, y_max, xs, ys = bounds
+            bbox_fallbacks.append(
+                self._bbox_baseline_result(
+                    mask_name=mask_name,
+                    cleaned_mask=cleaned_mask,
+                    foreground_pixels=foreground_pixels,
+                    xs=xs,
+                    ys=ys,
+                    x_min=x_min,
+                    x_max=x_max,
+                    y_min=y_min,
+                    y_max=y_max,
+                    status="bbox_fallback",
+                    candidate_count=0,
+                )
+            )
+            detections.extend(
+                self._baseline_detections_from_mask(
+                    mask_name=mask_name,
+                    cleaned_mask=cleaned_mask,
+                    foreground_pixels=foreground_pixels,
+                    xs=xs,
+                    ys=ys,
+                    x_min=x_min,
+                    x_max=x_max,
+                    y_min=y_min,
+                    y_max=y_max,
+                    image_height=image.height,
+                    image_width=image.width,
+                )
+            )
+
+        candidate_count = len(detections)
+        if detections:
+            best = max(detections, key=lambda item: float(item["confidence"]))
+            best["candidate_count"] = candidate_count
+            angle_degrees = float(best["angle_degrees"])
+            if abs(angle_degrees) <= self.baseline_max_angle and float(best["confidence"]) >= 0.24:
+                best["ok"] = True
+                best["status"] = "ok"
+                return best
+
+            if bbox_fallbacks:
+                fallback = max(bbox_fallbacks, key=lambda item: int(item["foreground_pixels"]))
+                fallback["status"] = (
+                    "baseline_angle_rejected_bbox_fallback"
+                    if abs(angle_degrees) > self.baseline_max_angle
+                    else "baseline_low_confidence_bbox_fallback"
+                )
+                fallback["candidate_count"] = candidate_count
+                fallback["rejected_baseline_angle_degrees"] = angle_degrees
+                fallback["rejected_baseline_confidence"] = float(best["confidence"])
+                return fallback
+
+        if bbox_fallbacks:
+            fallback = max(bbox_fallbacks, key=lambda item: int(item["foreground_pixels"]))
+            fallback["status"] = "baseline_fit_failed_bbox_fallback"
+            fallback["candidate_count"] = candidate_count
+            return fallback
+
+        if best_cleaned_mask is None:
+            best_cleaned_mask = np.zeros_like(gray, dtype=np.uint8)
+        if max_foreground_pixels < max(4, int(round(gray.size * 0.00005))):
             return {
                 "ok": False,
                 "status": "not_enough_foreground",
-                "cleaned_mask": cleaned_mask,
-                "foreground_pixels": foreground_pixels,
+                "cleaned_mask": best_cleaned_mask,
+                "foreground_pixels": max_foreground_pixels,
             }
 
-        ys, xs = np.nonzero(cleaned_mask)
+        return {
+            "ok": False,
+            "status": "baseline_fit_failed",
+            "cleaned_mask": best_cleaned_mask,
+            "foreground_pixels": max_foreground_pixels,
+            "candidate_count": candidate_count,
+        }
+
+    @staticmethod
+    def _mask_bounds(mask: np.ndarray) -> tuple[int, int, int, int, np.ndarray, np.ndarray] | None:
+        ys, xs = np.nonzero(mask)
+        if xs.size == 0 or ys.size == 0:
+            return None
         x_min = int(xs.min())
         x_max = int(xs.max())
         y_min = int(ys.min())
         y_max = int(ys.max())
+        return x_min, x_max, y_min, y_max, xs, ys
 
-        profile_x, profile_y, profile_weights = self._baseline_profile_points(cleaned_mask, x_min, x_max)
-
+    def _baseline_detections_from_mask(
+        self,
+        mask_name: str,
+        cleaned_mask: np.ndarray,
+        foreground_pixels: int,
+        xs: np.ndarray,
+        ys: np.ndarray,
+        x_min: int,
+        x_max: int,
+        y_min: int,
+        y_max: int,
+        image_height: int,
+        image_width: int,
+    ) -> list[dict[str, Any]]:
+        detections: list[dict[str, Any]] = []
         text_width = x_max - x_min + 1
-        profile_coverage = float(profile_x.size) / max(1.0, float(text_width))
-        if profile_x.size < max(6, int(round(text_width * 0.08))):
-            return {
-                "ok": False,
-                "status": "not_enough_baseline_columns",
-                "cleaned_mask": cleaned_mask,
-                "foreground_pixels": foreground_pixels,
-                "baseline_profile_coverage": profile_coverage,
-            }
+        min_points = max(6, int(round(text_width * 0.08)))
 
-        line = self._fit_baseline_line(
-            profile_x,
-            profile_y,
-            profile_weights,
-            image_height=image.height,
-            text_width=text_width,
-            profile_coverage=profile_coverage,
+        profile_specs = (
+            ("lower_q80", 0.80, 2),
+            ("lower_q88", 0.88, 2),
+            ("lower_q94", 0.94, 3),
+            ("lower_edge", 1.00, 3),
         )
-        if line is None:
-            return {
-                "ok": False,
-                "status": "baseline_fit_failed",
-                "cleaned_mask": cleaned_mask,
-                "foreground_pixels": foreground_pixels,
-                "baseline_profile_coverage": profile_coverage,
-            }
+        for method, quantile, smooth_radius in profile_specs:
+            profile_x, profile_y, profile_weights = self._baseline_profile_points(
+                cleaned_mask,
+                x_min,
+                x_max,
+                quantile=quantile,
+                smooth_radius=smooth_radius,
+            )
+            profile_coverage = float(profile_x.size) / max(1.0, float(text_width))
+            if profile_x.size < min_points:
+                continue
+            line = self._fit_baseline_line(
+                profile_x,
+                profile_y,
+                profile_weights,
+                image_height=image_height,
+                text_width=text_width,
+                profile_coverage=profile_coverage,
+            )
+            if line is None:
+                continue
+            detections.append(
+                self._build_baseline_result(
+                    mask_name=mask_name,
+                    method=method,
+                    cleaned_mask=cleaned_mask,
+                    foreground_pixels=foreground_pixels,
+                    xs=xs,
+                    ys=ys,
+                    x_min=x_min,
+                    x_max=x_max,
+                    y_min=y_min,
+                    y_max=y_max,
+                    image_width=image_width,
+                    profile_x=profile_x,
+                    profile_y=profile_y,
+                    profile_coverage=profile_coverage,
+                    line=line,
+                )
+            )
 
+        component_x, component_y, component_weights, component_coverage = self._component_bottom_points(
+            cleaned_mask,
+            x_min=x_min,
+            x_max=x_max,
+        )
+        if component_x.size >= max(4, int(round(text_width * 0.015))):
+            line = self._fit_baseline_line(
+                component_x,
+                component_y,
+                component_weights,
+                image_height=image_height,
+                text_width=text_width,
+                profile_coverage=component_coverage,
+            )
+            if line is not None:
+                detections.append(
+                    self._build_baseline_result(
+                        mask_name=mask_name,
+                        method="component_bottoms",
+                        cleaned_mask=cleaned_mask,
+                        foreground_pixels=foreground_pixels,
+                        xs=xs,
+                        ys=ys,
+                        x_min=x_min,
+                        x_max=x_max,
+                        y_min=y_min,
+                        y_max=y_max,
+                        image_width=image_width,
+                        profile_x=component_x,
+                        profile_y=component_y,
+                        profile_coverage=component_coverage,
+                        line=line,
+                    )
+                )
+
+        return detections
+
+    def _build_baseline_result(
+        self,
+        mask_name: str,
+        method: str,
+        cleaned_mask: np.ndarray,
+        foreground_pixels: int,
+        xs: np.ndarray,
+        ys: np.ndarray,
+        x_min: int,
+        x_max: int,
+        y_min: int,
+        y_max: int,
+        image_width: int,
+        profile_x: np.ndarray,
+        profile_y: np.ndarray,
+        profile_coverage: float,
+        line: dict[str, Any],
+    ) -> dict[str, Any]:
         slope = float(line["slope"])
         intercept = float(line["intercept"])
-        angle_degrees = math.degrees(math.atan(float(slope)))
-        if abs(angle_degrees) > self.baseline_max_angle:
-            return {
-                "ok": False,
-                "status": "baseline_angle_rejected",
-                "cleaned_mask": cleaned_mask,
-                "foreground_pixels": foreground_pixels,
-                "baseline_angle_degrees": float(angle_degrees),
-                "baseline_confidence": float(line["confidence"]),
-                "baseline_profile_coverage": profile_coverage,
-            }
-        if float(line["confidence"]) < 0.28:
-            return {
-                "ok": False,
-                "status": "baseline_low_confidence",
-                "cleaned_mask": cleaned_mask,
-                "foreground_pixels": foreground_pixels,
-                "baseline_angle_degrees": float(angle_degrees),
-                "baseline_confidence": float(line["confidence"]),
-                "baseline_inlier_ratio": float(line["inlier_ratio"]),
-                "baseline_profile_coverage": profile_coverage,
-                "baseline_residual_mad": float(line["residual_mad"]),
-            }
-
+        angle_degrees = math.degrees(math.atan(slope))
         crop_box, text_height = self._baseline_crop_box(
-            slope=float(slope),
-            intercept=float(intercept),
+            slope=slope,
+            intercept=intercept,
             xs=xs,
             ys=ys,
-            image_width=image.width,
+            image_width=image_width,
         )
         return {
             "ok": True,
-            "status": "ok",
+            "status": "candidate",
+            "mask_name": mask_name,
+            "method": method,
             "cleaned_mask": cleaned_mask,
             "foreground_pixels": foreground_pixels,
-            "slope": float(slope),
-            "intercept": float(intercept),
+            "slope": slope,
+            "intercept": intercept,
             "angle_degrees": float(angle_degrees),
             "confidence": float(line["confidence"]),
             "inlier_ratio": float(line["inlier_ratio"]),
-            "profile_coverage": profile_coverage,
+            "profile_coverage": float(profile_coverage),
             "residual_mad": float(line["residual_mad"]),
             "residual_rmse": float(line["residual_rmse"]),
             "profile_x": profile_x,
@@ -472,11 +640,160 @@ class TextRecognizer:
             "text_height": int(text_height),
         }
 
+    def _bbox_baseline_result(
+        self,
+        mask_name: str,
+        cleaned_mask: np.ndarray,
+        foreground_pixels: int,
+        xs: np.ndarray,
+        ys: np.ndarray,
+        x_min: int,
+        x_max: int,
+        y_min: int,
+        y_max: int,
+        status: str,
+        candidate_count: int,
+    ) -> dict[str, Any]:
+        baseline_y = float(np.quantile(ys.astype(np.float64), 0.88))
+        profile_x = np.asarray([x_min, x_max], dtype=np.float64)
+        profile_y = np.asarray([baseline_y, baseline_y], dtype=np.float64)
+        inlier_mask = np.ones(profile_x.shape, dtype=bool)
+        crop_box, text_height = self._baseline_crop_box(
+            slope=0.0,
+            intercept=baseline_y,
+            xs=xs,
+            ys=ys,
+            image_width=cleaned_mask.shape[1],
+        )
+        text_width = max(1, x_max - x_min + 1)
+        return {
+            "ok": True,
+            "status": status,
+            "mask_name": mask_name,
+            "method": "bbox_fallback",
+            "candidate_count": int(candidate_count),
+            "cleaned_mask": cleaned_mask,
+            "foreground_pixels": foreground_pixels,
+            "slope": 0.0,
+            "intercept": baseline_y,
+            "angle_degrees": 0.0,
+            "confidence": 0.18,
+            "inlier_ratio": 1.0,
+            "profile_coverage": min(1.0, float(text_width) / max(1.0, float(cleaned_mask.shape[1]))),
+            "residual_mad": 0.0,
+            "residual_rmse": 0.0,
+            "profile_x": profile_x,
+            "profile_y": profile_y,
+            "inlier_mask": inlier_mask,
+            "crop_box": crop_box,
+            "text_bbox": (x_min, y_min, x_max + 1, y_max + 1),
+            "text_height": int(text_height),
+        }
+
+    @staticmethod
+    def _component_bottom_points(
+        mask: np.ndarray,
+        x_min: int,
+        x_max: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+        components, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        height, width = mask.shape
+        min_area = max(2, int(round(height * width * 0.00004)))
+        text_width = max(1, x_max - x_min + 1)
+        xs: list[float] = []
+        ys: list[float] = []
+        weights: list[float] = []
+        covered_width = 0.0
+
+        for label in range(1, components):
+            x, y, component_width, component_height, area = stats[label]
+            if area < min_area or component_height < 2:
+                continue
+            if component_width > width * 0.45 and component_height <= max(2, height * 0.08):
+                continue
+            xs.append(float(centroids[label][0]))
+            ys.append(float(y + component_height - 1))
+            weights.append(float(min(8.0, math.sqrt(float(area)))))
+            covered_width += min(float(component_width), float(text_width))
+
+        if not xs:
+            empty = np.asarray([], dtype=np.float64)
+            return empty, empty, empty, 0.0
+
+        order = np.argsort(np.asarray(xs, dtype=np.float64))
+        component_x = np.asarray(xs, dtype=np.float64)[order]
+        component_y = np.asarray(ys, dtype=np.float64)[order]
+        component_weights = np.asarray(weights, dtype=np.float64)[order]
+        if component_y.size >= 5:
+            component_y = TextRecognizer._median_smooth_1d(component_y, radius=1)
+        coverage = min(1.0, covered_width / max(1.0, float(text_width)))
+        return component_x, component_y, component_weights, coverage
+
+    def _make_text_mask_candidates(self, gray: np.ndarray) -> list[tuple[str, np.ndarray]]:
+        if cv2 is None:
+            return [("simple", self._make_text_mask(gray))]
+
+        candidates: list[tuple[str, np.ndarray]] = []
+        background_is_bright = self._background_is_bright(gray)
+        threshold_type = cv2.THRESH_BINARY_INV if background_is_bright else cv2.THRESH_BINARY
+
+        _, otsu = cv2.threshold(gray, 0, 255, threshold_type | cv2.THRESH_OTSU)
+        candidates.append(("otsu", self._normalize_text_mask(otsu)))
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        _, clahe_otsu = cv2.threshold(clahe, 0, 255, threshold_type | cv2.THRESH_OTSU)
+        candidates.append(("clahe_otsu", self._normalize_text_mask(clahe_otsu)))
+
+        min_dim = max(3, min(gray.shape))
+        block_size = int(max(15, min(61, (min_dim // 2) | 1)))
+        if block_size % 2 == 0:
+            block_size += 1
+        if block_size < min_dim or min_dim >= 15:
+            adaptive = cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                threshold_type,
+                block_size,
+                7,
+            )
+            candidates.append(("adaptive", self._normalize_text_mask(adaptive)))
+
+        # A light black-hat/top-hat candidate helps when background is uneven.
+        kernel_width = max(9, min(45, int(round(gray.shape[1] * 0.08)) | 1))
+        kernel_height = max(3, min(15, int(round(gray.shape[0] * 0.18)) | 1))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_width, kernel_height))
+        if background_is_bright:
+            enhanced = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        else:
+            enhanced = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+        _, enhanced_mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        candidates.append(("morph_contrast", self._normalize_text_mask(enhanced_mask)))
+
+        output: list[tuple[str, np.ndarray]] = []
+        seen: set[bytes] = set()
+        for name, mask in candidates:
+            key = np.packbits(mask > 0).tobytes()
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append((name, mask.astype(np.uint8)))
+        return output
+
     def _make_text_mask(self, gray: np.ndarray) -> np.ndarray:
-        border = np.concatenate((gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]))
-        background_is_bright = float(np.median(border)) >= 128.0
+        background_is_bright = self._background_is_bright(gray)
         threshold_type = cv2.THRESH_BINARY_INV if background_is_bright else cv2.THRESH_BINARY
         _, mask = cv2.threshold(gray, 0, 255, threshold_type | cv2.THRESH_OTSU)
+        return self._normalize_text_mask(mask)
+
+    @staticmethod
+    def _background_is_bright(gray: np.ndarray) -> bool:
+        border = np.concatenate((gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]))
+        return float(np.median(border)) >= 128.0
+
+    @staticmethod
+    def _normalize_text_mask(mask: np.ndarray) -> np.ndarray:
+        mask = ((mask > 0).astype(np.uint8) * 255)
         foreground_ratio = float(np.count_nonzero(mask)) / float(mask.size)
         if foreground_ratio > 0.45:
             mask = 255 - mask
@@ -518,17 +835,23 @@ class TextRecognizer:
         mask: np.ndarray,
         x_min: int,
         x_max: int,
+        quantile: float = 0.88,
+        smooth_radius: int = 2,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         profile_x: list[int] = []
         profile_y: list[float] = []
         profile_weights: list[float] = []
+        quantile = max(0.0, min(1.0, float(quantile)))
 
         for x in range(x_min, x_max + 1):
             column_y = np.flatnonzero(mask[:, x])
             if column_y.size == 0:
                 continue
             profile_x.append(x)
-            profile_y.append(float(np.quantile(column_y.astype(np.float64), 0.88)))
+            if quantile >= 1.0:
+                profile_y.append(float(column_y.max()))
+            else:
+                profile_y.append(float(np.quantile(column_y.astype(np.float64), quantile)))
             profile_weights.append(float(np.sqrt(column_y.size)))
 
         if not profile_x:
@@ -538,8 +861,8 @@ class TextRecognizer:
         xs = np.asarray(profile_x, dtype=np.float64)
         ys = np.asarray(profile_y, dtype=np.float64)
         weights = np.asarray(profile_weights, dtype=np.float64)
-        if ys.size >= 5:
-            ys = TextRecognizer._median_smooth_1d(ys, radius=2)
+        if ys.size >= 5 and smooth_radius > 0:
+            ys = TextRecognizer._median_smooth_1d(ys, radius=smooth_radius)
         return xs, ys, weights
 
     @staticmethod
