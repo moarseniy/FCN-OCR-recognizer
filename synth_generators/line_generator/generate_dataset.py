@@ -134,6 +134,8 @@ def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
         "word_length_max": config.word_length_max,
         "crop_stride": config.crop_stride,
         "min_crop_text_length": config.min_crop_text_length,
+        "edge_char_min_visible_ratio": config.edge_char_min_visible_ratio,
+        "edge_fragment_max_visible_ratio": config.edge_fragment_max_visible_ratio,
         "dense_targets": config.save_dense_targets,
         "cut_projection_targets": config.save_cut_projection_targets,
         "cut_projection_peak_radius": config.cut_projection_peak_radius,

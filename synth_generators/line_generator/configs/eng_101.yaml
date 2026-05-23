@@ -20,6 +20,8 @@ word_length_min: 2
 word_length_max: 8
 crop_stride: 64
 min_crop_text_length: 1
+edge_char_min_visible_ratio: 0.75
+edge_fragment_max_visible_ratio: 0.25
 font_dir: ../fonts
 font_extensions:
   - .ttf

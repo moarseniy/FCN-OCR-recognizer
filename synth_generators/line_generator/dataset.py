@@ -66,6 +66,8 @@ class SingleLineDatasetConfig(BaseModel):
     word_length_max: int = Field(default=8, ge=1)
     crop_stride: int | None = Field(default=None, ge=1)
     min_crop_text_length: int = Field(default=1, ge=1)
+    edge_char_min_visible_ratio: float = Field(default=0.75, ge=0.0, le=1.0)
+    edge_fragment_max_visible_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
     font_paths: list[str] | None = None
     font_dir: str | None = None
     font_check: bool = True
@@ -111,6 +113,14 @@ class SingleLineDatasetConfig(BaseModel):
         if data.get("alphabet") is None and data.get("sample_alphabet") is not None:
             data["alphabet"] = data["sample_alphabet"]
         return data
+
+    @model_validator(mode="after")
+    def edge_visibility_thresholds_must_be_ordered(self) -> "SingleLineDatasetConfig":
+        if self.edge_fragment_max_visible_ratio > self.edge_char_min_visible_ratio:
+            raise ValueError(
+                "edge_fragment_max_visible_ratio must be <= edge_char_min_visible_ratio"
+            )
+        return self
 
     @classmethod
     def model_validate_with_paths(cls, data: Any, config_path: str | Path | None = None) -> "SingleLineDatasetConfig":
@@ -581,6 +591,8 @@ class SingleLineDataset(Dataset):
         for left in range(0, image.width - cfg.image_width + 1, stride):
             right = left + cfg.image_width
             crop_spans = self._crop_spans(spans, left, right)
+            if crop_spans is None:
+                continue
             text = "".join(char for char, _, _ in crop_spans)
             if len(text) < cfg.min_crop_text_length:
                 continue
@@ -596,12 +608,25 @@ class SingleLineDataset(Dataset):
         spans: list[tuple[str, float, float]],
         left: int,
         right: int,
-    ) -> list[tuple[str, float, float]]:
+    ) -> list[tuple[str, float, float]] | None:
         cropped_spans = []
         for char, start, end in spans:
-            center = (start + end) * 0.5
-            if left <= center < right:
-                cropped_spans.append((char, start - left, end - left))
+            visible_start = max(float(start), float(left))
+            visible_end = min(float(end), float(right))
+            visible_width = visible_end - visible_start
+            if visible_width <= 0.0:
+                continue
+
+            full_width = max(1e-6, float(end) - float(start))
+            visible_ratio = visible_width / full_width
+            is_clipped_by_edge = start < left or end > right
+
+            if is_clipped_by_edge and visible_ratio < self.config.edge_char_min_visible_ratio:
+                if visible_ratio <= self.config.edge_fragment_max_visible_ratio:
+                    continue
+                return None
+
+            cropped_spans.append((char, start - left, end - left))
         return self._normalize_span_sequence(cropped_spans)
 
     def _normalize_span_sequence(
