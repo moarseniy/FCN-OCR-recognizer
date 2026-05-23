@@ -322,6 +322,7 @@ class SingleLineDataset(Dataset):
             config.background_dir,
             config.background_extensions,
         )
+        self._background_size_cache: dict[str, tuple[int, int]] = {}
 
     def __len__(self) -> int:
         return self.config.samples
@@ -877,25 +878,94 @@ class SingleLineDataset(Dataset):
         if not self.background_paths:
             return Image.new("L", (width, height), color=cfg.background)
 
-        path = rng.choice(self.background_paths)
-        with Image.open(path) as background_image:
-            background_image = background_image.convert("L")
-            return self._random_crop_or_resize_background(background_image, rng, width, height)
+        path = self._choose_background_for_crop(rng, width, height)
+        if path is not None:
+            with Image.open(path) as background_image:
+                background_image = background_image.convert("L")
+                return self._random_crop_background(background_image, rng, width, height)
 
-    def _random_crop_or_resize_background(
+        return self._make_tiled_crop_background(rng, width, height)
+
+    def _choose_background_for_crop(
+        self,
+        rng: random.Random,
+        target_width: int,
+        target_height: int,
+    ) -> str | None:
+        eligible_paths = []
+        for path in self.background_paths:
+            width, height = self._background_size(path)
+            if width >= target_width and height >= target_height:
+                eligible_paths.append(path)
+
+        return rng.choice(eligible_paths) if eligible_paths else None
+
+    def _make_tiled_crop_background(
+        self,
+        rng: random.Random,
+        target_width: int,
+        target_height: int,
+    ) -> Image.Image:
+        tile_width = min(self.config.image_width, target_width)
+        tile_width = max(1, tile_width)
+        eligible_paths = [
+            path
+            for path in self.background_paths
+            if self._background_size(path)[0] >= tile_width
+            and self._background_size(path)[1] >= target_height
+        ]
+
+        if not eligible_paths:
+            largest = sorted((self._background_size(path), path) for path in self.background_paths)[-1]
+            (largest_width, largest_height), largest_path = largest
+            raise ValueError(
+                "No background image is large enough for crop-only background sampling: "
+                f"need at least {tile_width}x{target_height}, "
+                f"largest is {largest_width}x{largest_height} ({largest_path}). "
+                "Use larger background images or reduce image_width/image_height."
+            )
+
+        output = Image.new("L", (target_width, target_height), color=self.config.background)
+        left = 0
+        while left < target_width:
+            current_width = min(tile_width, target_width - left)
+            current_paths = [
+                path
+                for path in eligible_paths
+                if self._background_size(path)[0] >= current_width
+            ]
+            path = rng.choice(current_paths)
+            with Image.open(path) as background_image:
+                background_image = background_image.convert("L")
+                tile = self._random_crop_background(background_image, rng, current_width, target_height)
+            output.paste(tile, (left, 0))
+            left += current_width
+        return output
+
+    def _background_size(self, path: str) -> tuple[int, int]:
+        cached = self._background_size_cache.get(path)
+        if cached is not None:
+            return cached
+        with Image.open(path) as image:
+            size = image.size
+        self._background_size_cache[path] = size
+        return size
+
+    def _random_crop_background(
         self,
         image: Image.Image,
         rng: random.Random,
         target_width: int,
         target_height: int,
     ) -> Image.Image:
-        scale = max(target_width / image.width, target_height / image.height)
-        resized_width = max(target_width, int(round(image.width * scale)))
-        resized_height = max(target_height, int(round(image.height * scale)))
-        image = image.resize((resized_width, resized_height), Image.Resampling.BICUBIC)
+        if image.width < target_width or image.height < target_height:
+            raise ValueError(
+                "Background image is smaller than requested crop: "
+                f"background={image.width}x{image.height}, crop={target_width}x{target_height}"
+            )
 
-        max_left = resized_width - target_width
-        max_top = resized_height - target_height
+        max_left = image.width - target_width
+        max_top = image.height - target_height
         left = rng.randint(0, max_left) if max_left > 0 else 0
         top = rng.randint(0, max_top) if max_top > 0 else 0
         return image.crop((left, top, left + target_width, top + target_height))
