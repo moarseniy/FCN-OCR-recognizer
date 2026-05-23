@@ -28,9 +28,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--font-size", type=int, default=44, help="Font size for alphabet glyphs.")
     parser.add_argument("--columns", type=int, default=12, help="Grid columns in each validation image.")
     parser.add_argument(
-        "--accepted-only",
+        "--include-rejected",
         action="store_true",
-        help="Render only fonts that cover every character in the config alphabet.",
+        help="Also render fonts that do not cover every character in the config alphabet.",
     )
     parser.add_argument("--limit", type=int, default=None, help="Optional limit for quick smoke checks.")
     return parser.parse_args()
@@ -196,7 +196,7 @@ def main() -> None:
     for index, font_path_str in enumerate(font_paths):
         font_path = Path(font_path_str)
         missing_chars, error = SingleLineDataset._missing_font_chars(font_path, alphabet)
-        if args.accepted_only and (error is not None or missing_chars):
+        if not args.include_rejected and (error is not None or missing_chars):
             skipped += 1
             continue
         image = render_font_validation_image(
@@ -212,7 +212,7 @@ def main() -> None:
 
     print(f"Font validation saved {saved} images to {output_dir}")
     if skipped:
-        print(f"Skipped {skipped} fonts because --accepted-only was set")
+        print(f"Skipped {skipped} rejected fonts. Use --include-rejected to render them too.")
 
 
 if __name__ == "__main__":
