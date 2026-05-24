@@ -245,6 +245,19 @@ architecture_params:
 при загрузке модели. Старые checkpoint без этого поля считаются
 `legacy_fcn`.
 
+Для более тяжелых FCN-экспериментов добавлены:
+
+- `legacy_fcn_wide`: drop-in вариант старой OCR-сети с теми же kernel/stride и
+  такой же шириной выхода, но с большим числом каналов.
+- `residual_temporal_fcn`: width-preserving FCN с residual-блоками и temporal
+  convolutions по X. Для OCR ее удобнее запускать с `legacy_crop_left: 0`,
+  `legacy_crop_right: 0`, `legacy_strict_width: true`; для cuts она также
+  совместима с `cut_projection_strict_width: true`.
+
+Готовые примеры: `configs/eng_train_101_wide.yaml`,
+`configs/eng_train_101_residual.yaml`,
+`configs/eng_train_101_cuts_residual.yaml`.
+
 Для обучения в старом плотном режиме на чанках с `dense_targets`:
 
 ```yaml

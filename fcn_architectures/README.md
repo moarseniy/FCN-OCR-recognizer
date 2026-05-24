@@ -27,3 +27,19 @@ architecture_params:
 - вертикальный сегментатор разрезов: `loss_mode: cut_projection`
 
 Старые конфиги и checkpoint без поля `architecture` используют `legacy_fcn`.
+
+Текущие встроенные варианты:
+
+- `legacy_fcn` - исходная архитектура со старой геометрией выхода.
+- `legacy_fcn_wide` - тот же набор kernel/stride, но с увеличенным числом
+  каналов через `width_multiplier`; это самый безопасный drop-in эксперимент
+  для OCR, потому что ширина выхода совпадает с `legacy_fcn`.
+- `vertical_segmentator_fcn` - легкая width-preserving сеть для cut projection.
+- `residual_temporal_fcn` - более тяжелая width-preserving FCN с residual-блоками
+  и dilated temporal convolutions по X; подходит и для OCR, и для cut projection.
+
+Примеры конфигов:
+
+- `configs/eng_train_101_wide.yaml`
+- `configs/eng_train_101_residual.yaml`
+- `configs/eng_train_101_cuts_residual.yaml`
