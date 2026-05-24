@@ -31,6 +31,8 @@ architecture_params:
 Текущие встроенные варианты:
 
 - `legacy_fcn` - исходная архитектура со старой геометрией выхода.
+- `legacy_fcn_highres` - plain FCN в стиле старой сети, но без горизонтального
+  stride=2 в `conv2`; для кропа 48x64 дает `T=48` вместо `T=19`.
 - `legacy_fcn_wide` - тот же набор kernel/stride, но с увеличенным числом
   каналов через `width_multiplier`; это самый безопасный drop-in эксперимент
   для OCR, потому что ширина выхода совпадает с `legacy_fcn`.
@@ -41,5 +43,6 @@ architecture_params:
 Примеры конфигов:
 
 - `configs/eng_train_101_wide.yaml`
+- `configs/eng_train_101_highres.yaml`
 - `configs/eng_train_101_residual.yaml`
 - `configs/eng_train_101_cuts_residual.yaml`

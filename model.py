@@ -1,6 +1,7 @@
 from fcn_architectures import (
     FullyConvTextRecognizer,
     LegacyFCN,
+    LegacyFCNHighRes,
     LegacyFCNWide,
     ResidualTemporalFCN,
     available_architectures,
@@ -11,6 +12,7 @@ from fcn_architectures import (
 __all__ = [
     "FullyConvTextRecognizer",
     "LegacyFCN",
+    "LegacyFCNHighRes",
     "LegacyFCNWide",
     "ResidualTemporalFCN",
     "available_architectures",
