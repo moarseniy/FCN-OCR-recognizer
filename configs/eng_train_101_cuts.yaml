@@ -1,4 +1,4 @@
-chunks_dir: ../data/eng_101
+chunks_dir: ../data/eng_101_cuts
 architecture: vertical_segmentator_fcn
 architecture_params:
   base_channels: 8

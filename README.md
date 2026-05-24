@@ -32,6 +32,8 @@
 
 - `synth_generators/line_generator/configs/eng_001.yaml` — генерация;
 - `configs/eng_train_001.yaml` — обучение.
+- `synth_generators/line_generator/configs/eng_101.yaml` — генерация OCR-чанков с `dense_targets`;
+- `synth_generators/line_generator/configs/eng_101_cuts.yaml` — генерация чанков для вертикального cut-сегментатора.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -62,8 +64,10 @@ background_extensions:
 ```
 
 Генератор рекурсивно берёт изображения из `background_dir`, делает случайный
-crop/resize под размер строки и рисует текст поверх. Если `background_dir:
-null`, используется однотонный фон из поля `background`. Относительный путь
+crop под размер строки и рисует текст поверх. Resize фона не используется.
+Если длинная строка шире доступных фонов, подложка собирается из нескольких
+crop-only фрагментов. Если `background_dir: null`, используется однотонный фон
+из поля `background`. Относительный путь
 считается относительно YAML-конфига, а не относительно текущей директории
 запуска.
 
@@ -269,6 +273,7 @@ segmentator_cut_smooth_radius: 1
 ```
 
 Пример конфига: `configs/eng_train_101_cuts.yaml`.
+Соответствующий generation-конфиг: `synth_generators/line_generator/configs/eng_101_cuts.yaml`.
 
 Для уже обученного cuts-чекпоинта эти параметры можно переопределять прямо в
 `inference.py`: `--segmentator-cut-threshold`,

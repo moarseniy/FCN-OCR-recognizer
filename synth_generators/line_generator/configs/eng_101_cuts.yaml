@@ -5,7 +5,10 @@ output_dir: ../../../data
 chunk_size: 1024
 num_workers: 4
 overwrite: false
-save_dense_targets: true
+save_dense_targets: false
+save_cut_projection_targets: true
+cut_projection_peak_radius: 1
+cut_projection_include_margins: false
 image_height: 48
 image_width: 64
 min_text_length: 4
@@ -28,9 +31,9 @@ font_extensions:
 font_size_min: 24
 font_size_max: 34
 char_spacing_min: -0.4
-char_spacing_max: 1.6
-word_spacing_multiplier_min: 0.75
-word_spacing_multiplier_max: 1.7
+char_spacing_max: 1.8
+word_spacing_multiplier_min: 0.65
+word_spacing_multiplier_max: 2.2
 channels: 1
 seed: 42
 background_dir: ../backgrounds
