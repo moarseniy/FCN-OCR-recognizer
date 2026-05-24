@@ -25,6 +25,9 @@ loss_mode: legacy_logreg
 legacy_target_mode: dense_symbols
 legacy_crop_left: 6
 legacy_crop_right: 5
+legacy_label_align: majority_bins
+legacy_label_min_majority: 0.6
+legacy_space_weight: 0.5
 
 num_workers: 0
 drop_last: false

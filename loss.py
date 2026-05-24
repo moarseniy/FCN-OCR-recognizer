@@ -61,6 +61,9 @@ def _align_logits_and_labels(
     logits: torch.Tensor,
     labels: torch.Tensor,
     strict_width: bool,
+    label_align: str = "majority_bins",
+    label_min_majority: float = 0.6,
+    ignore_index: int = -100,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if labels.dim() != 2:
         raise ValueError(f"labels must have shape (B, T), got {tuple(labels.shape)}")
@@ -82,12 +85,93 @@ def _align_logits_and_labels(
     if label_width <= 0 or logits_width <= 0:
         raise ValueError(f"legacy_logreg got empty width: logits T={logits_width}, labels T={label_width}")
 
-    positions = (
-        (torch.arange(logits_width, device=labels.device, dtype=torch.float32) + 0.5)
-        * float(label_width)
-        / float(logits_width)
-    ).floor().long().clamp(max=label_width - 1)
-    return logits, labels[:, positions]
+    label_align = label_align.lower()
+    if label_align == "legacy_crop_resample":
+        positions = (
+            (torch.arange(logits_width, device=labels.device, dtype=torch.float32) + 0.5)
+            * float(label_width)
+            / float(logits_width)
+        ).floor().long().clamp(max=label_width - 1)
+        return logits, labels[:, positions]
+
+    if label_align == "majority_bins":
+        labels = _align_labels_by_majority_bins(
+            labels,
+            target_width=logits_width,
+            num_classes=logits.size(1),
+            min_majority=label_min_majority,
+            ignore_index=ignore_index,
+        )
+        return logits, labels
+
+    raise ValueError("label_align must be 'majority_bins' or 'legacy_crop_resample'")
+
+
+def _align_labels_by_majority_bins(
+    labels: torch.Tensor,
+    target_width: int,
+    num_classes: int,
+    min_majority: float,
+    ignore_index: int,
+) -> torch.Tensor:
+    if not 0.0 <= min_majority <= 1.0:
+        raise ValueError("min_majority must be between 0 and 1")
+    if num_classes <= 0:
+        raise ValueError("num_classes must be positive")
+
+    batch_size, label_width = labels.shape
+    aligned = torch.full(
+        (batch_size, target_width),
+        ignore_index,
+        device=labels.device,
+        dtype=torch.long,
+    )
+
+    for output_x in range(target_width):
+        start = (output_x * label_width) // target_width
+        end = ((output_x + 1) * label_width + target_width - 1) // target_width
+        end = min(label_width, max(start + 1, end))
+
+        segment = labels[:, start:end].long()
+        valid = (segment != ignore_index) & (segment >= 0) & (segment < num_classes)
+        safe_segment = segment.clamp(min=0, max=num_classes - 1)
+        counts = F.one_hot(safe_segment, num_classes=num_classes).to(dtype=torch.float32)
+        counts = counts * valid.unsqueeze(-1)
+        counts = counts.sum(dim=1)
+
+        top_counts, top_labels = counts.max(dim=1)
+        valid_counts = valid.sum(dim=1)
+        majority = top_counts / valid_counts.clamp_min(1).to(dtype=torch.float32)
+        keep = (valid_counts > 0) & (majority >= min_majority)
+        aligned[keep, output_x] = top_labels[keep]
+
+    return aligned
+
+
+def _weighted_cross_entropy(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    ignore_index: int,
+    space_index: int | None,
+    space_weight: float,
+) -> torch.Tensor:
+    if space_weight <= 0.0:
+        raise ValueError("space_weight must be positive")
+    if space_index is None or space_weight == 1.0:
+        return F.cross_entropy(logits, labels, ignore_index=ignore_index)
+
+    per_position = F.cross_entropy(
+        logits,
+        labels,
+        ignore_index=ignore_index,
+        reduction="none",
+    )
+    valid = labels != ignore_index
+    weights = torch.ones_like(per_position)
+    weights = torch.where(labels == space_index, weights * space_weight, weights)
+    weights = weights * valid
+    denominator = weights.sum().clamp_min(1.0)
+    return (per_position * weights).sum() / denominator
 
 
 def _crop_projection_targets(
@@ -198,6 +282,10 @@ def legacy_logreg_loss(
     crop_left: int = 6,
     crop_right: int = 5,
     strict_width: bool = False,
+    label_align: str = "majority_bins",
+    label_min_majority: float = 0.6,
+    space_index: int | None = None,
+    space_weight: float = 1.0,
     ignore_index: int = -100,
 ) -> torch.Tensor:
     """
@@ -219,5 +307,19 @@ def legacy_logreg_loss(
     else:
         raise ValueError("target_mode must be 'dense_symbols'")
 
-    logits, labels = _align_logits_and_labels(logits, labels, strict_width=strict_width)
-    return F.cross_entropy(logits, labels.to(device=logits.device), ignore_index=ignore_index)
+    logits, labels = _align_logits_and_labels(
+        logits,
+        labels,
+        strict_width=strict_width,
+        label_align=label_align,
+        label_min_majority=label_min_majority,
+        ignore_index=ignore_index,
+    )
+    labels = labels.to(device=logits.device)
+    return _weighted_cross_entropy(
+        logits,
+        labels,
+        ignore_index=ignore_index,
+        space_index=space_index,
+        space_weight=space_weight,
+    )

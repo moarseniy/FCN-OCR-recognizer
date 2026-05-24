@@ -28,6 +28,7 @@ SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
 SUPPORTED_LOSS_MODES = ("legacy_logreg", "cut_projection")
 SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols",)
+SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS = ("peaks", "widths")
 
@@ -66,6 +67,9 @@ class TrainingConfig(BaseModel):
     legacy_crop_left: int = Field(default=6, ge=0)
     legacy_crop_right: int = Field(default=5, ge=0)
     legacy_strict_width: bool = False
+    legacy_label_align: str = "majority_bins"
+    legacy_label_min_majority: float = Field(default=0.6, ge=0.0, le=1.0)
+    legacy_space_weight: float = Field(default=1.0, gt=0.0)
     cut_projection_crop_left: int = Field(default=0, ge=0)
     cut_projection_crop_right: int = Field(default=0, ge=0)
     cut_projection_strict_width: bool = True
@@ -179,6 +183,14 @@ class TrainingConfig(BaseModel):
         value = value.lower()
         if value not in SUPPORTED_LEGACY_TARGET_MODES:
             raise ValueError(f"legacy_target_mode must be one of {SUPPORTED_LEGACY_TARGET_MODES}")
+        return value
+
+    @field_validator("legacy_label_align")
+    @classmethod
+    def legacy_label_align_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_LEGACY_LABEL_ALIGNS:
+            raise ValueError(f"legacy_label_align must be one of {SUPPORTED_LEGACY_LABEL_ALIGNS}")
         return value
 
     @field_validator("cut_projection_loss")
@@ -522,6 +534,10 @@ def compute_loss(
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
+    legacy_label_align="majority_bins",
+    legacy_label_min_majority=0.6,
+    legacy_space_index=None,
+    legacy_space_weight=1.0,
     cut_projection_crop_left=0,
     cut_projection_crop_right=0,
     cut_projection_strict_width=True,
@@ -538,6 +554,10 @@ def compute_loss(
             crop_left=legacy_crop_left,
             crop_right=legacy_crop_right,
             strict_width=legacy_strict_width,
+            label_align=legacy_label_align,
+            label_min_majority=legacy_label_min_majority,
+            space_index=legacy_space_index,
+            space_weight=legacy_space_weight,
         )
     if loss_mode == "cut_projection":
         return cut_projection_loss(
@@ -576,6 +596,10 @@ def validate(
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
+    legacy_label_align="majority_bins",
+    legacy_label_min_majority=0.6,
+    legacy_space_index=None,
+    legacy_space_weight=1.0,
     cut_projection_crop_left=0,
     cut_projection_crop_right=0,
     cut_projection_strict_width=True,
@@ -613,6 +637,10 @@ def validate(
                 legacy_crop_left=legacy_crop_left,
                 legacy_crop_right=legacy_crop_right,
                 legacy_strict_width=legacy_strict_width,
+                legacy_label_align=legacy_label_align,
+                legacy_label_min_majority=legacy_label_min_majority,
+                legacy_space_index=legacy_space_index,
+                legacy_space_weight=legacy_space_weight,
                 cut_projection_crop_left=cut_projection_crop_left,
                 cut_projection_crop_right=cut_projection_crop_right,
                 cut_projection_strict_width=cut_projection_strict_width,
@@ -656,6 +684,10 @@ def train_one_epoch(
     legacy_crop_left=6,
     legacy_crop_right=5,
     legacy_strict_width=False,
+    legacy_label_align="majority_bins",
+    legacy_label_min_majority=0.6,
+    legacy_space_index=None,
+    legacy_space_weight=1.0,
     cut_projection_crop_left=0,
     cut_projection_crop_right=0,
     cut_projection_strict_width=True,
@@ -691,6 +723,10 @@ def train_one_epoch(
             legacy_crop_left=legacy_crop_left,
             legacy_crop_right=legacy_crop_right,
             legacy_strict_width=legacy_strict_width,
+            legacy_label_align=legacy_label_align,
+            legacy_label_min_majority=legacy_label_min_majority,
+            legacy_space_index=legacy_space_index,
+            legacy_space_weight=legacy_space_weight,
             cut_projection_crop_left=cut_projection_crop_left,
             cut_projection_crop_right=cut_projection_crop_right,
             cut_projection_strict_width=cut_projection_strict_width,
@@ -1185,6 +1221,9 @@ def run_training(
 
     alphabet = dataset_config.alphabet
     num_classes = model_num_classes(alphabet, args.loss_mode, args.legacy_target_mode)
+    legacy_space_index = None
+    if args.loss_mode == "legacy_logreg" and dataset_config.space_char in alphabet:
+        legacy_space_index = alphabet.index(dataset_config.space_char)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
     print("Loss mode: ", args.loss_mode)
@@ -1216,6 +1255,14 @@ def run_training(
         print("Legacy target mode: ", args.legacy_target_mode)
         if args.legacy_target_mode == "dense_symbols":
             print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
+            print(
+                f"Legacy label align: {args.legacy_label_align} "
+                f"min_majority={args.legacy_label_min_majority:g}"
+            )
+            print(
+                f"Legacy space weight: {args.legacy_space_weight:g} "
+                f"(space index: {legacy_space_index})"
+            )
             print("Batch targets: dense symbol labels from generator/chunks")
 
     train_loader = make_data_loader(
@@ -1353,6 +1400,10 @@ def run_training(
                 args.legacy_crop_left,
                 args.legacy_crop_right,
                 args.legacy_strict_width,
+                args.legacy_label_align,
+                args.legacy_label_min_majority,
+                legacy_space_index,
+                args.legacy_space_weight,
                 args.cut_projection_crop_left,
                 args.cut_projection_crop_right,
                 args.cut_projection_strict_width,
@@ -1375,6 +1426,10 @@ def run_training(
                 args.legacy_crop_left,
                 args.legacy_crop_right,
                 args.legacy_strict_width,
+                args.legacy_label_align,
+                args.legacy_label_min_majority,
+                legacy_space_index,
+                args.legacy_space_weight,
                 args.cut_projection_crop_left,
                 args.cut_projection_crop_right,
                 args.cut_projection_strict_width,

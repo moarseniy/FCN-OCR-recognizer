@@ -252,7 +252,17 @@ loss_mode: legacy_logreg
 legacy_target_mode: dense_symbols
 legacy_crop_left: 6
 legacy_crop_right: 5
+legacy_label_align: majority_bins
+legacy_label_min_majority: 0.6
+legacy_space_weight: 0.5
 ```
+
+`legacy_label_align` управляет тем, как плотная разметка шириной входного кропа
+сводится к временной ширине выхода сети. `majority_bins` делит dense-разметку на
+интервалы под выходные позиции, берет класс большинства и игнорирует позицию,
+если большинство слабее `legacy_label_min_majority`. Старое поведение с выбором
+одной центральной точки можно вернуть через `legacy_crop_resample`.
+`legacy_space_weight` уменьшает или увеличивает вклад класса пробела в OCR-loss.
 
 Для обучения вертикального сегментатора на heatmap разрезов:
 
