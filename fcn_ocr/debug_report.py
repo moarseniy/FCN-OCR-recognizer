@@ -336,6 +336,18 @@ def save_debug_image(
         info_lines.append(f"baseline profile coverage: {float(metadata['baseline_profile_coverage']):.3f}")
     if metadata.get("baseline_residual_mad") is not None:
         info_lines.append(f"baseline residual MAD: {float(metadata['baseline_residual_mad']):.3f}")
+    if metadata.get("topline_angle_degrees") is not None:
+        info_lines.append(f"topline angle: {float(metadata['topline_angle_degrees']):+.3f} deg")
+    if metadata.get("topline_confidence") is not None:
+        info_lines.append(f"topline confidence: {float(metadata['topline_confidence']):.3f}")
+    if metadata.get("topline_method") is not None:
+        info_lines.append(f"topline method: {metadata['topline_method']}")
+    if metadata.get("topline_inlier_ratio") is not None:
+        info_lines.append(f"topline inlier ratio: {float(metadata['topline_inlier_ratio']):.3f}")
+    if metadata.get("topline_profile_coverage") is not None:
+        info_lines.append(f"topline profile coverage: {float(metadata['topline_profile_coverage']):.3f}")
+    if metadata.get("topline_residual_mad") is not None:
+        info_lines.append(f"topline residual MAD: {float(metadata['topline_residual_mad']):.3f}")
     if metadata.get("baseline_crop_box") is not None:
         info_lines.append(f"baseline crop box: {metadata['baseline_crop_box']}")
     if metadata.get("baseline_text_height") is not None:

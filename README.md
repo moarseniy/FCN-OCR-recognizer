@@ -530,8 +530,9 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
    загружает `model_state_dict` и переводится в `eval`.
 2. Входная картинка приводится к `RGB` или `L` в зависимости от `channels`.
    В `--debug-image` этот шаг подписан как `preprocess 00 input converted`.
-3. Если включен `--baseline-crop`, запускается детектор базовой линии. Он
-   может deskew-нуть строку и сделать вертикальный crop вокруг текста.
+3. Если включен `--baseline-crop`, запускается детектор нижней и верхней
+   текстовых линий. Нижняя линия используется для deskew, а вертикальный crop
+   строится по паре верх/низ с безопасным fallback на bbox.
 4. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
    справа долю текущей ширины, но не отражает символы: поля заполняются
    медианным фоном боковой полосы исходной геометрии. В debug это
@@ -560,7 +561,8 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 - `scale_x`: нормированное растяжение/сжатие ширины после resize по высоте.
 - `y_pad`: нормированный вертикальный padding/crop до resize по высоте.
 - `x_pad`: нормированный горизонтальный padding до `y_pad`/resize/`scale_x`.
-- `baseline_crop`: включает поиск базовой линии и вертикальный crop.
+- `baseline_crop`: включает поиск нижней и верхней текстовых линий, deskew и
+  вертикальный crop.
 
 ### Inference Parameter Reference
 
@@ -579,7 +581,7 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 
 | Параметр | Что делает |
 | --- | --- |
-| `--baseline-crop` | Включает поиск нижней базовой линии, optional deskew и вертикальный crop вокруг строки. |
+| `--baseline-crop` | Включает поиск нижней и верхней текстовых линий, optional deskew и вертикальный crop вокруг строки. |
 | `--baseline-top-pad` | Верхний запас после baseline crop как доля высоты текста над baseline. Увеличивайте, если режутся верхушки символов. |
 | `--baseline-bottom-pad` | Нижний запас после baseline crop как доля высоты текста над baseline. Увеличивайте, если режутся нижние части символов. |
 | `--no-baseline-deskew` | Отключает поворот по найденной baseline, но оставляет сам crop включенным. |
@@ -632,24 +634,30 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
    `otsu`, `clahe_otsu`, `adaptive`, `morph_contrast`.
 2. Каждая маска чистится по connected components: мелкий мусор и длинные
    тонкие линии отбрасываются.
-3. Для каждой очищенной маски берутся несколько вариантов точек базовой линии:
+3. Для каждой очищенной маски берутся несколько вариантов точек нижней линии:
    нижние профили `lower_q80`, `lower_q88`, `lower_q94`, `lower_edge`, а также
    `component_bottoms` по нижним точкам компонент.
 4. Для каждого набора точек robust/RANSAC-фитом ищется линия `y = ax + b`.
    Считаются `angle`, `inlier_ratio`, `profile_coverage`, `residual_mad`,
    `residual_rmse` и итоговый `confidence`.
-5. Лучший кандидат выбирается по confidence. Если угол больше
+5. Для выбранного нижнего кандидата отдельно ищется верхняя текстовая линия
+   по верхним профилям `upper_edge`, `upper_q04`, `upper_q08`, `upper_q14`.
+   Она тоже фитится robust/RANSAC и получает свои confidence/coverage/residual.
+6. Лучший нижний кандидат выбирается по confidence. Если угол больше
    `baseline_max_angle` или confidence слишком низкий, используется безопасный
    `bbox_fallback`, чтобы не получить разрушительный crop.
-6. Если `baseline_deskew` включен и найденный угол заметный, картинка
+7. Если `baseline_deskew` включен и найденный угол заметный, картинка
    поворачивается на этот угол, фон новых полей заполняется медианным цветом
    рамки, после чего baseline ищется еще раз на повернутом изображении.
-7. Crop строится относительно найденной линии и bbox текста. Верхний и нижний
-   запас задаются `baseline_top_pad` и `baseline_bottom_pad`.
+8. Crop строится по верхней и нижней линиям плюс bbox текста. Если верхняя
+   линия не найдена надежно, используется прежний crop относительно нижней
+   baseline и bbox. Верхний и нижний запас задаются `baseline_top_pad` и
+   `baseline_bottom_pad`.
 
-В `--debug-image` для baseline показываются overlay с линией, inlier-точки,
+В `--debug-image` для baseline показываются overlay с нижней красной и верхней
+синей линиями, inlier-точки,
 очищенная маска, crop, а в текстовом блоке пишутся `baseline method`,
-`baseline mask`, число кандидатов, angle, confidence и crop box.
+`baseline mask`, число кандидатов, angle, confidence, topline stats и crop box.
 
 Если внешний скрипт лежит вне репозитория, добавьте корень проекта в
 `PYTHONPATH`:

@@ -423,6 +423,17 @@ class TextRecognizer:
             "baseline_method": detection.get("method", "unknown"),
             "baseline_mask": detection.get("mask_name", "unknown"),
         }
+        if detection.get("topline_detected"):
+            metadata.update(
+                {
+                    "topline_angle_degrees": float(detection["topline_angle_degrees"]),
+                    "topline_confidence": float(detection["topline_confidence"]),
+                    "topline_method": detection.get("topline_method", "unknown"),
+                    "topline_inlier_ratio": float(detection.get("topline_inlier_ratio", 0.0)),
+                    "topline_profile_coverage": float(detection.get("topline_profile_coverage", 0.0)),
+                    "topline_residual_mad": float(detection.get("topline_residual_mad", 0.0)),
+                }
+            )
         if "rejected_baseline_angle_degrees" in detection:
             metadata["baseline_rejected_angle_degrees"] = float(detection["rejected_baseline_angle_degrees"])
         if "rejected_baseline_confidence" in detection:
@@ -660,13 +671,30 @@ class TextRecognizer:
         slope = float(line["slope"])
         intercept = float(line["intercept"])
         angle_degrees = math.degrees(math.atan(slope))
-        crop_box, text_height = self._baseline_crop_box(
-            slope=slope,
-            intercept=intercept,
-            xs=xs,
-            ys=ys,
-            image_width=image_width,
+        top_line = self._detect_top_text_line(
+            cleaned_mask,
+            x_min=x_min,
+            x_max=x_max,
+            image_height=cleaned_mask.shape[0],
         )
+        if top_line is None:
+            crop_box, text_height = self._baseline_crop_box(
+                slope=slope,
+                intercept=intercept,
+                xs=xs,
+                ys=ys,
+                image_width=image_width,
+            )
+        else:
+            crop_box, text_height = self._paired_baseline_crop_box(
+                top_slope=float(top_line["slope"]),
+                top_intercept=float(top_line["intercept"]),
+                bottom_slope=slope,
+                bottom_intercept=intercept,
+                xs=xs,
+                ys=ys,
+                image_width=image_width,
+            )
         return {
             "ok": True,
             "status": "candidate",
@@ -688,6 +716,11 @@ class TextRecognizer:
             "crop_box": crop_box,
             "text_bbox": (x_min, y_min, x_max + 1, y_max + 1),
             "text_height": int(text_height),
+            "bottom_slope": slope,
+            "bottom_intercept": intercept,
+            "bottom_angle_degrees": float(angle_degrees),
+            "topline_detected": top_line is not None,
+            **self._topline_metadata(top_line),
         }
 
     def _bbox_baseline_result(
@@ -705,12 +738,15 @@ class TextRecognizer:
         candidate_count: int,
     ) -> dict[str, Any]:
         baseline_y = float(np.quantile(ys.astype(np.float64), 0.88))
+        topline_y = float(np.quantile(ys.astype(np.float64), 0.02))
         profile_x = np.asarray([x_min, x_max], dtype=np.float64)
         profile_y = np.asarray([baseline_y, baseline_y], dtype=np.float64)
         inlier_mask = np.ones(profile_x.shape, dtype=bool)
-        crop_box, text_height = self._baseline_crop_box(
-            slope=0.0,
-            intercept=baseline_y,
+        crop_box, text_height = self._paired_baseline_crop_box(
+            top_slope=0.0,
+            top_intercept=topline_y,
+            bottom_slope=0.0,
+            bottom_intercept=baseline_y,
             xs=xs,
             ys=ys,
             image_width=cleaned_mask.shape[1],
@@ -738,7 +774,98 @@ class TextRecognizer:
             "crop_box": crop_box,
             "text_bbox": (x_min, y_min, x_max + 1, y_max + 1),
             "text_height": int(text_height),
+            "bottom_slope": 0.0,
+            "bottom_intercept": baseline_y,
+            "bottom_angle_degrees": 0.0,
+            "topline_detected": True,
+            "topline_slope": 0.0,
+            "topline_intercept": topline_y,
+            "topline_angle_degrees": 0.0,
+            "topline_confidence": 0.18,
+            "topline_inlier_ratio": 1.0,
+            "topline_profile_coverage": min(1.0, float(text_width) / max(1.0, float(cleaned_mask.shape[1]))),
+            "topline_residual_mad": 0.0,
+            "topline_residual_rmse": 0.0,
+            "topline_method": "bbox_fallback",
+            "topline_profile_x": profile_x,
+            "topline_profile_y": np.asarray([topline_y, topline_y], dtype=np.float64),
+            "topline_inlier_mask": inlier_mask,
         }
+
+    @staticmethod
+    def _topline_metadata(top_line: dict[str, Any] | None) -> dict[str, Any]:
+        if top_line is None:
+            return {}
+        slope = float(top_line["slope"])
+        return {
+            "topline_slope": slope,
+            "topline_intercept": float(top_line["intercept"]),
+            "topline_angle_degrees": float(math.degrees(math.atan(slope))),
+            "topline_confidence": float(top_line["confidence"]),
+            "topline_inlier_ratio": float(top_line["inlier_ratio"]),
+            "topline_profile_coverage": float(top_line["profile_coverage"]),
+            "topline_residual_mad": float(top_line["residual_mad"]),
+            "topline_residual_rmse": float(top_line["residual_rmse"]),
+            "topline_method": top_line.get("method", "unknown"),
+            "topline_profile_x": top_line["profile_x"],
+            "topline_profile_y": top_line["profile_y"],
+            "topline_inlier_mask": top_line["inlier_mask"],
+        }
+
+    def _detect_top_text_line(
+        self,
+        mask: np.ndarray,
+        x_min: int,
+        x_max: int,
+        image_height: int,
+    ) -> dict[str, Any] | None:
+        text_width = x_max - x_min + 1
+        min_points = max(6, int(round(text_width * 0.08)))
+        candidates: list[dict[str, Any]] = []
+
+        profile_specs = (
+            ("upper_edge", 0.00, 3),
+            ("upper_q04", 0.04, 2),
+            ("upper_q08", 0.08, 2),
+            ("upper_q14", 0.14, 3),
+        )
+        for method, quantile, smooth_radius in profile_specs:
+            profile_x, profile_y, profile_weights = self._baseline_profile_points(
+                mask,
+                x_min,
+                x_max,
+                quantile=quantile,
+                smooth_radius=smooth_radius,
+            )
+            profile_coverage = float(profile_x.size) / max(1.0, float(text_width))
+            if profile_x.size < min_points:
+                continue
+            line = self._fit_baseline_line(
+                profile_x,
+                profile_y,
+                profile_weights,
+                image_height=image_height,
+                text_width=text_width,
+                profile_coverage=profile_coverage,
+            )
+            if line is None:
+                continue
+            line.update(
+                {
+                    "method": method,
+                    "profile_x": profile_x,
+                    "profile_y": profile_y,
+                    "profile_coverage": profile_coverage,
+                }
+            )
+            candidates.append(line)
+
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda item: float(item["confidence"]))
+        if float(best["confidence"]) < 0.18:
+            return None
+        return best
 
     @staticmethod
     def _component_bottom_points(
@@ -1079,6 +1206,45 @@ class TextRecognizer:
 
         return (0, top, image_width, bottom), int(round(text_height))
 
+    def _paired_baseline_crop_box(
+        self,
+        top_slope: float,
+        top_intercept: float,
+        bottom_slope: float,
+        bottom_intercept: float,
+        xs: np.ndarray,
+        ys: np.ndarray,
+        image_width: int,
+    ) -> tuple[tuple[int, int, int, int], int]:
+        x_min = int(xs.min())
+        x_max = int(xs.max())
+        line_xs = np.arange(x_min, x_max + 1, dtype=np.float64)
+        top_ys = top_slope * line_xs + top_intercept
+        bottom_ys = bottom_slope * line_xs + bottom_intercept
+
+        text_top = float(np.quantile(ys, 0.02))
+        text_bottom = float(np.quantile(ys, 0.98))
+        line_height = float(np.median(bottom_ys - top_ys))
+        bbox_height = text_bottom - text_top + 1.0
+        text_height = max(4.0, line_height, bbox_height)
+
+        if line_height <= 2.0 or float(np.median(top_ys)) >= float(np.median(bottom_ys)):
+            return self._baseline_crop_box(
+                slope=bottom_slope,
+                intercept=bottom_intercept,
+                xs=xs,
+                ys=ys,
+                image_width=image_width,
+            )
+
+        top_margin = max(1.0, text_height * self.baseline_top_pad)
+        bottom_margin = max(1.0, text_height * self.baseline_bottom_pad)
+        top = int(math.floor(min(text_top, float(top_ys.min())) - top_margin))
+        bottom = int(math.ceil(max(text_bottom + 1.0, float(bottom_ys.max()) + 1.0) + bottom_margin))
+        if bottom <= top:
+            bottom = top + max(4, int(round(text_height)))
+        return (0, top, image_width, bottom), int(round(text_height))
+
     def _draw_baseline_overlay(
         self,
         image: Image.Image,
@@ -1088,11 +1254,23 @@ class TextRecognizer:
         output = image.convert("RGB")
         draw = ImageDraw.Draw(output)
         line_width = max(1, int(round(image.height / 96)))
-        x0 = 0
-        x1 = max(0, image.width - 1)
-        y0 = float(detection["slope"]) * x0 + float(detection["intercept"])
-        y1 = float(detection["slope"]) * x1 + float(detection["intercept"])
-        draw.line((x0, y0, x1, y1), fill=(230, 30, 30), width=line_width)
+        self._draw_textline(
+            draw,
+            image_width=image.width,
+            slope=float(detection["slope"]),
+            intercept=float(detection["intercept"]),
+            color=(230, 30, 30),
+            width=line_width,
+        )
+        if detection.get("topline_detected"):
+            self._draw_textline(
+                draw,
+                image_width=image.width,
+                slope=float(detection["topline_slope"]),
+                intercept=float(detection["topline_intercept"]),
+                color=(40, 110, 240),
+                width=line_width,
+            )
         profile_x = detection.get("profile_x")
         profile_y = detection.get("profile_y")
         inlier_mask = detection.get("inlier_mask")
@@ -1105,11 +1283,38 @@ class TextRecognizer:
                 is_inlier = bool(inlier_mask[index]) if inlier_mask is not None and index < len(inlier_mask) else False
                 color = (20, 150, 70) if is_inlier else (40, 110, 220)
                 draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+        top_profile_x = detection.get("topline_profile_x")
+        top_profile_y = detection.get("topline_profile_y")
+        top_inlier_mask = detection.get("topline_inlier_mask")
+        if top_profile_x is not None and top_profile_y is not None:
+            radius = max(1, line_width)
+            step = max(1, int(math.ceil(len(top_profile_x) / 500)))
+            for index in range(0, len(top_profile_x), step):
+                x = float(top_profile_x[index])
+                y = float(top_profile_y[index])
+                is_inlier = bool(top_inlier_mask[index]) if top_inlier_mask is not None and index < len(top_inlier_mask) else False
+                color = (70, 190, 230) if is_inlier else (80, 120, 240)
+                draw.rectangle((x - radius, y - radius, x + radius, y + radius), fill=color)
         if crop_box is not None:
             draw.rectangle(crop_box, outline=(20, 150, 60), width=line_width)
         if "text_bbox" in detection:
             draw.rectangle(detection["text_bbox"], outline=(80, 120, 240), width=max(1, line_width // 2))
         return output
+
+    @staticmethod
+    def _draw_textline(
+        draw: ImageDraw.ImageDraw,
+        image_width: int,
+        slope: float,
+        intercept: float,
+        color: tuple[int, int, int],
+        width: int,
+    ) -> None:
+        x0 = 0
+        x1 = max(0, image_width - 1)
+        y0 = slope * x0 + intercept
+        y1 = slope * x1 + intercept
+        draw.line((x0, y0, x1, y1), fill=color, width=width)
 
     def _crop_with_fill(self, image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
         left, top, right, bottom = box
