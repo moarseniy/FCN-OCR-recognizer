@@ -53,6 +53,7 @@ class TextRecognizer:
         baseline_bottom_pad: float = 0.18,
         baseline_deskew: bool = True,
         baseline_max_angle: float = 12.0,
+        baseline_strict_lines: bool = True,
     ):
         if scale_x <= -0.95:
             raise ValueError("scale_x must be > -0.95")
@@ -78,6 +79,7 @@ class TextRecognizer:
         self.baseline_bottom_pad = float(baseline_bottom_pad)
         self.baseline_deskew = bool(baseline_deskew)
         self.baseline_max_angle = float(baseline_max_angle)
+        self.baseline_strict_lines = bool(baseline_strict_lines)
 
         self.alphabet = self.checkpoint["alphabet"]
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
@@ -137,7 +139,8 @@ class TextRecognizer:
             print(
                 f"  top_pad={self.baseline_top_pad:.3f}, "
                 f"bottom_pad={self.baseline_bottom_pad:.3f}, "
-                f"deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}"
+                f"deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
+                f"strict_lines={self.baseline_strict_lines}"
             )
 
     def class_label(self, index: int) -> str:
@@ -161,6 +164,7 @@ class TextRecognizer:
     ) -> tuple[torch.Tensor, PreprocessDebug]:
         debug_metadata: dict[str, Any] = {
             "baseline_crop": self.baseline_crop,
+            "baseline_strict_lines": self.baseline_strict_lines,
             "x_pad": self.x_pad,
             "x_pad_mode": "border_median_original",
         }
@@ -358,9 +362,15 @@ class TextRecognizer:
                 debug_images.append(("baseline mask", Image.fromarray(first["cleaned_mask"])))
             metadata = {
                 "baseline_status": first["status"],
+                "baseline_strict_lines": self.baseline_strict_lines,
                 "baseline_foreground_pixels": int(first["foreground_pixels"]),
             }
             for source_key, target_key in (
+                ("angle_degrees", "baseline_angle_degrees"),
+                ("confidence", "baseline_confidence"),
+                ("inlier_ratio", "baseline_inlier_ratio"),
+                ("profile_coverage", "baseline_profile_coverage"),
+                ("residual_mad", "baseline_residual_mad"),
                 ("baseline_angle_degrees", "baseline_angle_degrees"),
                 ("baseline_confidence", "baseline_confidence"),
                 ("baseline_inlier_ratio", "baseline_inlier_ratio"),
@@ -396,6 +406,17 @@ class TextRecognizer:
                 working_image = rotated
                 detection = second
                 status = "ok_deskewed"
+            elif self.baseline_strict_lines:
+                metadata = {
+                    "baseline_status": f"strict_lines_rotated_detection_failed_after_{second['status']}",
+                    "baseline_strict_lines": self.baseline_strict_lines,
+                    "baseline_angle_degrees": original_angle,
+                    "baseline_foreground_pixels": int(second.get("foreground_pixels", first["foreground_pixels"])),
+                }
+                if collect_debug:
+                    debug_images.append(("baseline rotated detection failed", rotated))
+                    debug_images.append(("baseline rotated cleaned mask", Image.fromarray(second["cleaned_mask"])))
+                return image, PreprocessDebug(metadata=metadata, images=debug_images)
             else:
                 status = f"ok_without_deskew_after_{second['status']}"
 
@@ -408,6 +429,7 @@ class TextRecognizer:
 
         metadata = {
             "baseline_status": status,
+            "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_angle_degrees": original_angle,
             "baseline_residual_angle_degrees": float(detection["angle_degrees"]),
             "baseline_crop_box": tuple(int(value) for value in detection["crop_box"]),
@@ -415,6 +437,7 @@ class TextRecognizer:
             "baseline_text_height": int(detection["text_height"]),
             "baseline_foreground_pixels": int(detection["foreground_pixels"]),
             "baseline_confidence": float(detection["confidence"]),
+            "baseline_bottom_confidence": float(detection.get("bottom_confidence", detection["confidence"])),
             "baseline_inlier_ratio": float(detection["inlier_ratio"]),
             "baseline_profile_coverage": float(detection["profile_coverage"]),
             "baseline_residual_mad": float(detection["residual_mad"]),
@@ -460,21 +483,22 @@ class TextRecognizer:
             if bounds is None:
                 continue
             x_min, x_max, y_min, y_max, xs, ys = bounds
-            bbox_fallbacks.append(
-                self._bbox_baseline_result(
-                    mask_name=mask_name,
-                    cleaned_mask=cleaned_mask,
-                    foreground_pixels=foreground_pixels,
-                    xs=xs,
-                    ys=ys,
-                    x_min=x_min,
-                    x_max=x_max,
-                    y_min=y_min,
-                    y_max=y_max,
-                    status="bbox_fallback",
-                    candidate_count=0,
+            if not self.baseline_strict_lines:
+                bbox_fallbacks.append(
+                    self._bbox_baseline_result(
+                        mask_name=mask_name,
+                        cleaned_mask=cleaned_mask,
+                        foreground_pixels=foreground_pixels,
+                        xs=xs,
+                        ys=ys,
+                        x_min=x_min,
+                        x_max=x_max,
+                        y_min=y_min,
+                        y_max=y_max,
+                        status="bbox_fallback",
+                        candidate_count=0,
+                    )
                 )
-            )
             detections.extend(
                 self._baseline_detections_from_mask(
                     mask_name=mask_name,
@@ -499,6 +523,15 @@ class TextRecognizer:
             if abs(angle_degrees) <= self.baseline_max_angle and float(best["confidence"]) >= 0.24:
                 best["ok"] = True
                 best["status"] = "ok"
+                return best
+
+            if self.baseline_strict_lines:
+                best["ok"] = False
+                best["status"] = (
+                    "strict_lines_angle_rejected"
+                    if abs(angle_degrees) > self.baseline_max_angle
+                    else "strict_lines_low_confidence"
+                )
                 return best
 
             if bbox_fallbacks:
@@ -593,25 +626,25 @@ class TextRecognizer:
             )
             if line is None:
                 continue
-            detections.append(
-                self._build_baseline_result(
-                    mask_name=mask_name,
-                    method=method,
-                    cleaned_mask=cleaned_mask,
-                    foreground_pixels=foreground_pixels,
-                    xs=xs,
-                    ys=ys,
-                    x_min=x_min,
-                    x_max=x_max,
-                    y_min=y_min,
-                    y_max=y_max,
-                    image_width=image_width,
-                    profile_x=profile_x,
-                    profile_y=profile_y,
-                    profile_coverage=profile_coverage,
-                    line=line,
-                )
+            detection = self._build_baseline_result(
+                mask_name=mask_name,
+                method=method,
+                cleaned_mask=cleaned_mask,
+                foreground_pixels=foreground_pixels,
+                xs=xs,
+                ys=ys,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+                image_width=image_width,
+                profile_x=profile_x,
+                profile_y=profile_y,
+                profile_coverage=profile_coverage,
+                line=line,
             )
+            if detection is not None:
+                detections.append(detection)
 
         component_x, component_y, component_weights, component_coverage = self._component_bottom_points(
             cleaned_mask,
@@ -628,25 +661,25 @@ class TextRecognizer:
                 profile_coverage=component_coverage,
             )
             if line is not None:
-                detections.append(
-                    self._build_baseline_result(
-                        mask_name=mask_name,
-                        method="component_bottoms",
-                        cleaned_mask=cleaned_mask,
-                        foreground_pixels=foreground_pixels,
-                        xs=xs,
-                        ys=ys,
-                        x_min=x_min,
-                        x_max=x_max,
-                        y_min=y_min,
-                        y_max=y_max,
-                        image_width=image_width,
-                        profile_x=component_x,
-                        profile_y=component_y,
-                        profile_coverage=component_coverage,
-                        line=line,
-                    )
+                detection = self._build_baseline_result(
+                    mask_name=mask_name,
+                    method="component_bottoms",
+                    cleaned_mask=cleaned_mask,
+                    foreground_pixels=foreground_pixels,
+                    xs=xs,
+                    ys=ys,
+                    x_min=x_min,
+                    x_max=x_max,
+                    y_min=y_min,
+                    y_max=y_max,
+                    image_width=image_width,
+                    profile_x=component_x,
+                    profile_y=component_y,
+                    profile_coverage=component_coverage,
+                    line=line,
                 )
+                if detection is not None:
+                    detections.append(detection)
 
         return detections
 
@@ -667,10 +700,11 @@ class TextRecognizer:
         profile_y: np.ndarray,
         profile_coverage: float,
         line: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         slope = float(line["slope"])
         intercept = float(line["intercept"])
         angle_degrees = math.degrees(math.atan(slope))
+        bottom_confidence = float(line["confidence"])
         top_line = self._detect_top_text_line(
             cleaned_mask,
             x_min=x_min,
@@ -678,6 +712,8 @@ class TextRecognizer:
             image_height=cleaned_mask.shape[0],
         )
         if top_line is None:
+            if self.baseline_strict_lines:
+                return None
             crop_box, text_height = self._baseline_crop_box(
                 slope=slope,
                 intercept=intercept,
@@ -686,7 +722,7 @@ class TextRecognizer:
                 image_width=image_width,
             )
         else:
-            crop_box, text_height = self._paired_baseline_crop_box(
+            paired_crop = self._paired_baseline_crop_box(
                 top_slope=float(top_line["slope"]),
                 top_intercept=float(top_line["intercept"]),
                 bottom_slope=slope,
@@ -695,6 +731,11 @@ class TextRecognizer:
                 ys=ys,
                 image_width=image_width,
             )
+            if paired_crop is None:
+                return None
+            crop_box, text_height = paired_crop
+        top_confidence = float(top_line["confidence"]) if top_line is not None else None
+        confidence = min(bottom_confidence, top_confidence) if self.baseline_strict_lines and top_confidence is not None else bottom_confidence
         return {
             "ok": True,
             "status": "candidate",
@@ -705,7 +746,8 @@ class TextRecognizer:
             "slope": slope,
             "intercept": intercept,
             "angle_degrees": float(angle_degrees),
-            "confidence": float(line["confidence"]),
+            "confidence": float(confidence),
+            "bottom_confidence": bottom_confidence,
             "inlier_ratio": float(line["inlier_ratio"]),
             "profile_coverage": float(profile_coverage),
             "residual_mad": float(line["residual_mad"]),
@@ -1215,7 +1257,7 @@ class TextRecognizer:
         xs: np.ndarray,
         ys: np.ndarray,
         image_width: int,
-    ) -> tuple[tuple[int, int, int, int], int]:
+    ) -> tuple[tuple[int, int, int, int], int] | None:
         x_min = int(xs.min())
         x_max = int(xs.max())
         line_xs = np.arange(x_min, x_max + 1, dtype=np.float64)
@@ -1229,6 +1271,8 @@ class TextRecognizer:
         text_height = max(4.0, line_height, bbox_height)
 
         if line_height <= 2.0 or float(np.median(top_ys)) >= float(np.median(bottom_ys)):
+            if self.baseline_strict_lines:
+                return None
             return self._baseline_crop_box(
                 slope=bottom_slope,
                 intercept=bottom_intercept,
@@ -1236,6 +1280,13 @@ class TextRecognizer:
                 ys=ys,
                 image_width=image_width,
             )
+
+        if self.baseline_strict_lines:
+            top = int(math.floor(float(top_ys.min())))
+            bottom = int(math.ceil(float(bottom_ys.max()) + 1.0))
+            if bottom <= top:
+                return None
+            return (0, top, image_width, bottom), int(round(line_height))
 
         top_margin = max(1.0, text_height * self.baseline_top_pad)
         bottom_margin = max(1.0, text_height * self.baseline_bottom_pad)

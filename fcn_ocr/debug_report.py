@@ -318,12 +318,16 @@ def save_debug_image(
         info_lines.append(f"text x bounds status: {metadata['text_x_bounds_status']}")
     if "baseline_crop" in metadata:
         info_lines.append(f"baseline crop: {metadata['baseline_crop']}")
+    if "baseline_strict_lines" in metadata:
+        info_lines.append(f"baseline strict lines: {metadata['baseline_strict_lines']}")
     if metadata.get("baseline_status"):
         info_lines.append(f"baseline status: {metadata['baseline_status']}")
     if metadata.get("baseline_angle_degrees") is not None:
         info_lines.append(f"baseline angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
     if metadata.get("baseline_confidence") is not None:
         info_lines.append(f"baseline confidence: {float(metadata['baseline_confidence']):.3f}")
+    if metadata.get("baseline_bottom_confidence") is not None:
+        info_lines.append(f"bottom confidence: {float(metadata['baseline_bottom_confidence']):.3f}")
     if metadata.get("baseline_method") is not None:
         info_lines.append(f"baseline method: {metadata['baseline_method']}")
     if metadata.get("baseline_mask") is not None:

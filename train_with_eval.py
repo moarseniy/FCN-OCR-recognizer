@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
     parser.add_argument("--no-baseline-deskew", action="store_true")
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
+    parser.add_argument("--no-baseline-strict-lines", action="store_true")
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
     parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
@@ -103,6 +104,7 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             baseline_bottom_pad=cli_args.baseline_bottom_pad,
             baseline_deskew=not cli_args.no_baseline_deskew,
             baseline_max_angle=cli_args.baseline_max_angle,
+            baseline_strict_lines=not cli_args.no_baseline_strict_lines,
         )
     else:
         metrics = evaluate(
@@ -122,6 +124,7 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             baseline_bottom_pad=cli_args.baseline_bottom_pad,
             baseline_deskew=not cli_args.no_baseline_deskew,
             baseline_max_angle=cli_args.baseline_max_angle,
+            baseline_strict_lines=not cli_args.no_baseline_strict_lines,
         )
 
     metrics["csv"] = str(output_csv)
