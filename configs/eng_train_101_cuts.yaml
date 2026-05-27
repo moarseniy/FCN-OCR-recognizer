@@ -61,8 +61,10 @@ augmentation_probabilities:
   noise: 0.85
   projective: 0.0
   rotate: 0.0
+  x_pad: 0.18
   crop_x: 0.0
   crop_y: 0.0
+  rescale_quality: 0.25
   random_line: 0.22
   morphology: 0.18
   unsharp_mask: 0.3
@@ -87,6 +89,16 @@ augmentations:
     kind: gaussian
     std_min: 1.5
     std_max: 12.0
+  x_pad:
+    pad_min: 0.02
+    pad_max: 0.10
+    fillcolor: 255
+    resize_mode: bilinear
+  rescale_quality:
+    factor_min: 0.35
+    factor_max: 0.75
+    down_mode: bilinear
+    up_mode: nearest
   random_line:
     angle_degrees_min: -4.0
     angle_degrees_max: 4.0

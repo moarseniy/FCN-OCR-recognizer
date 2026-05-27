@@ -85,8 +85,10 @@ augmentation_probabilities:
   noise: 0.75
   projective: 0.12
   rotate: 0.8
+  x_pad: 0.1
   crop_x: 0.08
   crop_y: 0.05
+  rescale_quality: 0.2
   random_line: 0.1
   morphology: 0.08
   unsharp_mask: 0.12
@@ -105,6 +107,15 @@ augmentations:
   rotate:
     max_degrees: 1.0
     fillcolor: 255
+  x_pad:
+    pad_min: 0.02
+    pad_max: 0.10
+    fillcolor: 255
+  rescale_quality:
+    factor_min: 0.35
+    factor_max: 0.75
+    down_mode: bilinear
+    up_mode: nearest
   random_line:
     angle_degrees_min: -4.0
     angle_degrees_max: 4.0
@@ -135,10 +146,16 @@ augmentations:
 
 Доступные OCR-аугментации: `cycle_shift`, `preprocess_geometry`,
 `strong_blur`, `motion_blur`, `scale`, `darkening`, `noise`, `projective`,
-`rotate`, `crop_x`, `crop_y`, `random_line`, `morphology`, `unsharp_mask`.
+`rotate`, `x_pad`, `crop_x`, `crop_y`, `rescale_quality`, `random_line`,
+`morphology`, `unsharp_mask`.
 `preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
+`x_pad` сжимает содержимое по X внутрь исходного размера тензора и заполняет
+поля `fillcolor`; для target-ов применяется такое же преобразование.
 `crop_x` и `crop_y` обрезают края, а затем ресайзят результат обратно в
 исходный размер тензора.
+`rescale_quality` уменьшает картинку до доли `factor`, затем возвращает к
+исходному размеру, чтобы имитировать потерю разрешения/JPEG-подобную грубость
+без изменения геометрической разметки.
 `random_line` добавляет почти горизонтальную линию под небольшим углом.
 Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 

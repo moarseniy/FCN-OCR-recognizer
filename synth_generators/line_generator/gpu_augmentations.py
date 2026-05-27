@@ -148,10 +148,14 @@ class GpuTextAugmenter:
             return self._projective(images, params, collect_metadata)
         if name == "rotate":
             return self._rotate(images, params, collect_metadata)
+        if name == "x_pad":
+            return self._x_pad(images, params, collect_metadata)
         if name == "crop_x":
             return self._crop_x(images, params, collect_metadata)
         if name == "crop_y":
             return self._crop_y(images, params, collect_metadata)
+        if name == "rescale_quality":
+            return self._rescale_quality(images, params, collect_metadata)
         if name == "random_line":
             return self._random_line(images, params, collect_metadata)
         if name == "morphology":
@@ -199,6 +203,8 @@ class GpuTextAugmenter:
                 target_format,
                 self._theta_from_projective(targets, params_by_sample),
             )
+        if name == "x_pad":
+            return self._x_pad_targets(targets, target_format, params_by_sample)
         if name == "crop_x":
             return self._crop_x_targets(targets, target_format, params_by_sample)
         return targets
@@ -241,6 +247,34 @@ class GpuTextAugmenter:
             output[index : index + 1] = self._resize_targets_1d(cropped, width, target_format)
         return output
 
+    def _x_pad_targets(
+        self,
+        targets: torch.Tensor,
+        target_format: str,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        width = int(targets.size(-1))
+        if width <= 0:
+            return targets
+
+        fill = self._target_fill_value(target_format)
+        output = torch.full_like(targets, fill)
+        for index, params in enumerate(params_by_sample):
+            if not params:
+                output[index : index + 1] = targets[index : index + 1]
+                continue
+            left = int(params.get("pad_left", 0))
+            right = int(params.get("pad_right", 0))
+            if left + right <= 0:
+                output[index : index + 1] = targets[index : index + 1]
+                continue
+            if left + right >= width:
+                right = max(0, width - left - 1)
+            inner_width = max(1, width - left - right)
+            resized = self._resize_targets_1d(targets[index : index + 1], inner_width, target_format)
+            output[index : index + 1, left : left + inner_width] = resized
+        return output
+
     def _affine_targets(
         self,
         targets: torch.Tensor,
@@ -252,7 +286,7 @@ class GpuTextAugmenter:
 
         is_dense = target_format == "dense_symbols"
         mode = "nearest" if is_dense else "bilinear"
-        fill = float(self.space_index if is_dense else 0.0)
+        fill = self._target_fill_value(target_format)
         target_map = targets.to(dtype=torch.float32).unsqueeze(1).unsqueeze(2)
         grid = F.affine_grid(theta, target_map.shape, align_corners=False)
         warped = F.grid_sample(target_map, grid, mode=mode, padding_mode="zeros", align_corners=False)
@@ -486,6 +520,36 @@ class GpuTextAugmenter:
         ) if collect_metadata else None
         return self._warp_affine(images, theta, self._fill_value(params)), logs
 
+    def _rescale_quality(
+        self,
+        images: torch.Tensor,
+        params: dict[str, Any],
+        collect_metadata: bool,
+    ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
+        factor = max(0.01, min(1.0, self._sample_range(params, "factor", 0.5)))
+        if factor >= 0.999:
+            return images, None
+
+        _, _, height, width = images.shape
+        down_height = max(1, int(round(height * factor)))
+        down_width = max(1, int(round(width * factor)))
+        down_mode = str(params.get("down_mode", "bilinear")).lower()
+        up_mode = str(params.get("up_mode", "nearest")).lower()
+
+        small = self._interpolate_2d(images, (down_height, down_width), down_mode)
+        output = self._interpolate_2d(small, (height, width), up_mode)
+        logs = self._repeat_log(
+            images,
+            {
+                "factor": factor,
+                "down_width": down_width,
+                "down_height": down_height,
+                "down_mode": down_mode,
+                "up_mode": up_mode,
+            },
+        ) if collect_metadata else None
+        return output, logs
+
     def _rotate(
         self,
         images: torch.Tensor,
@@ -558,6 +622,47 @@ class GpuTextAugmenter:
                 for dx, dy, sx, sy in zip(tx_px, ty_px, shear_x_px, shear_y_px)
             ]
         return self._warp_affine(images, theta, self._fill_value(params)), logs
+
+    def _x_pad(
+        self,
+        images: torch.Tensor,
+        params: dict[str, Any],
+        collect_metadata: bool,
+    ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
+        _, _, height, width = images.shape
+        if width <= 1 or not self._x_pad_configured(params):
+            return images, None
+
+        output = torch.full_like(images, self._fill_value(params))
+        logs: list[AugmentationParams] | None = [] if collect_metadata else None
+        changed = False
+        for index in range(images.size(0)):
+            left, right = self._sample_x_pad_pixels(params, width)
+            if left + right <= 0:
+                output[index : index + 1] = images[index : index + 1]
+                if logs is not None:
+                    logs.append(None)
+                continue
+
+            inner_width = max(1, width - left - right)
+            content = self._interpolate_2d(
+                images[index : index + 1],
+                (height, inner_width),
+                str(params.get("resize_mode", "bilinear")).lower(),
+            )
+            output[index : index + 1, :, :, left : left + inner_width] = content
+            changed = True
+            if logs is not None:
+                logs.append({
+                    "pad_left": left,
+                    "pad_right": right,
+                    "content_width": inner_width,
+                    "fillcolor": int(params.get("fillcolor", self.config.background)),
+                })
+
+        if not changed:
+            return images, None
+        return output, logs
 
     def _brightness(
         self,
@@ -791,6 +896,12 @@ class GpuTextAugmenter:
         return F.conv2d(padded, kernel, groups=channels)
 
     @staticmethod
+    def _interpolate_2d(images: torch.Tensor, size: tuple[int, int], mode: str) -> torch.Tensor:
+        if mode in {"nearest", "nearest-exact", "area"}:
+            return F.interpolate(images, size=size, mode=mode)
+        return F.interpolate(images, size=size, mode=mode, align_corners=False)
+
+    @staticmethod
     def _motion_kernel(device: torch.device, dtype: torch.dtype, size: int, angle: float) -> torch.Tensor:
         kernel = torch.zeros((size, size), dtype=dtype)
         center = (size - 1) / 2.0
@@ -854,6 +965,81 @@ class GpuTextAugmenter:
 
     def _fill_value(self, params: dict[str, Any]) -> float:
         return float(params.get("fillcolor", self.config.background)) / 255.0
+
+    def _target_fill_value(self, target_format: str) -> float:
+        return float(self.space_index if target_format == "dense_symbols" else 0.0)
+
+    @staticmethod
+    def _x_pad_configured(params: dict[str, Any]) -> bool:
+        keys = (
+            "pad",
+            "pad_min",
+            "pad_max",
+            "left",
+            "left_min",
+            "left_max",
+            "right",
+            "right_min",
+            "right_max",
+            "pad_px",
+            "pad_px_min",
+            "pad_px_max",
+            "left_px",
+            "left_px_min",
+            "left_px_max",
+            "right_px",
+            "right_px_min",
+            "right_px_max",
+            "max_left",
+            "max_right",
+        )
+        return any(key in params for key in keys)
+
+    def _sample_x_pad_pixels(self, params: dict[str, Any], width: int) -> tuple[int, int]:
+        uses_pixels = any(
+            key in params
+            for key in (
+                "pad_px",
+                "pad_px_min",
+                "pad_px_max",
+                "left_px",
+                "left_px_min",
+                "left_px_max",
+                "right_px",
+                "right_px_min",
+                "right_px_max",
+                "max_left",
+                "max_right",
+            )
+        )
+        if uses_pixels:
+            pad = int(round(self._sample_range(params, "pad_px", 0.0)))
+            left_default = float(params.get("max_left", pad))
+            right_default = float(params.get("max_right", pad))
+            left = int(round(self._sample_range(params, "left_px", left_default)))
+            right = int(round(self._sample_range(params, "right_px", right_default)))
+            return self._limit_x_padding(left, right, width)
+
+        pad_fraction = self._sample_range(params, "pad", 0.0)
+        left_fraction = self._sample_range(params, "left", pad_fraction)
+        right_fraction = self._sample_range(params, "right", pad_fraction)
+        left = int(round(width * left_fraction))
+        right = int(round(width * right_fraction))
+        return self._limit_x_padding(left, right, width)
+
+    @staticmethod
+    def _limit_x_padding(left: int, right: int, width: int) -> tuple[int, int]:
+        left = max(0, int(left))
+        right = max(0, int(right))
+        if left + right < width:
+            return left, right
+        max_total = max(0, width - 1)
+        total = left + right
+        if total <= 0:
+            return 0, 0
+        left = int(round(left * max_total / total))
+        right = max_total - left
+        return left, right
 
     def _repeat_log(self, images: torch.Tensor, params: dict[str, Any]) -> list[AugmentationParams]:
         return [self._jsonable(params) for _ in range(images.size(0))]
