@@ -583,6 +583,16 @@ def prepare_batch(imgs, targets, lengths, device):
     return imgs, targets, lengths
 
 
+def augmentation_target_format(loss_mode: str, legacy_target_mode: str) -> str | None:
+    loss_mode = loss_mode.lower()
+    legacy_target_mode = legacy_target_mode.lower()
+    if loss_mode == "cut_projection":
+        return "cut_projection"
+    if loss_mode == "legacy_logreg" and legacy_target_mode == "dense_symbols":
+        return "dense_symbols"
+    return None
+
+
 def validate(
     model,
     loader,
@@ -621,7 +631,11 @@ def validate(
 
             imgs, targets, lengths = prepare_batch(imgs, targets, lengths, device)
             if augmenter is not None:
-                imgs = augmenter(imgs)
+                target_format = augmentation_target_format(loss_mode, legacy_target_mode)
+                if target_format is None:
+                    imgs = augmenter(imgs)
+                else:
+                    imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
 
             if preview_saver is not None:
                 preview_saver.save_batch(imgs, targets, lengths)
@@ -707,7 +721,11 @@ def train_one_epoch(
 
         imgs, targets, lengths = prepare_batch(imgs, targets, lengths, device)
         if augmenter is not None:
-            imgs = augmenter(imgs)
+            target_format = augmentation_target_format(loss_mode, legacy_target_mode)
+            if target_format is None:
+                imgs = augmenter(imgs)
+            else:
+                imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
 
         if preview_saver is not None:
             preview_saver.save_batch(imgs, targets, lengths)

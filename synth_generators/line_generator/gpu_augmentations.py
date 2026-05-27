@@ -24,29 +24,65 @@ class GpuTextAugmenter:
         self.probabilities = self._effective_probabilities(config)
         self.params = config.augmentations
         self.last_augmentations: list[list[dict[str, Any]]] = []
+        alphabet = config.alphabet or config.sample_alphabet
+        self.space_index = alphabet.index(config.space_char) if config.space_char in alphabet else 0
 
     def enabled(self) -> bool:
         return any(probability > 0.0 for probability in self.probabilities.values())
 
     def __call__(self, images: torch.Tensor) -> torch.Tensor:
-        augmented, _ = self._augment(images, collect_metadata=False)
+        augmented, _, _ = self._augment(images, collect_metadata=False)
         return augmented
 
-    def augment_with_metadata(self, images: torch.Tensor) -> tuple[torch.Tensor, list[list[dict[str, Any]]]]:
-        augmented, metadata = self._augment(images, collect_metadata=True)
+    def augment_batch(
+        self,
+        images: torch.Tensor,
+        targets: torch.Tensor,
+        target_format: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        augmented_images, augmented_targets, _ = self._augment(
+            images,
+            targets=targets,
+            target_format=target_format,
+            collect_metadata=False,
+        )
+        if augmented_targets is None:
+            raise RuntimeError("augment_batch expected augmented targets")
+        return augmented_images, augmented_targets
+
+    def augment_with_metadata(
+        self,
+        images: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        target_format: str | None = None,
+    ) -> tuple[torch.Tensor, list[list[dict[str, Any]]]] | tuple[torch.Tensor, torch.Tensor, list[list[dict[str, Any]]]]:
+        augmented, augmented_targets, metadata = self._augment(
+            images,
+            targets=targets,
+            target_format=target_format,
+            collect_metadata=True,
+        )
+        if targets is not None:
+            if augmented_targets is None:
+                raise RuntimeError("augment_with_metadata expected augmented targets")
+            return augmented, augmented_targets, metadata or [[] for _ in range(images.size(0))]
         return augmented, metadata or [[] for _ in range(images.size(0))]
 
     def _augment(
         self,
         images: torch.Tensor,
         collect_metadata: bool,
-    ) -> tuple[torch.Tensor, list[list[dict[str, Any]]] | None]:
+        targets: torch.Tensor | None = None,
+        target_format: str | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, list[list[dict[str, Any]]] | None]:
         metadata: list[list[dict[str, Any]]] | None = [[] for _ in range(images.size(0))] if collect_metadata else None
         if not self.enabled() or images.numel() == 0:
             self.last_augmentations = metadata or []
-            return images, metadata
+            return images, targets, metadata
 
         output = images
+        output_targets = targets
+        target_format = target_format.lower() if target_format is not None else None
         for name in SUPPORTED_AUGMENTATIONS:
             probability = self.probabilities.get(name, 0.0)
             if probability <= 0.0:
@@ -57,14 +93,24 @@ class GpuTextAugmenter:
                 continue
 
             selected_indices = mask.nonzero(as_tuple=False).flatten()
+            need_params = collect_metadata or output_targets is not None
             augmented, params_by_sample = self._apply_one(
                 name,
                 output[mask],
                 self.params.get(name, {}),
-                collect_metadata,
+                need_params,
             )
             output = output.clone()
             output[mask] = augmented
+            if output_targets is not None and target_format is not None:
+                augmented_targets = self._apply_target_one(
+                    name,
+                    output_targets[mask],
+                    target_format,
+                    params_by_sample,
+                )
+                output_targets = output_targets.clone()
+                output_targets[mask] = augmented_targets
 
             if metadata is not None and params_by_sample is not None:
                 for sample_index, params in zip(selected_indices.tolist(), params_by_sample):
@@ -73,7 +119,7 @@ class GpuTextAugmenter:
 
         output = output.clamp(0.0, 1.0)
         self.last_augmentations = metadata or []
-        return output, metadata
+        return output, output_targets, metadata
 
     def _apply_one(
         self,
@@ -117,6 +163,198 @@ class GpuTextAugmenter:
         if name == "invert":
             return 1.0 - images, self._repeat_log(images, {}) if collect_metadata else None
         return images, None
+
+    def _apply_target_one(
+        self,
+        name: str,
+        targets: torch.Tensor,
+        target_format: str,
+        params_by_sample: list[AugmentationParams] | None,
+    ) -> torch.Tensor:
+        if params_by_sample is None:
+            return targets
+        if name == "cycle_shift":
+            return self._cycle_shift_targets(targets, params_by_sample)
+        if name == "preprocess_geometry":
+            return self._affine_targets(
+                targets,
+                target_format,
+                self._theta_from_preprocess_geometry(targets, params_by_sample),
+            )
+        if name == "scale":
+            return self._affine_targets(
+                targets,
+                target_format,
+                self._theta_from_scale(targets, params_by_sample),
+            )
+        if name == "rotate":
+            return self._affine_targets(
+                targets,
+                target_format,
+                self._theta_from_rotate(targets, params_by_sample),
+            )
+        if name == "projective":
+            return self._affine_targets(
+                targets,
+                target_format,
+                self._theta_from_projective(targets, params_by_sample),
+            )
+        if name == "crop_x":
+            return self._crop_x_targets(targets, target_format, params_by_sample)
+        return targets
+
+    def _cycle_shift_targets(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        output = targets.clone()
+        for index, params in enumerate(params_by_sample):
+            if not params:
+                continue
+            shift_x = int(params.get("shift_x", 0))
+            if shift_x != 0:
+                output[index] = torch.roll(targets[index], shifts=shift_x, dims=-1)
+        return output
+
+    def _crop_x_targets(
+        self,
+        targets: torch.Tensor,
+        target_format: str,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        output = targets.clone()
+        width = int(targets.size(-1))
+        if width <= 0:
+            return output
+
+        for index, params in enumerate(params_by_sample):
+            if not params:
+                continue
+            left = int(params.get("crop_left", 0))
+            right = int(params.get("crop_right", 0))
+            if left + right <= 0:
+                continue
+            if left + right >= width:
+                right = max(0, width - left - 1)
+            cropped = targets[index : index + 1, left : width - right]
+            output[index : index + 1] = self._resize_targets_1d(cropped, width, target_format)
+        return output
+
+    def _affine_targets(
+        self,
+        targets: torch.Tensor,
+        target_format: str,
+        theta: torch.Tensor,
+    ) -> torch.Tensor:
+        if targets.numel() == 0:
+            return targets
+
+        is_dense = target_format == "dense_symbols"
+        mode = "nearest" if is_dense else "bilinear"
+        fill = float(self.space_index if is_dense else 0.0)
+        target_map = targets.to(dtype=torch.float32).unsqueeze(1).unsqueeze(2)
+        grid = F.affine_grid(theta, target_map.shape, align_corners=False)
+        warped = F.grid_sample(target_map, grid, mode=mode, padding_mode="zeros", align_corners=False)
+        mask = F.grid_sample(
+            torch.ones_like(target_map[:, :1]),
+            grid,
+            mode="nearest",
+            padding_mode="zeros",
+            align_corners=False,
+        )
+        warped = warped * mask + fill * (1.0 - mask)
+        output = warped[:, 0, 0, :]
+        if is_dense:
+            return output.round().to(dtype=targets.dtype)
+        return output.to(dtype=targets.dtype)
+
+    def _resize_targets_1d(
+        self,
+        targets: torch.Tensor,
+        width: int,
+        target_format: str,
+    ) -> torch.Tensor:
+        is_dense = target_format == "dense_symbols"
+        mode = "nearest" if is_dense else "linear"
+        target_map = targets.to(dtype=torch.float32).unsqueeze(1)
+        if is_dense:
+            resized = F.interpolate(target_map, size=width, mode=mode)
+            return resized[:, 0, :].round().to(dtype=targets.dtype)
+        resized = F.interpolate(target_map, size=width, mode=mode, align_corners=False)
+        return resized[:, 0, :].to(dtype=targets.dtype)
+
+    def _theta_from_preprocess_geometry(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        theta = self._identity_theta_for_targets(targets)
+        values = [
+            1.0 / (1.0 + max(-0.95, float(params.get("scale_x", 0.0)))) if params else 1.0
+            for params in params_by_sample
+        ]
+        theta[:, 0, 0] = torch.tensor(values, device=targets.device, dtype=torch.float32)
+        return theta
+
+    def _theta_from_scale(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        theta = self._identity_theta_for_targets(targets)
+        values = [
+            1.0 / max(1e-6, float(params.get("factor_x", 1.0))) if params else 1.0
+            for params in params_by_sample
+        ]
+        theta[:, 0, 0] = torch.tensor(values, device=targets.device, dtype=torch.float32)
+        return theta
+
+    def _theta_from_rotate(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        theta = self._identity_theta_for_targets(targets)
+        angles = torch.tensor(
+            [float(params.get("angle", 0.0)) if params else 0.0 for params in params_by_sample],
+            device=targets.device,
+            dtype=torch.float32,
+        )
+        radians = angles * math.pi / 180.0
+        cos = torch.cos(radians)
+        sin = torch.sin(radians)
+        theta[:, 0, 0] = cos
+        theta[:, 0, 1] = -sin
+        theta[:, 1, 0] = sin
+        theta[:, 1, 1] = cos
+        return theta
+
+    def _theta_from_projective(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        theta = self._identity_theta_for_targets(targets)
+        width = max(1, int(targets.size(-1)))
+        tx = [
+            float(params.get("tx_px", 0.0)) / float(width) if params else 0.0
+            for params in params_by_sample
+        ]
+        shear_x = [
+            float(params.get("shear_x_px", 0.0)) / float(width) if params else 0.0
+            for params in params_by_sample
+        ]
+        theta[:, 0, 1] = torch.tensor(shear_x, device=targets.device, dtype=torch.float32)
+        theta[:, 0, 2] = torch.tensor(tx, device=targets.device, dtype=torch.float32)
+        return theta
+
+    @staticmethod
+    def _identity_theta_for_targets(targets: torch.Tensor) -> torch.Tensor:
+        theta = torch.zeros((targets.size(0), 2, 3), device=targets.device, dtype=torch.float32)
+        theta[:, 0, 0] = 1.0
+        theta[:, 1, 1] = 1.0
+        return theta
 
     @staticmethod
     def _effective_probabilities(config: SingleLineDatasetConfig) -> dict[str, float]:
