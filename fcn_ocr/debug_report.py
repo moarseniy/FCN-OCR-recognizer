@@ -320,6 +320,8 @@ def save_debug_image(
         info_lines.append(f"baseline crop: {metadata['baseline_crop']}")
     if "baseline_strict_lines" in metadata:
         info_lines.append(f"baseline strict lines: {metadata['baseline_strict_lines']}")
+    if metadata.get("baseline_line_pad") is not None:
+        info_lines.append(f"baseline line pad: {float(metadata['baseline_line_pad']):.3f}")
     if metadata.get("baseline_status"):
         info_lines.append(f"baseline status: {metadata['baseline_status']}")
     if metadata.get("baseline_angle_degrees") is not None:

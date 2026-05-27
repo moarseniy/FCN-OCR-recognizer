@@ -54,6 +54,7 @@ class TextRecognizer:
         baseline_deskew: bool = True,
         baseline_max_angle: float = 12.0,
         baseline_strict_lines: bool = True,
+        baseline_line_pad: float = 0.08,
     ):
         if scale_x <= -0.95:
             raise ValueError("scale_x must be > -0.95")
@@ -65,6 +66,8 @@ class TextRecognizer:
             raise ValueError("baseline_top_pad must be >= 0")
         if baseline_bottom_pad < 0.0:
             raise ValueError("baseline_bottom_pad must be >= 0")
+        if baseline_line_pad < 0.0:
+            raise ValueError("baseline_line_pad must be >= 0")
         if baseline_max_angle <= 0.0:
             raise ValueError("baseline_max_angle must be > 0")
 
@@ -80,6 +83,7 @@ class TextRecognizer:
         self.baseline_deskew = bool(baseline_deskew)
         self.baseline_max_angle = float(baseline_max_angle)
         self.baseline_strict_lines = bool(baseline_strict_lines)
+        self.baseline_line_pad = float(baseline_line_pad)
 
         self.alphabet = self.checkpoint["alphabet"]
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
@@ -140,7 +144,7 @@ class TextRecognizer:
                 f"  top_pad={self.baseline_top_pad:.3f}, "
                 f"bottom_pad={self.baseline_bottom_pad:.3f}, "
                 f"deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
-                f"strict_lines={self.baseline_strict_lines}"
+                f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}"
             )
 
     def class_label(self, index: int) -> str:
@@ -165,6 +169,7 @@ class TextRecognizer:
         debug_metadata: dict[str, Any] = {
             "baseline_crop": self.baseline_crop,
             "baseline_strict_lines": self.baseline_strict_lines,
+            "baseline_line_pad": self.baseline_line_pad,
             "x_pad": self.x_pad,
             "x_pad_mode": "border_median_original",
         }
@@ -363,6 +368,7 @@ class TextRecognizer:
             metadata = {
                 "baseline_status": first["status"],
                 "baseline_strict_lines": self.baseline_strict_lines,
+                "baseline_line_pad": self.baseline_line_pad,
                 "baseline_foreground_pixels": int(first["foreground_pixels"]),
             }
             for source_key, target_key in (
@@ -410,6 +416,7 @@ class TextRecognizer:
                 metadata = {
                     "baseline_status": f"strict_lines_rotated_detection_failed_after_{second['status']}",
                     "baseline_strict_lines": self.baseline_strict_lines,
+                    "baseline_line_pad": self.baseline_line_pad,
                     "baseline_angle_degrees": original_angle,
                     "baseline_foreground_pixels": int(second.get("foreground_pixels", first["foreground_pixels"])),
                 }
@@ -430,6 +437,7 @@ class TextRecognizer:
         metadata = {
             "baseline_status": status,
             "baseline_strict_lines": self.baseline_strict_lines,
+            "baseline_line_pad": self.baseline_line_pad,
             "baseline_angle_degrees": original_angle,
             "baseline_residual_angle_degrees": float(detection["angle_degrees"]),
             "baseline_crop_box": tuple(int(value) for value in detection["crop_box"]),
@@ -1282,11 +1290,12 @@ class TextRecognizer:
             )
 
         if self.baseline_strict_lines:
-            top = int(math.floor(float(top_ys.min())))
-            bottom = int(math.ceil(float(bottom_ys.max()) + 1.0))
+            margin = max(0.0, line_height * self.baseline_line_pad)
+            top = int(math.floor(float(top_ys.min()) - margin))
+            bottom = int(math.ceil(float(bottom_ys.max()) + 1.0 + margin))
             if bottom <= top:
                 return None
-            return (0, top, image_width, bottom), int(round(line_height))
+            return (0, top, image_width, bottom), max(1, int(round(bottom - top)))
 
         top_margin = max(1.0, text_height * self.baseline_top_pad)
         bottom_margin = max(1.0, text_height * self.baseline_bottom_pad)

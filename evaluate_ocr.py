@@ -218,6 +218,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
         print(f"Baseline crop:              {metrics['baseline_crop']}")
     if "baseline_strict_lines" in metrics:
         print(f"Baseline strict lines:      {metrics['baseline_strict_lines']}")
+    if "baseline_line_pad" in metrics:
+        print(f"Baseline line pad:          {metrics['baseline_line_pad']:.5f}")
     if output_csv is not None:
         print(f"CSV saved to:               {output_csv}")
 
@@ -240,6 +242,7 @@ def evaluate_prepared(
     baseline_deskew: bool = True,
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
+    baseline_line_pad: float = 0.08,
 ) -> dict[str, Any]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
@@ -259,6 +262,7 @@ def evaluate_prepared(
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
+        baseline_line_pad=baseline_line_pad,
     )
     predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
     elapsed = time.perf_counter() - started_at
@@ -274,6 +278,7 @@ def evaluate_prepared(
     metrics["x_pad"] = float(x_pad)
     metrics["baseline_crop"] = bool(baseline_crop)
     metrics["baseline_strict_lines"] = bool(baseline_strict_lines)
+    metrics["baseline_line_pad"] = float(baseline_line_pad)
 
     if output_csv is not None:
         write_rows_csv(rows, output_csv)
@@ -327,6 +332,7 @@ def optimize_preprocess(
     baseline_deskew: bool = True,
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
+    baseline_line_pad: float = 0.08,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -367,6 +373,7 @@ def optimize_preprocess(
             baseline_deskew=baseline_deskew,
             baseline_max_angle=baseline_max_angle,
             baseline_strict_lines=baseline_strict_lines,
+            baseline_line_pad=baseline_line_pad,
         )
         for key, value in metrics.items():
             if isinstance(value, (int, float)):
@@ -408,6 +415,7 @@ def optimize_preprocess(
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
+        baseline_line_pad=baseline_line_pad,
     )
     final_metrics["optuna_trials"] = trials
     final_metrics["optuna_metric"] = metric_name
@@ -434,6 +442,7 @@ def evaluate(
     baseline_deskew: bool = True,
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
+    baseline_line_pad: float = 0.08,
 ) -> dict[str, Any]:
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     return evaluate_prepared(
@@ -454,6 +463,7 @@ def evaluate(
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
+        baseline_line_pad=baseline_line_pad,
     )
 
 
@@ -473,6 +483,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-baseline-deskew", action="store_true")
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--no-baseline-strict-lines", action="store_true")
+    parser.add_argument("--baseline-line-pad", type=float, default=0.08)
     parser.add_argument("--batch-size", type=int, default=32, help="Inference batch size.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
@@ -526,6 +537,7 @@ def main() -> None:
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,
+            baseline_line_pad=args.baseline_line_pad,
         )
     else:
         evaluate(
@@ -546,6 +558,7 @@ def main() -> None:
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,
+            baseline_line_pad=args.baseline_line_pad,
         )
 
 

@@ -25,6 +25,7 @@ class VerticalSegmentator(TextRecognizer):
         baseline_deskew: bool = True,
         baseline_max_angle: float = 12.0,
         baseline_strict_lines: bool = True,
+        baseline_line_pad: float = 0.08,
         cut_threshold: float | None = None,
         peak_min_distance: int | None = None,
         cut_postprocess: str | None = None,
@@ -46,6 +47,7 @@ class VerticalSegmentator(TextRecognizer):
             baseline_deskew=baseline_deskew,
             baseline_max_angle=baseline_max_angle,
             baseline_strict_lines=baseline_strict_lines,
+            baseline_line_pad=baseline_line_pad,
         )
         checkpoint_config = self.checkpoint.get("config", {})
         model_config = self.checkpoint.get("model_config", {})

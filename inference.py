@@ -193,13 +193,13 @@ def parse_args() -> argparse.Namespace:
         "--baseline-top-pad",
         type=float,
         default=0.12,
-        help="Extra top margin for the older bbox-assisted baseline crop. Strict line crop uses --y-pad for margin.",
+        help="Extra top margin for the older bbox-assisted baseline crop. Strict line crop uses --baseline-line-pad.",
     )
     parser.add_argument(
         "--baseline-bottom-pad",
         type=float,
         default=0.18,
-        help="Extra bottom margin for the older bbox-assisted baseline crop. Strict line crop uses --y-pad for margin.",
+        help="Extra bottom margin for the older bbox-assisted baseline crop. Strict line crop uses --baseline-line-pad.",
     )
     parser.add_argument(
         "--no-baseline-deskew",
@@ -216,6 +216,12 @@ def parse_args() -> argparse.Namespace:
         "--no-baseline-strict-lines",
         action="store_true",
         help="Use the older bbox-assisted baseline crop instead of strict top/bottom line crop.",
+    )
+    parser.add_argument(
+        "--baseline-line-pad",
+        type=float,
+        default=0.08,
+        help="Extra strict top/bottom line crop margin as a fraction of detected line height. Use 0 for exact line crop.",
     )
     parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     parser.add_argument(
@@ -252,6 +258,7 @@ def main() -> None:
         baseline_deskew=not args.no_baseline_deskew,
         baseline_max_angle=args.baseline_max_angle,
         baseline_strict_lines=not args.no_baseline_strict_lines,
+        baseline_line_pad=args.baseline_line_pad,
     )
     segmentator = None
     segmentator_checkpoint_path = None
@@ -272,6 +279,7 @@ def main() -> None:
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,
+            baseline_line_pad=args.baseline_line_pad,
             cut_threshold=args.segmentator_cut_threshold,
             peak_min_distance=args.segmentator_peak_min_distance,
             cut_postprocess=args.segmentator_cut_postprocess,

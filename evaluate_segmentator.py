@@ -238,6 +238,7 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"baseline_crop:              {metrics['baseline_crop']}")
     print(f"baseline_top_pad:           {metrics['baseline_top_pad']:.5f}")
     print(f"baseline_bottom_pad:        {metrics['baseline_bottom_pad']:.5f}")
+    print(f"baseline_line_pad:          {metrics['baseline_line_pad']:.5f}")
     print(f"baseline_deskew:            {metrics['baseline_deskew']}")
     print(f"baseline_max_angle:         {metrics['baseline_max_angle']:.5f}")
     if output_csv is not None:
@@ -253,6 +254,7 @@ def configure_segmentator(
     baseline_crop: bool,
     baseline_top_pad: float,
     baseline_bottom_pad: float,
+    baseline_line_pad: float,
     baseline_deskew: bool,
     baseline_max_angle: float,
 ) -> None:
@@ -264,6 +266,8 @@ def configure_segmentator(
         raise ValueError("baseline_top_pad must be >= 0")
     if baseline_bottom_pad < 0.0:
         raise ValueError("baseline_bottom_pad must be >= 0")
+    if baseline_line_pad < 0.0:
+        raise ValueError("baseline_line_pad must be >= 0")
     if baseline_max_angle <= 0.0:
         raise ValueError("baseline_max_angle must be > 0")
 
@@ -283,6 +287,7 @@ def configure_segmentator(
     segmentator.baseline_crop = bool(baseline_crop)
     segmentator.baseline_top_pad = float(baseline_top_pad)
     segmentator.baseline_bottom_pad = float(baseline_bottom_pad)
+    segmentator.baseline_line_pad = float(baseline_line_pad)
     segmentator.baseline_deskew = bool(baseline_deskew)
     segmentator.baseline_max_angle = float(baseline_max_angle)
 
@@ -315,6 +320,7 @@ def evaluate_with_segmentator(
     metrics["baseline_crop"] = bool(segmentator.baseline_crop)
     metrics["baseline_top_pad"] = float(segmentator.baseline_top_pad)
     metrics["baseline_bottom_pad"] = float(segmentator.baseline_bottom_pad)
+    metrics["baseline_line_pad"] = float(segmentator.baseline_line_pad)
     metrics["baseline_deskew"] = bool(segmentator.baseline_deskew)
     metrics["baseline_max_angle"] = float(segmentator.baseline_max_angle)
 
@@ -341,6 +347,7 @@ def evaluate_prepared(
     baseline_crop: bool,
     baseline_top_pad: float,
     baseline_bottom_pad: float,
+    baseline_line_pad: float,
     baseline_deskew: bool,
     baseline_max_angle: float,
 ) -> dict[str, Any]:
@@ -354,6 +361,7 @@ def evaluate_prepared(
         baseline_crop=baseline_crop,
         baseline_top_pad=baseline_top_pad,
         baseline_bottom_pad=baseline_bottom_pad,
+        baseline_line_pad=baseline_line_pad,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
     )
@@ -377,7 +385,7 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
         if is_new_file:
             file.write(
                 "trial\tcut_threshold\tpeak_min_distance\tscale_x\ty_pad\t"
-                "baseline_crop\tbaseline_top_pad\tbaseline_bottom_pad\tbaseline_deskew\tbaseline_max_angle\t"
+                "baseline_crop\tbaseline_top_pad\tbaseline_bottom_pad\tbaseline_line_pad\tbaseline_deskew\tbaseline_max_angle\t"
                 "metric\tlength_accuracy\taverage_abs_length_error\ttotal_abs_length_error\t"
                 "average_signed_length_error\tnormalized_length_error\tspeed\n"
             )
@@ -385,7 +393,8 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
             f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['peak_min_distance']}\t"
             f"{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t"
             f"{int(metrics['baseline_crop'])}\t{metrics['baseline_top_pad']:.8f}\t"
-            f"{metrics['baseline_bottom_pad']:.8f}\t{int(metrics['baseline_deskew'])}\t"
+            f"{metrics['baseline_bottom_pad']:.8f}\t{metrics['baseline_line_pad']:.8f}\t"
+            f"{int(metrics['baseline_deskew'])}\t"
             f"{metrics['baseline_max_angle']:.8f}\t{metrics[metric_name]:.8f}\t"
             f"{metrics['length_accuracy']:.8f}\t{metrics['average_abs_length_error']:.8f}\t"
             f"{metrics['total_abs_length_error']}\t{metrics['average_signed_length_error']:.8f}\t"
@@ -419,12 +428,15 @@ def optimize(
     baseline_crop: bool,
     baseline_top_pad: float,
     baseline_bottom_pad: float,
+    baseline_line_pad: float,
     baseline_deskew: bool,
     baseline_max_angle: float,
     baseline_top_pad_min: float,
     baseline_top_pad_max: float,
     baseline_bottom_pad_min: float,
     baseline_bottom_pad_max: float,
+    baseline_line_pad_min: float,
+    baseline_line_pad_max: float,
     baseline_max_angle_min: float,
     baseline_max_angle_max: float,
     study_name: str | None = None,
@@ -457,6 +469,7 @@ def optimize(
         )
         trial_baseline_top_pad = baseline_top_pad
         trial_baseline_bottom_pad = baseline_bottom_pad
+        trial_baseline_line_pad = baseline_line_pad
         trial_baseline_max_angle = baseline_max_angle
         if bool(trial_baseline_crop) and tune_baseline_params:
             trial_baseline_top_pad = trial.suggest_float(
@@ -468,6 +481,11 @@ def optimize(
                 "baseline_bottom_pad",
                 baseline_bottom_pad_min,
                 baseline_bottom_pad_max,
+            )
+            trial_baseline_line_pad = trial.suggest_float(
+                "baseline_line_pad",
+                baseline_line_pad_min,
+                baseline_line_pad_max,
             )
             trial_baseline_max_angle = trial.suggest_float(
                 "baseline_max_angle",
@@ -488,6 +506,7 @@ def optimize(
             baseline_crop=bool(trial_baseline_crop),
             baseline_top_pad=trial_baseline_top_pad,
             baseline_bottom_pad=trial_baseline_bottom_pad,
+            baseline_line_pad=trial_baseline_line_pad,
             baseline_deskew=bool(trial_baseline_deskew),
             baseline_max_angle=trial_baseline_max_angle,
         )
@@ -526,6 +545,8 @@ def optimize(
         best_params["baseline_top_pad"] = baseline_top_pad
     if "baseline_bottom_pad" not in best_params:
         best_params["baseline_bottom_pad"] = baseline_bottom_pad
+    if "baseline_line_pad" not in best_params:
+        best_params["baseline_line_pad"] = baseline_line_pad
     if "baseline_deskew" not in best_params:
         best_params["baseline_deskew"] = baseline_deskew
     if "baseline_max_angle" not in best_params:
@@ -541,6 +562,7 @@ def optimize(
         baseline_crop=bool(best_params["baseline_crop"]),
         baseline_top_pad=float(best_params["baseline_top_pad"]),
         baseline_bottom_pad=float(best_params["baseline_bottom_pad"]),
+        baseline_line_pad=float(best_params["baseline_line_pad"]),
         baseline_deskew=bool(best_params["baseline_deskew"]),
         baseline_max_angle=float(best_params["baseline_max_angle"]),
     )
@@ -575,6 +597,7 @@ def evaluate(
     baseline_crop: bool,
     baseline_top_pad: float,
     baseline_bottom_pad: float,
+    baseline_line_pad: float,
     baseline_deskew: bool,
     baseline_max_angle: float,
 ) -> dict[str, Any]:
@@ -595,6 +618,7 @@ def evaluate(
         baseline_crop=baseline_crop,
         baseline_top_pad=baseline_top_pad,
         baseline_bottom_pad=baseline_bottom_pad,
+        baseline_line_pad=baseline_line_pad,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
     )
@@ -618,6 +642,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-crop", action="store_true")
     parser.add_argument("--baseline-top-pad", type=float, default=0.12)
     parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
+    parser.add_argument("--baseline-line-pad", type=float, default=0.08)
     parser.add_argument("--no-baseline-deskew", action="store_true")
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
 
@@ -655,6 +680,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-baseline-top-pad-max", type=float, default=0.30)
     parser.add_argument("--optuna-baseline-bottom-pad-min", type=float, default=0.02)
     parser.add_argument("--optuna-baseline-bottom-pad-max", type=float, default=0.45)
+    parser.add_argument("--optuna-baseline-line-pad-min", type=float, default=0.0)
+    parser.add_argument("--optuna-baseline-line-pad-max", type=float, default=0.16)
     parser.add_argument("--optuna-baseline-max-angle-min", type=float, default=4.0)
     parser.add_argument("--optuna-baseline-max-angle-max", type=float, default=18.0)
     parser.add_argument("--optuna-trials-out", default=None)
@@ -692,12 +719,15 @@ def main() -> None:
             baseline_crop=args.baseline_crop,
             baseline_top_pad=args.baseline_top_pad,
             baseline_bottom_pad=args.baseline_bottom_pad,
+            baseline_line_pad=args.baseline_line_pad,
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_top_pad_min=args.optuna_baseline_top_pad_min,
             baseline_top_pad_max=args.optuna_baseline_top_pad_max,
             baseline_bottom_pad_min=args.optuna_baseline_bottom_pad_min,
             baseline_bottom_pad_max=args.optuna_baseline_bottom_pad_max,
+            baseline_line_pad_min=args.optuna_baseline_line_pad_min,
+            baseline_line_pad_max=args.optuna_baseline_line_pad_max,
             baseline_max_angle_min=args.optuna_baseline_max_angle_min,
             baseline_max_angle_max=args.optuna_baseline_max_angle_max,
             study_name=args.optuna_study_name,
@@ -720,6 +750,7 @@ def main() -> None:
             baseline_crop=args.baseline_crop,
             baseline_top_pad=args.baseline_top_pad,
             baseline_bottom_pad=args.baseline_bottom_pad,
+            baseline_line_pad=args.baseline_line_pad,
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
         )
