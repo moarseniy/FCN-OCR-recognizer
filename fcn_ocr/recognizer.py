@@ -55,6 +55,7 @@ class TextRecognizer:
         baseline_max_angle: float = 12.0,
         baseline_strict_lines: bool = True,
         baseline_line_pad: float = 0.08,
+        baseline_line_pad_px: float = 0.0,
     ):
         if scale_x <= -0.95:
             raise ValueError("scale_x must be > -0.95")
@@ -68,6 +69,8 @@ class TextRecognizer:
             raise ValueError("baseline_bottom_pad must be >= 0")
         if baseline_line_pad < 0.0:
             raise ValueError("baseline_line_pad must be >= 0")
+        if baseline_line_pad_px < 0.0:
+            raise ValueError("baseline_line_pad_px must be >= 0")
         if baseline_max_angle <= 0.0:
             raise ValueError("baseline_max_angle must be > 0")
 
@@ -84,6 +87,7 @@ class TextRecognizer:
         self.baseline_max_angle = float(baseline_max_angle)
         self.baseline_strict_lines = bool(baseline_strict_lines)
         self.baseline_line_pad = float(baseline_line_pad)
+        self.baseline_line_pad_px = float(baseline_line_pad_px)
 
         self.alphabet = self.checkpoint["alphabet"]
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
@@ -144,7 +148,8 @@ class TextRecognizer:
                 f"  top_pad={self.baseline_top_pad:.3f}, "
                 f"bottom_pad={self.baseline_bottom_pad:.3f}, "
                 f"deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
-                f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}"
+                f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}, "
+                f"line_pad_px={self.baseline_line_pad_px:.1f}"
             )
 
     def class_label(self, index: int) -> str:
@@ -170,6 +175,7 @@ class TextRecognizer:
             "baseline_crop": self.baseline_crop,
             "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_line_pad": self.baseline_line_pad,
+            "baseline_line_pad_px": self.baseline_line_pad_px,
             "x_pad": self.x_pad,
             "x_pad_mode": "border_median_original",
         }
@@ -369,6 +375,7 @@ class TextRecognizer:
                 "baseline_status": first["status"],
                 "baseline_strict_lines": self.baseline_strict_lines,
                 "baseline_line_pad": self.baseline_line_pad,
+                "baseline_line_pad_px": self.baseline_line_pad_px,
                 "baseline_foreground_pixels": int(first["foreground_pixels"]),
             }
             for source_key, target_key in (
@@ -417,6 +424,7 @@ class TextRecognizer:
                     "baseline_status": f"strict_lines_rotated_detection_failed_after_{second['status']}",
                     "baseline_strict_lines": self.baseline_strict_lines,
                     "baseline_line_pad": self.baseline_line_pad,
+                    "baseline_line_pad_px": self.baseline_line_pad_px,
                     "baseline_angle_degrees": original_angle,
                     "baseline_foreground_pixels": int(second.get("foreground_pixels", first["foreground_pixels"])),
                 }
@@ -438,6 +446,7 @@ class TextRecognizer:
             "baseline_status": status,
             "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_line_pad": self.baseline_line_pad,
+            "baseline_line_pad_px": self.baseline_line_pad_px,
             "baseline_angle_degrees": original_angle,
             "baseline_residual_angle_degrees": float(detection["angle_degrees"]),
             "baseline_crop_box": tuple(int(value) for value in detection["crop_box"]),
@@ -1290,7 +1299,8 @@ class TextRecognizer:
             )
 
         if self.baseline_strict_lines:
-            margin = max(0.0, line_height * self.baseline_line_pad)
+            margin_reference = max(line_height, bbox_height)
+            margin = max(0.0, margin_reference * self.baseline_line_pad + self.baseline_line_pad_px)
             top = int(math.floor(float(top_ys.min()) - margin))
             bottom = int(math.ceil(float(bottom_ys.max()) + 1.0 + margin))
             if bottom <= top:

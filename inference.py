@@ -223,6 +223,12 @@ def parse_args() -> argparse.Namespace:
         default=0.08,
         help="Extra strict top/bottom line crop margin as a fraction of detected line height. Use 0 for exact line crop.",
     )
+    parser.add_argument(
+        "--baseline-line-pad-px",
+        type=float,
+        default=0.0,
+        help="Extra absolute strict top/bottom line crop margin in source pixels, added on top of --baseline-line-pad.",
+    )
     parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     parser.add_argument(
         "--debug-image",
@@ -259,6 +265,7 @@ def main() -> None:
         baseline_max_angle=args.baseline_max_angle,
         baseline_strict_lines=not args.no_baseline_strict_lines,
         baseline_line_pad=args.baseline_line_pad,
+        baseline_line_pad_px=args.baseline_line_pad_px,
     )
     segmentator = None
     segmentator_checkpoint_path = None
@@ -280,6 +287,7 @@ def main() -> None:
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
+            baseline_line_pad_px=args.baseline_line_pad_px,
             cut_threshold=args.segmentator_cut_threshold,
             peak_min_distance=args.segmentator_peak_min_distance,
             cut_postprocess=args.segmentator_cut_postprocess,

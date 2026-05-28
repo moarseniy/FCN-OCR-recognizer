@@ -220,6 +220,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
         print(f"Baseline strict lines:      {metrics['baseline_strict_lines']}")
     if "baseline_line_pad" in metrics:
         print(f"Baseline line pad:          {metrics['baseline_line_pad']:.5f}")
+    if "baseline_line_pad_px" in metrics:
+        print(f"Baseline line pad px:       {metrics['baseline_line_pad_px']:.2f}")
     if output_csv is not None:
         print(f"CSV saved to:               {output_csv}")
 
@@ -243,6 +245,7 @@ def evaluate_prepared(
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
     baseline_line_pad: float = 0.08,
+    baseline_line_pad_px: float = 0.0,
 ) -> dict[str, Any]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
@@ -263,6 +266,7 @@ def evaluate_prepared(
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
+        baseline_line_pad_px=baseline_line_pad_px,
     )
     predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
     elapsed = time.perf_counter() - started_at
@@ -279,6 +283,7 @@ def evaluate_prepared(
     metrics["baseline_crop"] = bool(baseline_crop)
     metrics["baseline_strict_lines"] = bool(baseline_strict_lines)
     metrics["baseline_line_pad"] = float(baseline_line_pad)
+    metrics["baseline_line_pad_px"] = float(baseline_line_pad_px)
 
     if output_csv is not None:
         write_rows_csv(rows, output_csv)
@@ -333,6 +338,7 @@ def optimize_preprocess(
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
     baseline_line_pad: float = 0.08,
+    baseline_line_pad_px: float = 0.0,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -374,6 +380,7 @@ def optimize_preprocess(
             baseline_max_angle=baseline_max_angle,
             baseline_strict_lines=baseline_strict_lines,
             baseline_line_pad=baseline_line_pad,
+            baseline_line_pad_px=baseline_line_pad_px,
         )
         for key, value in metrics.items():
             if isinstance(value, (int, float)):
@@ -416,6 +423,7 @@ def optimize_preprocess(
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
+        baseline_line_pad_px=baseline_line_pad_px,
     )
     final_metrics["optuna_trials"] = trials
     final_metrics["optuna_metric"] = metric_name
@@ -443,6 +451,7 @@ def evaluate(
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
     baseline_line_pad: float = 0.08,
+    baseline_line_pad_px: float = 0.0,
 ) -> dict[str, Any]:
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     return evaluate_prepared(
@@ -464,6 +473,7 @@ def evaluate(
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
+        baseline_line_pad_px=baseline_line_pad_px,
     )
 
 
@@ -484,6 +494,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--no-baseline-strict-lines", action="store_true")
     parser.add_argument("--baseline-line-pad", type=float, default=0.08)
+    parser.add_argument("--baseline-line-pad-px", type=float, default=0.0)
     parser.add_argument("--batch-size", type=int, default=32, help="Inference batch size.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
@@ -538,6 +549,7 @@ def main() -> None:
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
+            baseline_line_pad_px=args.baseline_line_pad_px,
         )
     else:
         evaluate(
@@ -559,6 +571,7 @@ def main() -> None:
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
+            baseline_line_pad_px=args.baseline_line_pad_px,
         )
 
 

@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--no-baseline-strict-lines", action="store_true")
     parser.add_argument("--baseline-line-pad", type=float, default=0.08)
+    parser.add_argument("--baseline-line-pad-px", type=float, default=0.0)
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
     parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
@@ -58,7 +59,7 @@ def append_eval_summary(log_path: Path, row: dict) -> None:
     with log_path.open("a", encoding="utf-8") as file:
         if is_new_file:
             file.write(
-                "epoch\tcheckpoint\tcsv\tscale_x\ty_pad\tx_pad\tbaseline_crop\tbaseline_line_pad\tline_accuracy\t"
+                "epoch\tcheckpoint\tcsv\tscale_x\ty_pad\tx_pad\tbaseline_crop\tbaseline_line_pad\tbaseline_line_pad_px\tline_accuracy\t"
                 "average_char_accuracy\tglobal_char_accuracy\taverage_levenshtein\t"
                 "total_levenshtein\trecognized_samples\ttotal_samples\tspeed\t"
                 "optuna_trials\toptuna_metric\n"
@@ -67,6 +68,7 @@ def append_eval_summary(log_path: Path, row: dict) -> None:
             f"{row['epoch']}\t{row['checkpoint']}\t{row['csv']}\t"
             f"{row['scale_x']:.8f}\t{row['y_pad']:.8f}\t{row.get('x_pad', 0.0):.8f}\t"
             f"{row.get('baseline_crop', False)}\t{row.get('baseline_line_pad', 0.0):.8f}\t"
+            f"{row.get('baseline_line_pad_px', 0.0):.8f}\t"
             f"{row['line_accuracy']:.8f}\t{row['average_char_accuracy']:.8f}\t"
             f"{row['global_char_accuracy']:.8f}\t{row['average_levenshtein']:.8f}\t"
             f"{row['total_levenshtein']}\t{row['recognized_samples']}\t"
@@ -107,6 +109,7 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             baseline_max_angle=cli_args.baseline_max_angle,
             baseline_strict_lines=not cli_args.no_baseline_strict_lines,
             baseline_line_pad=cli_args.baseline_line_pad,
+            baseline_line_pad_px=cli_args.baseline_line_pad_px,
         )
     else:
         metrics = evaluate(
@@ -128,6 +131,7 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             baseline_max_angle=cli_args.baseline_max_angle,
             baseline_strict_lines=not cli_args.no_baseline_strict_lines,
             baseline_line_pad=cli_args.baseline_line_pad,
+            baseline_line_pad_px=cli_args.baseline_line_pad_px,
         )
 
     metrics["csv"] = str(output_csv)
