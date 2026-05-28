@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover - optional until baseline crop is enable
     cv2 = None
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import torch
 
 from fcn_architectures import create_model, normalize_architecture_name
@@ -475,6 +475,7 @@ class TextRecognizer:
         if self.baseline_deskew and abs(original_angle) >= 0.25:
             if collect_debug:
                 debug_images.append(("baseline on original", self._draw_baseline_overlay(image, first)))
+                debug_images.append(("baseline lines original", self._draw_baseline_lines_debug(image, first)))
             rotated = image.rotate(
                 original_angle,
                 expand=True,
@@ -504,6 +505,12 @@ class TextRecognizer:
 
         cropped = self._crop_with_fill(working_image, detection["crop_box"])
         if collect_debug:
+            debug_images.append(
+                (
+                    "baseline detected lines",
+                    self._draw_baseline_lines_debug(working_image, detection, detection["crop_box"]),
+                )
+            )
             overlay = self._draw_baseline_overlay(working_image, detection, detection["crop_box"])
             debug_images.append(("baseline crop overlay", overlay))
             debug_images.append(("baseline cleaned mask", Image.fromarray(detection["cleaned_mask"])))
@@ -1640,6 +1647,56 @@ class TextRecognizer:
             draw.rectangle(detection["text_bbox"], outline=(80, 120, 240), width=max(1, line_width // 2))
         return output
 
+    def _draw_baseline_lines_debug(
+        self,
+        image: Image.Image,
+        detection: dict[str, Any],
+        crop_box: tuple[int, int, int, int] | None = None,
+    ) -> Image.Image:
+        output = image.convert("RGB")
+        draw = ImageDraw.Draw(output)
+        line_width = max(3, int(round(image.height / 48)))
+        font = ImageFont.load_default()
+
+        if crop_box is not None:
+            overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            left, top, right, bottom = crop_box
+            visible_top = max(0, top)
+            visible_bottom = min(output.height, bottom)
+            if visible_top > 0:
+                overlay_draw.rectangle((0, 0, output.width, visible_top), fill=(0, 0, 0, 55))
+            if visible_bottom < output.height:
+                overlay_draw.rectangle((0, visible_bottom, output.width, output.height), fill=(0, 0, 0, 55))
+            output = Image.alpha_composite(output.convert("RGBA"), overlay).convert("RGB")
+            draw = ImageDraw.Draw(output)
+            draw.rectangle(crop_box, outline=(30, 190, 70), width=max(2, line_width // 2))
+
+        if detection.get("topline_detected"):
+            self._draw_labeled_textline(
+                draw,
+                image_width=image.width,
+                slope=float(detection["topline_slope"]),
+                intercept=float(detection["topline_intercept"]),
+                color=(0, 190, 255),
+                label="TOP",
+                width=line_width,
+                font=font,
+            )
+
+        self._draw_labeled_textline(
+            draw,
+            image_width=image.width,
+            slope=float(detection["slope"]),
+            intercept=float(detection["intercept"]),
+            color=(255, 45, 45),
+            label="BOTTOM",
+            width=line_width,
+            font=font,
+        )
+
+        return output
+
     @staticmethod
     def _draw_textline(
         draw: ImageDraw.ImageDraw,
@@ -1654,6 +1711,36 @@ class TextRecognizer:
         y0 = slope * x0 + intercept
         y1 = slope * x1 + intercept
         draw.line((x0, y0, x1, y1), fill=color, width=width)
+
+    @staticmethod
+    def _draw_labeled_textline(
+        draw: ImageDraw.ImageDraw,
+        image_width: int,
+        slope: float,
+        intercept: float,
+        color: tuple[int, int, int],
+        label: str,
+        width: int,
+        font: ImageFont.ImageFont,
+    ) -> None:
+        x0 = 0
+        x1 = max(0, image_width - 1)
+        y0 = slope * x0 + intercept
+        y1 = slope * x1 + intercept
+        outline_width = width + 4
+        draw.line((x0, y0, x1, y1), fill=(0, 0, 0), width=outline_width)
+        draw.line((x0, y0, x1, y1), fill=color, width=width)
+
+        label_x = 8
+        label_y = int(round(slope * label_x + intercept)) - 16
+        bbox = draw.textbbox((label_x, label_y), label, font=font)
+        pad = 3
+        draw.rectangle(
+            (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad),
+            fill=(255, 255, 255),
+            outline=(0, 0, 0),
+        )
+        draw.text((label_x, label_y), label, fill=color, font=font)
 
     def _crop_with_fill(self, image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
         left, top, right, bottom = box
