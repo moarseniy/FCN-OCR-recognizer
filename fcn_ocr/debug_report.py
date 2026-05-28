@@ -342,6 +342,8 @@ def save_debug_image(
         info_lines.append(f"baseline curve coverage: {float(metadata['baseline_curve_coverage']):.3f}")
     if metadata.get("baseline_curve_height_median") is not None:
         info_lines.append(f"baseline curve height: {float(metadata['baseline_curve_height_median']):.2f}")
+    if metadata.get("baseline_curve_center_smooth_radius") is not None:
+        info_lines.append(f"baseline curve center smooth: {metadata['baseline_curve_center_smooth_radius']}")
     if metadata.get("baseline_curve_pad_px") is not None:
         info_lines.append(f"baseline curve pad px: {float(metadata['baseline_curve_pad_px']):.2f}")
     if metadata.get("baseline_angle_degrees") is not None:

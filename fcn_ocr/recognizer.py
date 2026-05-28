@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover - optional until baseline crop is enable
     cv2 = None
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 import torch
 
 from fcn_architectures import create_model, normalize_architecture_name
@@ -59,7 +59,7 @@ class TextRecognizer:
         baseline_detector_checkpoint: str | Path | None = None,
         baseline_detector_threshold: float = 0.35,
         baseline_rectify: str = "lines",
-        baseline_curve_smooth_radius: int = 4,
+        baseline_curve_smooth_radius: int = 8,
         baseline_curve_min_coverage: float = 0.25,
     ):
         if scale_x <= -0.95:
@@ -520,6 +520,7 @@ class TextRecognizer:
                         "baseline_curve_height_median": float(curved_detection["curve_height_median"]),
                         "baseline_curve_height_min": float(curved_detection["curve_height_min"]),
                         "baseline_curve_height_max": float(curved_detection["curve_height_max"]),
+                        "baseline_curve_center_smooth_radius": int(curved_detection["curve_center_smooth_radius"]),
                         "baseline_curve_pad_px": float(curved_detection["curve_pad_px"]),
                         "baseline_curve_width": int(curved_detection["curve_width"]),
                         "baseline_curve_coverage": float(curved_detection["curve_coverage"]),
@@ -874,6 +875,18 @@ class TextRecognizer:
                 "mask_name": "baseline_detector",
             }
 
+        raw_top_y = top_y.copy()
+        raw_bottom_y = bottom_y.copy()
+        raw_center_y = (raw_top_y + raw_bottom_y) * 0.5
+        center_scores = np.minimum(top_scores, bottom_scores)
+        center_slope, center_intercept = self._fit_line_from_curve(curve_x, raw_center_y, center_scores)
+        center_trend = center_slope * curve_x + center_intercept
+        center_residual = raw_center_y - center_trend
+        center_smooth_radius = max(self.baseline_curve_smooth_radius, int(round(curve_x.size * 0.015)))
+        center_y = center_trend + self._smooth_curve_1d(center_residual, center_smooth_radius)
+        top_y = center_y - line_height * 0.5
+        bottom_y = center_y + line_height * 0.5
+
         confidence = float(min(np.mean(top_scores), np.mean(bottom_scores)))
         bottom_slope, bottom_intercept = self._fit_line_from_curve(curve_x, bottom_y, bottom_scores)
         top_slope, top_intercept = self._fit_line_from_curve(curve_x, top_y, top_scores)
@@ -933,11 +946,15 @@ class TextRecognizer:
             "curve_x": curve_x,
             "top_curve_y": top_y,
             "bottom_curve_y": bottom_y,
+            "raw_top_curve_y": raw_top_y,
+            "raw_bottom_curve_y": raw_bottom_y,
+            "curve_center_y": center_y,
             "top_curve_scores": top_scores,
             "bottom_curve_scores": bottom_scores,
             "curve_height_median": line_height,
             "curve_height_min": float(np.min(heights)),
             "curve_height_max": float(np.max(heights)),
+            "curve_center_smooth_radius": int(center_smooth_radius),
             "curve_pad_px": float(pad_px),
             "curve_width": int(curve_x.size),
             "curve_coverage": float(min(top_curve["profile_coverage"], bottom_curve["profile_coverage"])),
@@ -2050,8 +2067,7 @@ class TextRecognizer:
     ) -> Image.Image:
         output = image.convert("RGB")
         draw = ImageDraw.Draw(output)
-        line_width = max(3, int(round(image.height / 48)))
-        font = ImageFont.load_default()
+        line_width = max(1, int(round(image.height / 180)))
 
         if crop_box is not None:
             overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
@@ -2068,26 +2084,22 @@ class TextRecognizer:
             draw.rectangle(crop_box, outline=(30, 190, 70), width=max(2, line_width // 2))
 
         if detection.get("topline_detected"):
-            self._draw_labeled_textline(
+            self._draw_textline(
                 draw,
                 image_width=image.width,
                 slope=float(detection["topline_slope"]),
                 intercept=float(detection["topline_intercept"]),
                 color=(0, 190, 255),
-                label="TOP",
                 width=line_width,
-                font=font,
             )
 
-        self._draw_labeled_textline(
+        self._draw_textline(
             draw,
             image_width=image.width,
             slope=float(detection["slope"]),
             intercept=float(detection["intercept"]),
             color=(255, 45, 45),
-            label="BOTTOM",
             width=line_width,
-            font=font,
         )
 
         return output
@@ -2099,8 +2111,7 @@ class TextRecognizer:
         crop_box: tuple[int, int, int, int] | None = None,
     ) -> Image.Image:
         output = image.convert("RGB")
-        line_width = max(3, int(round(image.height / 48)))
-        font = ImageFont.load_default()
+        line_width = max(1, int(round(image.height / 180)))
 
         if crop_box is not None:
             overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
@@ -2119,23 +2130,19 @@ class TextRecognizer:
             draw.rectangle(crop_box, outline=(30, 190, 70), width=max(2, line_width // 2))
 
         curve_x = np.asarray(detection["curve_x"], dtype=np.float64)
-        self._draw_labeled_curve(
+        self._draw_curve(
             draw,
             curve_x,
             np.asarray(detection["top_curve_y"], dtype=np.float64),
             color=(0, 190, 255),
-            label="TOP curve",
             width=line_width,
-            font=font,
         )
-        self._draw_labeled_curve(
+        self._draw_curve(
             draw,
             curve_x,
             np.asarray(detection["bottom_curve_y"], dtype=np.float64),
             color=(255, 45, 45),
-            label="BOTTOM curve",
             width=line_width,
-            font=font,
         )
         return output
 
@@ -2177,14 +2184,12 @@ class TextRecognizer:
         draw.line((x0, y0, x1, y1), fill=color, width=width)
 
     @staticmethod
-    def _draw_labeled_curve(
+    def _draw_curve(
         draw: ImageDraw.ImageDraw,
         xs: np.ndarray,
         ys: np.ndarray,
         color: tuple[int, int, int],
-        label: str,
         width: int,
-        font: ImageFont.ImageFont,
     ) -> None:
         if xs.size < 2 or ys.size != xs.size:
             return
@@ -2192,49 +2197,7 @@ class TextRecognizer:
         points = [(float(xs[index]), float(ys[index])) for index in range(0, xs.size, step)]
         if points[-1] != (float(xs[-1]), float(ys[-1])):
             points.append((float(xs[-1]), float(ys[-1])))
-        draw.line(points, fill=(0, 0, 0), width=width + 4)
         draw.line(points, fill=color, width=width)
-
-        label_x = int(round(points[0][0])) + 8
-        label_y = int(round(points[0][1])) - 16
-        bbox = draw.textbbox((label_x, label_y), label, font=font)
-        pad = 3
-        draw.rectangle(
-            (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad),
-            fill=(255, 255, 255),
-            outline=(0, 0, 0),
-        )
-        draw.text((label_x, label_y), label, fill=color, font=font)
-
-    @staticmethod
-    def _draw_labeled_textline(
-        draw: ImageDraw.ImageDraw,
-        image_width: int,
-        slope: float,
-        intercept: float,
-        color: tuple[int, int, int],
-        label: str,
-        width: int,
-        font: ImageFont.ImageFont,
-    ) -> None:
-        x0 = 0
-        x1 = max(0, image_width - 1)
-        y0 = slope * x0 + intercept
-        y1 = slope * x1 + intercept
-        outline_width = width + 4
-        draw.line((x0, y0, x1, y1), fill=(0, 0, 0), width=outline_width)
-        draw.line((x0, y0, x1, y1), fill=color, width=width)
-
-        label_x = 8
-        label_y = int(round(slope * label_x + intercept)) - 16
-        bbox = draw.textbbox((label_x, label_y), label, font=font)
-        pad = 3
-        draw.rectangle(
-            (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad),
-            fill=(255, 255, 255),
-            outline=(0, 0, 0),
-        )
-        draw.text((label_x, label_y), label, fill=color, font=font)
 
     def _crop_with_fill(self, image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
         left, top, right, bottom = box

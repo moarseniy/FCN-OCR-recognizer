@@ -30,7 +30,7 @@ class VerticalSegmentator(TextRecognizer):
         baseline_detector_checkpoint: str | Path | None = None,
         baseline_detector_threshold: float = 0.35,
         baseline_rectify: str = "lines",
-        baseline_curve_smooth_radius: int = 4,
+        baseline_curve_smooth_radius: int = 8,
         baseline_curve_min_coverage: float = 0.25,
         cut_threshold: float | None = None,
         peak_min_distance: int | None = None,

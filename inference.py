@@ -252,8 +252,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--baseline-curve-smooth-radius",
         type=int,
-        default=4,
-        help="Median/mean smoothing radius for neural top/bottom baseline curves in curved mode.",
+        default=8,
+        help="Median/mean smoothing radius for the neural baseline center curve in curved mode.",
     )
     parser.add_argument(
         "--baseline-curve-min-coverage",
