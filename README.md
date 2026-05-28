@@ -602,9 +602,12 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 3. Если включен `--baseline-crop`, запускается детектор нижней и верхней
    текстовых линий. Если передан `--baseline-detector-checkpoint`, линии
    берутся из нейронного `baseline_heatmap`-детектора; иначе используется
-   эвристика по текстовым маскам. Нижняя линия используется для deskew, после
-   поворота линии ищутся повторно, а вертикальный crop в режиме по умолчанию
-   строится строго по паре верх/низ без bbox-fallback.
+   эвристика по текстовым маскам. В режиме `--baseline-rectify lines` нижняя
+   линия используется для deskew, после поворота линии ищутся повторно, а
+   вертикальный crop строится строго по паре верх/низ без bbox-fallback. В
+   режиме `--baseline-rectify curved` neural heatmap читается как две кривые
+   top/bottom, и строка выпрямляется через dewarp по этим кривым; при неудаче
+   curved-режим откатывается к `lines`.
 4. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
    справа долю текущей ширины, но не отражает символы: поля заполняются
    медианным фоном боковой полосы исходной геометрии. В debug это
@@ -659,6 +662,9 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 | `--baseline-line-pad-px` | Абсолютный запас в пикселях исходной картинки, добавляется к `--baseline-line-pad`. Полезно, если линии найдены слишком близко к буквам. |
 | `--baseline-detector-checkpoint` | Optional checkpoint нейронного top/bottom baseline-детектора. Если задан, `--baseline-crop` использует его вместо эвристики по маскам. |
 | `--baseline-detector-threshold` | Порог sigmoid heatmap для колонок верхней/нижней линии нейронного baseline-детектора. |
+| `--baseline-rectify` | `lines` оставляет старый режим двух прямых линий. `curved` использует neural heatmap как две кривые top/bottom и делает dewarp строки по ним. |
+| `--baseline-curve-smooth-radius` | Радиус сглаживания кривых top/bottom перед dewarp. Больше значение спокойнее, но может съедать резкие локальные изгибы. |
+| `--baseline-curve-min-coverage` | Минимальная доля X-колонок, где neural heatmap уверенно нашел каждую линию. Если coverage ниже, curved-режим откатывается к `lines`. |
 | `--baseline-top-pad` | Верхний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--baseline-bottom-pad` | Нижний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--no-baseline-deskew` | Отключает поворот по найденной baseline, но оставляет сам crop включенным. |

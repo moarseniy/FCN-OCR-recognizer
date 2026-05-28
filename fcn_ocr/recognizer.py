@@ -58,6 +58,9 @@ class TextRecognizer:
         baseline_line_pad_px: float = 0.0,
         baseline_detector_checkpoint: str | Path | None = None,
         baseline_detector_threshold: float = 0.35,
+        baseline_rectify: str = "lines",
+        baseline_curve_smooth_radius: int = 4,
+        baseline_curve_min_coverage: float = 0.25,
     ):
         if scale_x <= -0.95:
             raise ValueError("scale_x must be > -0.95")
@@ -77,6 +80,15 @@ class TextRecognizer:
             raise ValueError("baseline_max_angle must be > 0")
         if not 0.0 < baseline_detector_threshold < 1.0:
             raise ValueError("baseline_detector_threshold must be between 0 and 1")
+        baseline_rectify = baseline_rectify.lower()
+        if baseline_rectify == "line":
+            baseline_rectify = "lines"
+        if baseline_rectify not in {"lines", "curved"}:
+            raise ValueError("baseline_rectify must be 'lines' or 'curved'")
+        if baseline_curve_smooth_radius < 0:
+            raise ValueError("baseline_curve_smooth_radius must be >= 0")
+        if not 0.0 <= baseline_curve_min_coverage <= 1.0:
+            raise ValueError("baseline_curve_min_coverage must be between 0 and 1")
 
         self.checkpoint_path = Path(checkpoint_path)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -94,6 +106,9 @@ class TextRecognizer:
         self.baseline_line_pad_px = float(baseline_line_pad_px)
         self.baseline_detector_checkpoint = Path(baseline_detector_checkpoint) if baseline_detector_checkpoint else None
         self.baseline_detector_threshold = float(baseline_detector_threshold)
+        self.baseline_rectify = baseline_rectify
+        self.baseline_curve_smooth_radius = int(baseline_curve_smooth_radius)
+        self.baseline_curve_min_coverage = float(baseline_curve_min_coverage)
         self.baseline_detector_model: torch.nn.Module | None = None
         self.baseline_detector_in_channels = 1
         self.baseline_detector_image_height = 0
@@ -207,14 +222,16 @@ class TextRecognizer:
                 f"bottom_pad={self.baseline_bottom_pad:.3f}, "
                 f"deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
                 f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}, "
-                f"line_pad_px={self.baseline_line_pad_px:.1f}"
+                f"line_pad_px={self.baseline_line_pad_px:.1f}, rectify={self.baseline_rectify}"
             )
             if self.baseline_detector_model is not None:
                 print(
                     "  neural_detector="
                     f"{self.baseline_detector_checkpoint} "
                     f"threshold={self.baseline_detector_threshold:.3f} "
-                    f"architecture={self.baseline_detector_architecture}"
+                    f"architecture={self.baseline_detector_architecture} "
+                    f"curve_smooth={self.baseline_curve_smooth_radius} "
+                    f"curve_min_coverage={self.baseline_curve_min_coverage:.3f}"
                 )
 
     def class_label(self, index: int) -> str:
@@ -243,6 +260,9 @@ class TextRecognizer:
             "baseline_line_pad_px": self.baseline_line_pad_px,
             "baseline_detector_checkpoint": str(self.baseline_detector_checkpoint) if self.baseline_detector_checkpoint else None,
             "baseline_detector_threshold": self.baseline_detector_threshold,
+            "baseline_rectify": self.baseline_rectify,
+            "baseline_curve_smooth_radius": self.baseline_curve_smooth_radius,
+            "baseline_curve_min_coverage": self.baseline_curve_min_coverage,
             "x_pad": self.x_pad,
             "x_pad_mode": "border_median_original",
         }
@@ -259,10 +279,15 @@ class TextRecognizer:
             image, baseline_debug = self._apply_baseline_crop(image, collect_debug=collect_debug)
             debug_metadata.update(baseline_debug.metadata)
             debug_images.extend(baseline_debug.images)
+            baseline_step_title = (
+                "preprocess 01 after curved baseline rectification"
+                if baseline_debug.metadata.get("baseline_status") == "ok_curved"
+                else "preprocess 01 after baseline crop"
+            )
             self._append_preprocess_debug_image(
                 debug_images,
                 collect_debug,
-                "preprocess 01 after baseline crop",
+                baseline_step_title,
                 image,
             )
 
@@ -434,6 +459,76 @@ class TextRecognizer:
             raise RuntimeError("opencv-python is required for baseline_crop inference preprocessing")
 
         debug_images: list[tuple[str, Image.Image]] = []
+        curve_metadata: dict[str, Any] = {}
+        if self.baseline_rectify == "curved":
+            if self.baseline_detector_model is None:
+                curve_metadata["baseline_curve_status"] = "curved_requires_neural_detector_fallback_lines"
+            else:
+                curved_detection = self._detect_baseline_curves(image)
+                curve_metadata = {
+                    "baseline_curve_status": curved_detection["status"],
+                    "baseline_curve_smooth_radius": self.baseline_curve_smooth_radius,
+                    "baseline_curve_min_coverage": self.baseline_curve_min_coverage,
+                }
+                if collect_debug:
+                    if "heatmaps" in curved_detection:
+                        debug_images.append(
+                            (
+                                "baseline curved heatmap",
+                                self._draw_baseline_heatmap_debug(image, curved_detection["heatmaps"]),
+                            )
+                        )
+                    if curved_detection["ok"]:
+                        debug_images.append(
+                            (
+                                "baseline curved lines",
+                                self._draw_baseline_curves_debug(image, curved_detection, curved_detection["crop_box"]),
+                            )
+                        )
+                    else:
+                        debug_images.append(("baseline curved mask failed", Image.fromarray(curved_detection["cleaned_mask"])))
+                if curved_detection["ok"]:
+                    rectified = self._rectify_baseline_curves(image, curved_detection)
+                    if collect_debug:
+                        debug_images.append(("baseline curved rectified", rectified))
+                    metadata = {
+                        "baseline_status": "ok_curved",
+                        "baseline_strict_lines": self.baseline_strict_lines,
+                        "baseline_line_pad": self.baseline_line_pad,
+                        "baseline_line_pad_px": self.baseline_line_pad_px,
+                        "baseline_angle_degrees": float(curved_detection["angle_degrees"]),
+                        "baseline_residual_angle_degrees": 0.0,
+                        "baseline_crop_box": tuple(int(value) for value in curved_detection["crop_box"]),
+                        "baseline_text_bbox": tuple(int(value) for value in curved_detection["text_bbox"]),
+                        "baseline_text_height": int(curved_detection["text_height"]),
+                        "baseline_foreground_pixels": int(curved_detection["foreground_pixels"]),
+                        "baseline_confidence": float(curved_detection["confidence"]),
+                        "baseline_bottom_confidence": float(curved_detection["bottom_confidence"]),
+                        "baseline_inlier_ratio": float(curved_detection["inlier_ratio"]),
+                        "baseline_profile_coverage": float(curved_detection["profile_coverage"]),
+                        "baseline_residual_mad": float(curved_detection["residual_mad"]),
+                        "baseline_residual_rmse": float(curved_detection["residual_rmse"]),
+                        "baseline_candidate_count": 1,
+                        "baseline_method": curved_detection.get("method", "unknown"),
+                        "baseline_mask": curved_detection.get("mask_name", "unknown"),
+                        "topline_angle_degrees": float(curved_detection["topline_angle_degrees"]),
+                        "topline_confidence": float(curved_detection["topline_confidence"]),
+                        "topline_method": curved_detection.get("topline_method", "unknown"),
+                        "topline_inlier_ratio": float(curved_detection.get("topline_inlier_ratio", 0.0)),
+                        "topline_profile_coverage": float(curved_detection.get("topline_profile_coverage", 0.0)),
+                        "topline_residual_mad": float(curved_detection.get("topline_residual_mad", 0.0)),
+                        "baseline_curve_height_median": float(curved_detection["curve_height_median"]),
+                        "baseline_curve_height_min": float(curved_detection["curve_height_min"]),
+                        "baseline_curve_height_max": float(curved_detection["curve_height_max"]),
+                        "baseline_curve_pad_px": float(curved_detection["curve_pad_px"]),
+                        "baseline_curve_width": int(curved_detection["curve_width"]),
+                        "baseline_curve_coverage": float(curved_detection["curve_coverage"]),
+                        "baseline_curve_output_size": (int(rectified.width), int(rectified.height)),
+                    }
+                    metadata.update(curve_metadata)
+                    return rectified, PreprocessDebug(metadata=metadata, images=debug_images)
+                curve_metadata["baseline_curve_fallback"] = "lines"
+
         first = self._detect_baseline(image)
         if not first["ok"]:
             if collect_debug:
@@ -462,6 +557,7 @@ class TextRecognizer:
             ):
                 if source_key in first:
                     metadata[target_key] = first[source_key]
+            metadata.update(curve_metadata)
             return image, PreprocessDebug(
                 metadata=metadata,
                 images=debug_images,
@@ -496,6 +592,7 @@ class TextRecognizer:
                     "baseline_angle_degrees": original_angle,
                     "baseline_foreground_pixels": int(second.get("foreground_pixels", first["foreground_pixels"])),
                 }
+                metadata.update(curve_metadata)
                 if collect_debug:
                     debug_images.append(("baseline rotated detection failed", rotated))
                     debug_images.append(("baseline rotated cleaned mask", Image.fromarray(second["cleaned_mask"])))
@@ -552,6 +649,7 @@ class TextRecognizer:
             metadata["baseline_rejected_angle_degrees"] = float(detection["rejected_baseline_angle_degrees"])
         if "rejected_baseline_confidence" in detection:
             metadata["baseline_rejected_confidence"] = float(detection["rejected_baseline_confidence"])
+        metadata.update(curve_metadata)
         return cropped, PreprocessDebug(metadata=metadata, images=debug_images)
 
     def _detect_baseline(self, image: Image.Image) -> dict[str, Any]:
@@ -563,28 +661,9 @@ class TextRecognizer:
         if self.baseline_detector_model is None:
             return self._detect_baseline_heuristic(image)
 
-        tensor, scale_x, scale_y, detector_size = self._baseline_detector_input(image)
-        with torch.no_grad():
-            logits = self.baseline_detector_model(tensor)
-            if logits.dim() != 4 or logits.size(1) != 2:
-                raise ValueError(
-                    "Baseline detector must output logits shaped (B, 2, H, W), "
-                    f"got {tuple(logits.shape)}"
-                )
-            probs = torch.sigmoid(logits[:, :2])
-            if probs.shape[-2:] != (detector_size[1], detector_size[0]):
-                probs = torch.nn.functional.interpolate(
-                    probs,
-                    size=(detector_size[1], detector_size[0]),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-
-        heatmaps = probs[0].detach().cpu().numpy()
+        heatmaps, cleaned_mask, foreground_pixels, scale_x, scale_y = self._baseline_detector_heatmaps(image)
         top_line = self._line_from_baseline_heatmap(heatmaps[0], "neural_top")
         bottom_line = self._line_from_baseline_heatmap(heatmaps[1], "neural_bottom")
-        cleaned_mask = self._baseline_heatmap_mask(heatmaps, image.size)
-        foreground_pixels = int(np.count_nonzero(cleaned_mask))
         if top_line is None or bottom_line is None:
             return {
                 "ok": False,
@@ -683,6 +762,255 @@ class TextRecognizer:
             "topline_detected": True,
             **self._topline_metadata(top_line),
         }
+
+    def _baseline_detector_heatmaps(
+        self,
+        image: Image.Image,
+    ) -> tuple[np.ndarray, np.ndarray, int, float, float]:
+        if self.baseline_detector_model is None:
+            raise RuntimeError("baseline detector model is not loaded")
+
+        tensor, scale_x, scale_y, detector_size = self._baseline_detector_input(image)
+        with torch.no_grad():
+            logits = self.baseline_detector_model(tensor)
+            if logits.dim() != 4 or logits.size(1) != 2:
+                raise ValueError(
+                    "Baseline detector must output logits shaped (B, 2, H, W), "
+                    f"got {tuple(logits.shape)}"
+                )
+            probs = torch.sigmoid(logits[:, :2])
+            if probs.shape[-2:] != (detector_size[1], detector_size[0]):
+                probs = torch.nn.functional.interpolate(
+                    probs,
+                    size=(detector_size[1], detector_size[0]),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+        heatmaps = probs[0].detach().cpu().numpy()
+        cleaned_mask = self._baseline_heatmap_mask(heatmaps, image.size)
+        foreground_pixels = int(np.count_nonzero(cleaned_mask))
+        return heatmaps, cleaned_mask, foreground_pixels, float(scale_x), float(scale_y)
+
+    def _detect_baseline_curves(self, image: Image.Image) -> dict[str, Any]:
+        if self.baseline_detector_model is None:
+            return {
+                "ok": False,
+                "status": "curved_requires_neural_detector",
+                "cleaned_mask": np.zeros((image.height, image.width), dtype=np.uint8),
+                "foreground_pixels": 0,
+                "method": "neural_curve",
+                "mask_name": "baseline_detector",
+            }
+
+        heatmaps, cleaned_mask, foreground_pixels, scale_x, scale_y = self._baseline_detector_heatmaps(image)
+        top_curve = self._curve_from_baseline_heatmap(heatmaps[0], "neural_curve_top")
+        bottom_curve = self._curve_from_baseline_heatmap(heatmaps[1], "neural_curve_bottom")
+        if top_curve is None or bottom_curve is None:
+            return {
+                "ok": False,
+                "status": "curved_baseline_fit_failed",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_curve",
+                "mask_name": "baseline_detector",
+            }
+
+        top_curve = self._scale_baseline_curve(top_curve, scale_x=scale_x, scale_y=scale_y)
+        bottom_curve = self._scale_baseline_curve(bottom_curve, scale_x=scale_x, scale_y=scale_y)
+        x_left = max(float(top_curve["curve_x"][0]), float(bottom_curve["curve_x"][0]))
+        x_right = min(float(top_curve["curve_x"][-1]), float(bottom_curve["curve_x"][-1]))
+        if x_right - x_left < max(8.0, image.width * 0.08):
+            return {
+                "ok": False,
+                "status": "curved_baseline_overlap_too_small",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_curve",
+                "mask_name": "baseline_detector",
+            }
+
+        curve_x = np.arange(int(math.ceil(x_left)), int(math.floor(x_right)) + 1, dtype=np.float64)
+        if curve_x.size < 8:
+            return {
+                "ok": False,
+                "status": "curved_baseline_too_narrow",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_curve",
+                "mask_name": "baseline_detector",
+            }
+
+        top_y = np.interp(curve_x, top_curve["curve_x"], top_curve["curve_y"])
+        bottom_y = np.interp(curve_x, bottom_curve["curve_x"], bottom_curve["curve_y"])
+        top_scores = np.interp(curve_x, top_curve["curve_x"], top_curve["curve_scores"])
+        bottom_scores = np.interp(curve_x, bottom_curve["curve_x"], bottom_curve["curve_scores"])
+        heights = bottom_y - top_y
+        good = heights > 2.0
+        if int(np.count_nonzero(good)) < max(8, int(round(curve_x.size * 0.70))):
+            return {
+                "ok": False,
+                "status": "curved_baseline_lines_reversed",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_curve",
+                "mask_name": "baseline_detector",
+                "topline_confidence": float(top_curve["confidence"]),
+                "baseline_confidence": float(bottom_curve["confidence"]),
+            }
+        if not bool(np.all(good)):
+            top_y = np.interp(curve_x, curve_x[good], top_y[good])
+            bottom_y = np.interp(curve_x, curve_x[good], bottom_y[good])
+            heights = bottom_y - top_y
+
+        line_height = float(np.median(heights))
+        if line_height <= 2.0:
+            return {
+                "ok": False,
+                "status": "curved_baseline_height_too_small",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_curve",
+                "mask_name": "baseline_detector",
+            }
+
+        confidence = float(min(np.mean(top_scores), np.mean(bottom_scores)))
+        bottom_slope, bottom_intercept = self._fit_line_from_curve(curve_x, bottom_y, bottom_scores)
+        top_slope, top_intercept = self._fit_line_from_curve(curve_x, top_y, top_scores)
+        angle_degrees = math.degrees(math.atan(bottom_slope))
+        pad_px = max(0.0, line_height * self.baseline_line_pad + self.baseline_line_pad_px)
+        crop_box = (
+            max(0, int(math.floor(float(curve_x.min())))),
+            int(math.floor(float(top_y.min()) - pad_px)),
+            min(image.width, int(math.ceil(float(curve_x.max()) + 1.0))),
+            int(math.ceil(float(bottom_y.max()) + 1.0 + pad_px)),
+        )
+        text_bbox = (
+            max(0, int(math.floor(float(curve_x.min())))),
+            max(0, int(math.floor(float(top_y.min())))),
+            min(image.width, int(math.ceil(float(curve_x.max()) + 1.0))),
+            min(image.height, int(math.ceil(float(bottom_y.max()) + 1.0))),
+        )
+        return {
+            "ok": True,
+            "status": "ok_curved",
+            "mask_name": "baseline_detector",
+            "method": "neural_curve",
+            "cleaned_mask": cleaned_mask,
+            "heatmaps": heatmaps,
+            "foreground_pixels": foreground_pixels,
+            "slope": float(bottom_slope),
+            "intercept": float(bottom_intercept),
+            "angle_degrees": float(angle_degrees),
+            "confidence": confidence,
+            "bottom_confidence": float(bottom_curve["confidence"]),
+            "inlier_ratio": 1.0,
+            "profile_coverage": float(bottom_curve["profile_coverage"]),
+            "residual_mad": 0.0,
+            "residual_rmse": 0.0,
+            "profile_x": bottom_curve["profile_x"],
+            "profile_y": bottom_curve["profile_y"],
+            "inlier_mask": np.ones(bottom_curve["profile_x"].shape, dtype=bool),
+            "crop_box": crop_box,
+            "text_bbox": text_bbox,
+            "text_height": int(round(line_height)),
+            "bottom_slope": float(bottom_slope),
+            "bottom_intercept": float(bottom_intercept),
+            "bottom_angle_degrees": float(angle_degrees),
+            "topline_detected": True,
+            "topline_slope": float(top_slope),
+            "topline_intercept": float(top_intercept),
+            "topline_angle_degrees": float(math.degrees(math.atan(top_slope))),
+            "topline_confidence": float(top_curve["confidence"]),
+            "topline_inlier_ratio": 1.0,
+            "topline_profile_coverage": float(top_curve["profile_coverage"]),
+            "topline_residual_mad": 0.0,
+            "topline_residual_rmse": 0.0,
+            "topline_method": "neural_curve",
+            "topline_profile_x": top_curve["profile_x"],
+            "topline_profile_y": top_curve["profile_y"],
+            "topline_inlier_mask": np.ones(top_curve["profile_x"].shape, dtype=bool),
+            "curve_x": curve_x,
+            "top_curve_y": top_y,
+            "bottom_curve_y": bottom_y,
+            "top_curve_scores": top_scores,
+            "bottom_curve_scores": bottom_scores,
+            "curve_height_median": line_height,
+            "curve_height_min": float(np.min(heights)),
+            "curve_height_max": float(np.max(heights)),
+            "curve_pad_px": float(pad_px),
+            "curve_width": int(curve_x.size),
+            "curve_coverage": float(min(top_curve["profile_coverage"], bottom_curve["profile_coverage"])),
+        }
+
+    def _curve_from_baseline_heatmap(self, heatmap: np.ndarray, method: str) -> dict[str, Any] | None:
+        if heatmap.ndim != 2 or heatmap.size == 0:
+            return None
+        height, width = heatmap.shape
+        scores = heatmap.max(axis=0).astype(np.float64)
+        y_positions = heatmap.argmax(axis=0).astype(np.float64)
+        keep = scores >= self.baseline_detector_threshold
+        min_points = max(8, int(round(width * self.baseline_curve_min_coverage)))
+        if int(np.count_nonzero(keep)) < min_points:
+            return None
+
+        profile_x = np.flatnonzero(keep).astype(np.float64)
+        profile_y = y_positions[keep].astype(np.float64)
+        profile_scores = np.maximum(scores[keep].astype(np.float64), 1e-3)
+        profile_coverage = float(profile_x.size) / max(1.0, float(width))
+        x_start = int(profile_x.min())
+        x_end = int(profile_x.max())
+        if x_end - x_start + 1 < min_points:
+            return None
+
+        curve_x = np.arange(x_start, x_end + 1, dtype=np.float64)
+        raw_curve_y = np.interp(curve_x, profile_x, profile_y)
+        curve_scores = np.interp(curve_x, profile_x, profile_scores)
+        curve_y = self._smooth_curve_1d(raw_curve_y, self.baseline_curve_smooth_radius)
+        curve_y = np.clip(curve_y, 0.0, float(height - 1))
+        return {
+            "method": method,
+            "profile_x": profile_x,
+            "profile_y": profile_y,
+            "profile_scores": profile_scores,
+            "profile_coverage": profile_coverage,
+            "curve_x": curve_x,
+            "raw_curve_y": raw_curve_y,
+            "curve_y": curve_y,
+            "curve_scores": curve_scores,
+            "confidence": float(np.mean(profile_scores)),
+        }
+
+    @staticmethod
+    def _fit_line_from_curve(xs: np.ndarray, ys: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
+        if xs.size < 2:
+            return 0.0, float(ys[0]) if ys.size else 0.0
+        safe_weights = np.maximum(weights.astype(np.float64), 1e-3)
+        slope, intercept = np.polyfit(xs.astype(np.float64), ys.astype(np.float64), deg=1, w=safe_weights)
+        return float(slope), float(intercept)
+
+    @staticmethod
+    def _scale_baseline_curve(curve: dict[str, Any], scale_x: float, scale_y: float) -> dict[str, Any]:
+        scale_x = max(scale_x, 1e-6)
+        scale_y = max(scale_y, 1e-6)
+        scaled = dict(curve)
+        for key in ("profile_x", "curve_x"):
+            scaled[key] = np.asarray(curve[key], dtype=np.float64) / scale_x
+        for key in ("profile_y", "raw_curve_y", "curve_y"):
+            scaled[key] = np.asarray(curve[key], dtype=np.float64) / scale_y
+        scaled["profile_scores"] = np.asarray(curve["profile_scores"], dtype=np.float64)
+        scaled["curve_scores"] = np.asarray(curve["curve_scores"], dtype=np.float64)
+        return scaled
+
+    @staticmethod
+    def _smooth_curve_1d(values: np.ndarray, radius: int) -> np.ndarray:
+        if radius <= 0 or values.size <= 2:
+            return values.astype(np.float64)
+        smoothed = TextRecognizer._median_smooth_1d(values.astype(np.float64), radius=radius)
+        kernel_size = radius * 2 + 1
+        padded = np.pad(smoothed, (radius, radius), mode="edge")
+        kernel = np.ones(kernel_size, dtype=np.float64) / float(kernel_size)
+        return np.convolve(padded, kernel, mode="valid")
 
     def _baseline_detector_input(self, image: Image.Image) -> tuple[torch.Tensor, float, float, tuple[int, int]]:
         mode = "RGB" if self.baseline_detector_in_channels == 3 else "L"
@@ -1591,6 +1919,73 @@ class TextRecognizer:
             bottom = top + max(4, int(round(text_height)))
         return (0, top, image_width, bottom), int(round(text_height))
 
+    def _rectify_baseline_curves(self, image: Image.Image, detection: dict[str, Any]) -> Image.Image:
+        curve_x = np.asarray(detection["curve_x"], dtype=np.float64)
+        top_y = np.asarray(detection["top_curve_y"], dtype=np.float64)
+        bottom_y = np.asarray(detection["bottom_curve_y"], dtype=np.float64)
+        if curve_x.size < 2 or top_y.size != curve_x.size or bottom_y.size != curve_x.size:
+            raise ValueError("curved baseline detection contains inconsistent curve arrays")
+
+        heights = np.maximum(bottom_y - top_y, 2.0)
+        median_height = float(np.median(heights))
+        pad_px = float(detection.get("curve_pad_px", median_height * self.baseline_line_pad + self.baseline_line_pad_px))
+        output_height = max(4, int(round(median_height + 2.0 * pad_px)))
+        output_width = max(1, int(curve_x.size))
+
+        y_out = np.linspace(0.0, 1.0, output_height, dtype=np.float64)[:, None]
+        x_map = np.broadcast_to(curve_x[None, :], (output_height, output_width))
+        y_top = top_y[None, :] - pad_px
+        y_bottom = bottom_y[None, :] + pad_px
+        y_map = y_top + y_out * (y_bottom - y_top)
+
+        return self._remap_image_bilinear(image, x_map=x_map, y_map=y_map)
+
+    def _remap_image_bilinear(self, image: Image.Image, x_map: np.ndarray, y_map: np.ndarray) -> Image.Image:
+        source = np.asarray(image)
+        if source.ndim not in {2, 3}:
+            raise ValueError(f"unsupported image array shape for remap: {source.shape}")
+
+        src_height, src_width = source.shape[:2]
+        out_height, out_width = x_map.shape
+        fill = self._background_fill_value(image)
+        if source.ndim == 2:
+            output = np.full((out_height, out_width), int(fill), dtype=np.float64)
+        else:
+            fill_tuple = fill if isinstance(fill, tuple) else (int(fill), int(fill), int(fill))
+            output = np.empty((out_height, out_width, source.shape[2]), dtype=np.float64)
+            output[:, :] = np.asarray(fill_tuple[: source.shape[2]], dtype=np.float64)
+
+        valid = (
+            (x_map >= 0.0)
+            & (x_map <= float(src_width - 1))
+            & (y_map >= 0.0)
+            & (y_map <= float(src_height - 1))
+        )
+        if not bool(np.any(valid)):
+            return Image.fromarray(np.clip(output, 0, 255).astype(np.uint8), mode=image.mode)
+
+        x = x_map[valid]
+        y = y_map[valid]
+        x0 = np.floor(x).astype(np.int64)
+        y0 = np.floor(y).astype(np.int64)
+        x1 = np.clip(x0 + 1, 0, src_width - 1)
+        y1 = np.clip(y0 + 1, 0, src_height - 1)
+        wx = x - x0.astype(np.float64)
+        wy = y - y0.astype(np.float64)
+
+        if source.ndim == 2:
+            top = source[y0, x0].astype(np.float64) * (1.0 - wx) + source[y0, x1].astype(np.float64) * wx
+            bottom = source[y1, x0].astype(np.float64) * (1.0 - wx) + source[y1, x1].astype(np.float64) * wx
+            output[valid] = top * (1.0 - wy) + bottom * wy
+        else:
+            wx = wx[:, None]
+            wy = wy[:, None]
+            top = source[y0, x0, :].astype(np.float64) * (1.0 - wx) + source[y0, x1, :].astype(np.float64) * wx
+            bottom = source[y1, x0, :].astype(np.float64) * (1.0 - wx) + source[y1, x1, :].astype(np.float64) * wx
+            output[valid] = top * (1.0 - wy) + bottom * wy
+
+        return Image.fromarray(np.clip(output, 0, 255).astype(np.uint8), mode=image.mode)
+
     def _draw_baseline_overlay(
         self,
         image: Image.Image,
@@ -1697,6 +2092,75 @@ class TextRecognizer:
 
         return output
 
+    def _draw_baseline_curves_debug(
+        self,
+        image: Image.Image,
+        detection: dict[str, Any],
+        crop_box: tuple[int, int, int, int] | None = None,
+    ) -> Image.Image:
+        output = image.convert("RGB")
+        line_width = max(3, int(round(image.height / 48)))
+        font = ImageFont.load_default()
+
+        if crop_box is not None:
+            overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            _, top, _, bottom = crop_box
+            visible_top = max(0, top)
+            visible_bottom = min(output.height, bottom)
+            if visible_top > 0:
+                overlay_draw.rectangle((0, 0, output.width, visible_top), fill=(0, 0, 0, 55))
+            if visible_bottom < output.height:
+                overlay_draw.rectangle((0, visible_bottom, output.width, output.height), fill=(0, 0, 0, 55))
+            output = Image.alpha_composite(output.convert("RGBA"), overlay).convert("RGB")
+
+        draw = ImageDraw.Draw(output)
+        if crop_box is not None:
+            draw.rectangle(crop_box, outline=(30, 190, 70), width=max(2, line_width // 2))
+
+        curve_x = np.asarray(detection["curve_x"], dtype=np.float64)
+        self._draw_labeled_curve(
+            draw,
+            curve_x,
+            np.asarray(detection["top_curve_y"], dtype=np.float64),
+            color=(0, 190, 255),
+            label="TOP curve",
+            width=line_width,
+            font=font,
+        )
+        self._draw_labeled_curve(
+            draw,
+            curve_x,
+            np.asarray(detection["bottom_curve_y"], dtype=np.float64),
+            color=(255, 45, 45),
+            label="BOTTOM curve",
+            width=line_width,
+            font=font,
+        )
+        return output
+
+    def _draw_baseline_heatmap_debug(self, image: Image.Image, heatmaps: np.ndarray) -> Image.Image:
+        if heatmaps.ndim != 3 or heatmaps.shape[0] < 2:
+            return image.convert("RGB")
+
+        top = Image.fromarray(np.clip(heatmaps[0] * 255.0, 0, 255).astype(np.uint8), mode="L")
+        bottom = Image.fromarray(np.clip(heatmaps[1] * 255.0, 0, 255).astype(np.uint8), mode="L")
+        top = top.resize(image.size, Image.Resampling.BILINEAR)
+        bottom = bottom.resize(image.size, Image.Resampling.BILINEAR)
+        top_array = np.asarray(top, dtype=np.float32) / 255.0
+        bottom_array = np.asarray(bottom, dtype=np.float32) / 255.0
+        alpha = np.maximum(top_array, bottom_array)
+
+        overlay = np.zeros((image.height, image.width, 4), dtype=np.uint8)
+        overlay[..., 0] = np.clip(bottom_array * 255.0, 0, 255).astype(np.uint8)
+        overlay[..., 1] = np.clip(top_array * 190.0, 0, 255).astype(np.uint8)
+        overlay[..., 2] = np.clip(top_array * 255.0, 0, 255).astype(np.uint8)
+        overlay[..., 3] = np.clip(alpha * 155.0, 0, 180).astype(np.uint8)
+
+        base = image.convert("RGBA")
+        heatmap_overlay = Image.fromarray(overlay, mode="RGBA")
+        return Image.alpha_composite(base, heatmap_overlay).convert("RGB")
+
     @staticmethod
     def _draw_textline(
         draw: ImageDraw.ImageDraw,
@@ -1711,6 +2175,36 @@ class TextRecognizer:
         y0 = slope * x0 + intercept
         y1 = slope * x1 + intercept
         draw.line((x0, y0, x1, y1), fill=color, width=width)
+
+    @staticmethod
+    def _draw_labeled_curve(
+        draw: ImageDraw.ImageDraw,
+        xs: np.ndarray,
+        ys: np.ndarray,
+        color: tuple[int, int, int],
+        label: str,
+        width: int,
+        font: ImageFont.ImageFont,
+    ) -> None:
+        if xs.size < 2 or ys.size != xs.size:
+            return
+        step = max(1, int(math.ceil(xs.size / 1000)))
+        points = [(float(xs[index]), float(ys[index])) for index in range(0, xs.size, step)]
+        if points[-1] != (float(xs[-1]), float(ys[-1])):
+            points.append((float(xs[-1]), float(ys[-1])))
+        draw.line(points, fill=(0, 0, 0), width=width + 4)
+        draw.line(points, fill=color, width=width)
+
+        label_x = int(round(points[0][0])) + 8
+        label_y = int(round(points[0][1])) - 16
+        bbox = draw.textbbox((label_x, label_y), label, font=font)
+        pad = 3
+        draw.rectangle(
+            (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad),
+            fill=(255, 255, 255),
+            outline=(0, 0, 0),
+        )
+        draw.text((label_x, label_y), label, fill=color, font=font)
 
     @staticmethod
     def _draw_labeled_textline(

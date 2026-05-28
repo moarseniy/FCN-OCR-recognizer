@@ -320,6 +320,8 @@ def save_debug_image(
         info_lines.append(f"baseline crop: {metadata['baseline_crop']}")
     if "baseline_strict_lines" in metadata:
         info_lines.append(f"baseline strict lines: {metadata['baseline_strict_lines']}")
+    if metadata.get("baseline_rectify") is not None:
+        info_lines.append(f"baseline rectify: {metadata['baseline_rectify']}")
     if metadata.get("baseline_line_pad") is not None:
         info_lines.append(f"baseline line pad: {float(metadata['baseline_line_pad']):.3f}")
     if metadata.get("baseline_line_pad_px") is not None:
@@ -330,6 +332,18 @@ def save_debug_image(
         info_lines.append(f"baseline detector threshold: {float(metadata['baseline_detector_threshold']):.3f}")
     if metadata.get("baseline_status"):
         info_lines.append(f"baseline status: {metadata['baseline_status']}")
+    if metadata.get("baseline_curve_status"):
+        info_lines.append(f"baseline curve status: {metadata['baseline_curve_status']}")
+    if metadata.get("baseline_curve_fallback"):
+        info_lines.append(f"baseline curve fallback: {metadata['baseline_curve_fallback']}")
+    if metadata.get("baseline_curve_output_size") is not None:
+        info_lines.append(f"baseline curve output: {metadata['baseline_curve_output_size']}")
+    if metadata.get("baseline_curve_coverage") is not None:
+        info_lines.append(f"baseline curve coverage: {float(metadata['baseline_curve_coverage']):.3f}")
+    if metadata.get("baseline_curve_height_median") is not None:
+        info_lines.append(f"baseline curve height: {float(metadata['baseline_curve_height_median']):.2f}")
+    if metadata.get("baseline_curve_pad_px") is not None:
+        info_lines.append(f"baseline curve pad px: {float(metadata['baseline_curve_pad_px']):.2f}")
     if metadata.get("baseline_angle_degrees") is not None:
         info_lines.append(f"baseline angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
     if metadata.get("baseline_confidence") is not None:

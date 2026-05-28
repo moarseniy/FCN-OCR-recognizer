@@ -240,6 +240,27 @@ def parse_args() -> argparse.Namespace:
         default=0.35,
         help="Minimum sigmoid probability for top/bottom baseline heatmap columns.",
     )
+    parser.add_argument(
+        "--baseline-rectify",
+        choices=("lines", "curved"),
+        default="lines",
+        help=(
+            "Baseline preprocessing mode. 'lines' keeps the old straight-line deskew/crop. "
+            "'curved' uses neural baseline heatmap curves to dewarp text before resize."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-curve-smooth-radius",
+        type=int,
+        default=4,
+        help="Median/mean smoothing radius for neural top/bottom baseline curves in curved mode.",
+    )
+    parser.add_argument(
+        "--baseline-curve-min-coverage",
+        type=float,
+        default=0.25,
+        help="Minimum per-line heatmap column coverage required for curved baseline rectification.",
+    )
     parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     parser.add_argument(
         "--debug-image",
@@ -279,6 +300,9 @@ def main() -> None:
         baseline_line_pad_px=args.baseline_line_pad_px,
         baseline_detector_checkpoint=args.baseline_detector_checkpoint,
         baseline_detector_threshold=args.baseline_detector_threshold,
+        baseline_rectify=args.baseline_rectify,
+        baseline_curve_smooth_radius=args.baseline_curve_smooth_radius,
+        baseline_curve_min_coverage=args.baseline_curve_min_coverage,
     )
     segmentator = None
     segmentator_checkpoint_path = None
@@ -303,6 +327,9 @@ def main() -> None:
             baseline_line_pad_px=args.baseline_line_pad_px,
             baseline_detector_checkpoint=args.baseline_detector_checkpoint,
             baseline_detector_threshold=args.baseline_detector_threshold,
+            baseline_rectify=args.baseline_rectify,
+            baseline_curve_smooth_radius=args.baseline_curve_smooth_radius,
+            baseline_curve_min_coverage=args.baseline_curve_min_coverage,
             cut_threshold=args.segmentator_cut_threshold,
             peak_min_distance=args.segmentator_peak_min_distance,
             cut_postprocess=args.segmentator_cut_postprocess,
