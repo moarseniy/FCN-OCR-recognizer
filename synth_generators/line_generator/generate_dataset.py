@@ -28,6 +28,7 @@ def save_chunk(
     texts = []
     dense_targets = []
     cut_projection_targets = []
+    baseline_targets = []
 
     for sample in samples:
         images.append(image_to_uint8(sample.image))
@@ -39,6 +40,12 @@ def save_chunk(
         if sample.cut_projection_target is not None:
             cut_projection_targets.append(
                 (sample.cut_projection_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
+                .round()
+                .to(torch.uint8)
+            )
+        if sample.baseline_target is not None:
+            baseline_targets.append(
+                (sample.baseline_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
                 .round()
                 .to(torch.uint8)
             )
@@ -57,6 +64,10 @@ def save_chunk(
         if len(cut_projection_targets) != len(images):
             raise RuntimeError("only some samples contain cut_projection_target")
         chunk["cut_projection_targets"] = torch.stack(cut_projection_targets, dim=0).contiguous()
+    if baseline_targets:
+        if len(baseline_targets) != len(images):
+            raise RuntimeError("only some samples contain baseline_target")
+        chunk["baseline_targets"] = torch.stack(baseline_targets, dim=0).contiguous()
 
     torch.save(chunk, output_dir / filename)
     return {"file": filename, "samples": len(images)}
@@ -136,10 +147,17 @@ def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
         "min_crop_text_length": config.min_crop_text_length,
         "edge_char_min_visible_ratio": config.edge_char_min_visible_ratio,
         "edge_fragment_max_visible_ratio": config.edge_fragment_max_visible_ratio,
+        "neighbor_lines_probability": config.neighbor_lines_probability,
+        "neighbor_line_min_crop_ratio": config.neighbor_line_min_crop_ratio,
+        "neighbor_line_visible_ratio_min": config.neighbor_line_visible_ratio_min,
+        "neighbor_line_gap_min": config.neighbor_line_gap_min,
+        "neighbor_line_gap_max": config.neighbor_line_gap_max,
         "dense_targets": config.save_dense_targets,
         "cut_projection_targets": config.save_cut_projection_targets,
         "cut_projection_peak_radius": config.cut_projection_peak_radius,
         "cut_projection_include_margins": config.cut_projection_include_margins,
+        "baseline_targets": config.save_baseline_targets,
+        "baseline_target_radius": config.baseline_target_radius,
         "dtype": "uint8",
         "chunk_size": config.chunk_size,
         "chunk_count": len(chunks),

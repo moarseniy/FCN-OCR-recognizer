@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
 from fcn_architectures import available_architectures, create_model, normalize_architecture_name
-from loss import cut_projection_loss, legacy_logreg_loss
+from loss import baseline_heatmap_loss, cut_projection_loss, legacy_logreg_loss
 
 from datetime import datetime
 import os
@@ -26,10 +26,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
-SUPPORTED_LOSS_MODES = ("legacy_logreg", "cut_projection")
+SUPPORTED_LOSS_MODES = ("legacy_logreg", "cut_projection", "baseline_heatmap")
 SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols",)
 SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
+SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS = ("peaks", "widths")
 
 
@@ -75,6 +76,9 @@ class TrainingConfig(BaseModel):
     cut_projection_strict_width: bool = True
     cut_projection_loss: str = "mse"
     cut_projection_positive_weight: float = Field(default=1.0, ge=1.0)
+    baseline_heatmap_strict_size: bool = True
+    baseline_heatmap_loss: str = "bce"
+    baseline_heatmap_positive_weight: float = Field(default=4.0, ge=1.0)
     segmentator_cut_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)
     segmentator_peak_min_distance: int = Field(default=1, ge=1)
     segmentator_cut_postprocess: str = "widths"
@@ -201,6 +205,14 @@ class TrainingConfig(BaseModel):
             raise ValueError(f"cut_projection_loss must be one of {SUPPORTED_CUT_PROJECTION_LOSSES}")
         return value
 
+    @field_validator("baseline_heatmap_loss")
+    @classmethod
+    def baseline_heatmap_loss_must_be_supported(cls, value: str) -> str:
+        value = value.lower()
+        if value not in SUPPORTED_BASELINE_HEATMAP_LOSSES:
+            raise ValueError(f"baseline_heatmap_loss must be one of {SUPPORTED_BASELINE_HEATMAP_LOSSES}")
+        return value
+
     @field_validator("segmentator_cut_postprocess")
     @classmethod
     def segmentator_cut_postprocess_must_be_supported(cls, value: str) -> str:
@@ -233,6 +245,8 @@ def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "
     loss_mode = loss_mode.lower()
     if loss_mode == "cut_projection":
         return 1
+    if loss_mode == "baseline_heatmap":
+        return 2
     if loss_mode == "legacy_logreg":
         return len(alphabet)
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
@@ -297,6 +311,12 @@ def build_checkpoint(
     legacy_target_mode = str(config.get("legacy_target_mode", "dense_symbols")).lower()
     architecture = normalize_architecture_name(str(config.get("architecture", "legacy_fcn")))
     architecture_params = dict(config.get("architecture_params") or {})
+    if loss_mode == "cut_projection":
+        target_format = "cut_projection"
+    elif loss_mode == "baseline_heatmap":
+        target_format = "baseline_heatmap"
+    else:
+        target_format = legacy_target_mode
     return {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -313,12 +333,9 @@ def build_checkpoint(
             'num_classes': model_num_classes(alphabet, loss_mode, legacy_target_mode),
             'loss_mode': loss_mode,
             'legacy_target_mode': legacy_target_mode,
-            'target_format': (
-                'cut_projection'
-                if loss_mode == 'cut_projection'
-                else legacy_target_mode
-            ),
+            'target_format': target_format,
             'cut_projection_loss': config.get('cut_projection_loss', 'mse'),
+            'baseline_heatmap_loss': config.get('baseline_heatmap_loss', 'bce'),
         },
         'train_losses': train_losses,
         'val_losses': val_losses,
@@ -479,6 +496,49 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
     output_width = output_width_for_model(model, dataset_config.image_width)
     print(f"Model output width: {output_width} for input width {dataset_config.image_width}")
 
+    if config.loss_mode == "baseline_heatmap":
+        print(f"Baseline heatmap target shape: 2x{dataset_config.image_height}x{dataset_config.image_width}")
+        if config.baseline_heatmap_strict_size and output_width != dataset_config.image_width:
+            raise ValueError(
+                "baseline_heatmap_strict_size requires model output width to match image width, "
+                f"but architecture={config.architecture!r} gives T={output_width} while "
+                f"targets have width {dataset_config.image_width}. Use a width-preserving "
+                "2D architecture such as baseline_detector_fcn, or set baseline_heatmap_strict_size: false."
+            )
+        was_training = model.training
+        parameter = next(model.parameters(), None)
+        device = parameter.device if parameter is not None else torch.device("cpu")
+        try:
+            model.eval()
+            with torch.no_grad():
+                dummy = torch.zeros(
+                    1,
+                    dataset_config.channels,
+                    dataset_config.image_height,
+                    dataset_config.image_width,
+                    device=device,
+                )
+                output = model(dummy)
+        finally:
+            if was_training:
+                model.train()
+        print(f"Model output shape: {tuple(output.shape)}")
+        if output.dim() != 4 or output.size(1) != 2:
+            raise ValueError(
+                "baseline_heatmap requires a model output shaped (B, 2, H, W), "
+                f"got {tuple(output.shape)} from architecture={config.architecture!r}."
+            )
+        if config.baseline_heatmap_strict_size and output.shape[-2:] != (
+            dataset_config.image_height,
+            dataset_config.image_width,
+        ):
+            raise ValueError(
+                "baseline_heatmap_strict_size requires model output HxW to match target HxW, "
+                f"got output={tuple(output.shape[-2:])}, "
+                f"target={(dataset_config.image_height, dataset_config.image_width)}."
+            )
+        return
+
     if config.loss_mode == "cut_projection":
         target_width = dataset_config.image_width - config.cut_projection_crop_left - config.cut_projection_crop_right
         if target_width <= 0:
@@ -543,6 +603,9 @@ def compute_loss(
     cut_projection_strict_width=True,
     cut_projection_loss_name="mse",
     cut_projection_positive_weight=1.0,
+    baseline_heatmap_strict_size=True,
+    baseline_heatmap_loss_name="bce",
+    baseline_heatmap_positive_weight=4.0,
 ):
     loss_mode = loss_mode.lower()
     if loss_mode == "legacy_logreg":
@@ -569,6 +632,14 @@ def compute_loss(
             loss=cut_projection_loss_name,
             positive_weight=cut_projection_positive_weight,
         )
+    if loss_mode == "baseline_heatmap":
+        return baseline_heatmap_loss(
+            logits,
+            targets,
+            strict_size=baseline_heatmap_strict_size,
+            loss=baseline_heatmap_loss_name,
+            positive_weight=baseline_heatmap_positive_weight,
+        )
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
 
@@ -588,6 +659,8 @@ def augmentation_target_format(loss_mode: str, legacy_target_mode: str) -> str |
     legacy_target_mode = legacy_target_mode.lower()
     if loss_mode == "cut_projection":
         return "cut_projection"
+    if loss_mode == "baseline_heatmap":
+        return "baseline_heatmap"
     if loss_mode == "legacy_logreg" and legacy_target_mode == "dense_symbols":
         return "dense_symbols"
     return None
@@ -615,6 +688,9 @@ def validate(
     cut_projection_strict_width=True,
     cut_projection_loss_name="mse",
     cut_projection_positive_weight=1.0,
+    baseline_heatmap_strict_size=True,
+    baseline_heatmap_loss_name="bce",
+    baseline_heatmap_positive_weight=4.0,
 ):
     """Валидация модели"""
     model.eval()
@@ -660,6 +736,9 @@ def validate(
                 cut_projection_strict_width=cut_projection_strict_width,
                 cut_projection_loss_name=cut_projection_loss_name,
                 cut_projection_positive_weight=cut_projection_positive_weight,
+                baseline_heatmap_strict_size=baseline_heatmap_strict_size,
+                baseline_heatmap_loss_name=baseline_heatmap_loss_name,
+                baseline_heatmap_positive_weight=baseline_heatmap_positive_weight,
             )
             total_loss += loss.item()
             batches += 1
@@ -707,6 +786,9 @@ def train_one_epoch(
     cut_projection_strict_width=True,
     cut_projection_loss_name="mse",
     cut_projection_positive_weight=1.0,
+    baseline_heatmap_strict_size=True,
+    baseline_heatmap_loss_name="bce",
+    baseline_heatmap_positive_weight=4.0,
 ):
     model.train()
     total_loss = 0.0
@@ -750,6 +832,9 @@ def train_one_epoch(
             cut_projection_strict_width=cut_projection_strict_width,
             cut_projection_loss_name=cut_projection_loss_name,
             cut_projection_positive_weight=cut_projection_positive_weight,
+            baseline_heatmap_strict_size=baseline_heatmap_strict_size,
+            baseline_heatmap_loss_name=baseline_heatmap_loss_name,
+            baseline_heatmap_positive_weight=baseline_heatmap_positive_weight,
         )
 
         # print(torch.isnan(loss), torch.isinf(loss))
@@ -794,6 +879,11 @@ def tensor_to_pil(image_tensor):
 def decode_target_for_preview(target, length, alphabet):
     if int(length) < 0:
         if torch.is_floating_point(target):
+            if target.dim() == 3 and target.size(0) == 2:
+                top_y = int(target[0].amax(dim=1).argmax().item()) if target.numel() else -1
+                bottom_y = int(target[1].amax(dim=1).argmax().item()) if target.numel() else -1
+                max_value = float(target.max().item()) if target.numel() else 0.0
+                return f"<baseline_heatmap top_y={top_y} bottom_y={bottom_y} max={max_value:.3f}>"
             peak_count = int((target > 0.5).sum().item())
             max_value = float(target.max().item()) if target.numel() else 0.0
             return f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
@@ -1048,6 +1138,8 @@ def effective_training_config_data(config: TrainingConfig, dataset_config: Singl
 def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
     if config.loss_mode == "cut_projection":
         target_format = "cut_projection"
+    elif config.loss_mode == "baseline_heatmap":
+        target_format = "baseline_heatmap"
     elif config.loss_mode == "legacy_logreg":
         target_format = config.legacy_target_mode
     else:
@@ -1070,6 +1162,11 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
         raise ValueError(
             "Training config requests loss_mode=cut_projection, but chunk metadata says "
             "cut_projection_targets are absent. Regenerate the dataset with save_cut_projection_targets: true."
+        )
+    if target_format == "baseline_heatmap" and not metadata.get("baseline_targets", False):
+        raise ValueError(
+            "Training config requests loss_mode=baseline_heatmap, but chunk metadata says "
+            "baseline_targets are absent. Regenerate the dataset with save_baseline_targets: true."
         )
     dataset = ChunkedLineDataset(
         config.chunks_dir,
@@ -1269,6 +1366,13 @@ def run_training(
             f"candidate_threshold={args.segmentator_cut_candidate_threshold:g} "
             f"smooth_radius={args.segmentator_cut_smooth_radius}"
         )
+    elif args.loss_mode == "baseline_heatmap":
+        print("Batch targets: two-channel top/bottom baseline heatmaps from chunks")
+        print(
+            f"Baseline heatmap loss: {args.baseline_heatmap_loss} "
+            f"positive_weight={args.baseline_heatmap_positive_weight:g} "
+            f"strict_size={args.baseline_heatmap_strict_size}"
+        )
     else:
         print("Legacy target mode: ", args.legacy_target_mode)
         if args.legacy_target_mode == "dense_symbols":
@@ -1427,6 +1531,9 @@ def run_training(
                 args.cut_projection_strict_width,
                 args.cut_projection_loss,
                 args.cut_projection_positive_weight,
+                args.baseline_heatmap_strict_size,
+                args.baseline_heatmap_loss,
+                args.baseline_heatmap_positive_weight,
             )
             train_loss = train_stats["loss"]
             train_losses.append(train_loss)
@@ -1453,6 +1560,9 @@ def run_training(
                 args.cut_projection_strict_width,
                 args.cut_projection_loss,
                 args.cut_projection_positive_weight,
+                args.baseline_heatmap_strict_size,
+                args.baseline_heatmap_loss,
+                args.baseline_heatmap_positive_weight,
             )
             val_loss = val_stats["loss"]
             val_losses.append(val_loss)

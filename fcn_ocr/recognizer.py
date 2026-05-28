@@ -56,6 +56,8 @@ class TextRecognizer:
         baseline_strict_lines: bool = True,
         baseline_line_pad: float = 0.08,
         baseline_line_pad_px: float = 0.0,
+        baseline_detector_checkpoint: str | Path | None = None,
+        baseline_detector_threshold: float = 0.35,
     ):
         if scale_x <= -0.95:
             raise ValueError("scale_x must be > -0.95")
@@ -73,6 +75,8 @@ class TextRecognizer:
             raise ValueError("baseline_line_pad_px must be >= 0")
         if baseline_max_angle <= 0.0:
             raise ValueError("baseline_max_angle must be > 0")
+        if not 0.0 < baseline_detector_threshold < 1.0:
+            raise ValueError("baseline_detector_threshold must be between 0 and 1")
 
         self.checkpoint_path = Path(checkpoint_path)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -88,6 +92,12 @@ class TextRecognizer:
         self.baseline_strict_lines = bool(baseline_strict_lines)
         self.baseline_line_pad = float(baseline_line_pad)
         self.baseline_line_pad_px = float(baseline_line_pad_px)
+        self.baseline_detector_checkpoint = Path(baseline_detector_checkpoint) if baseline_detector_checkpoint else None
+        self.baseline_detector_threshold = float(baseline_detector_threshold)
+        self.baseline_detector_model: torch.nn.Module | None = None
+        self.baseline_detector_in_channels = 1
+        self.baseline_detector_image_height = 0
+        self.baseline_detector_architecture = ""
 
         self.alphabet = self.checkpoint["alphabet"]
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
@@ -123,8 +133,56 @@ class TextRecognizer:
         self.model.load_state_dict(self.checkpoint["model_state_dict"])
         self.model.eval()
 
+        if self.baseline_detector_checkpoint is not None:
+            self._load_baseline_detector()
+
         if verbose:
             self.print_summary()
+
+    def _load_baseline_detector(self) -> None:
+        if self.baseline_detector_checkpoint is None:
+            return
+        if not self.baseline_detector_checkpoint.exists():
+            raise FileNotFoundError(f"Baseline detector checkpoint not found: {self.baseline_detector_checkpoint}")
+
+        checkpoint = torch.load(self.baseline_detector_checkpoint, map_location=self.device)
+        model_config = checkpoint.get("model_config", {})
+        checkpoint_config = checkpoint.get("config", {})
+        target_format = str(model_config.get("target_format", checkpoint_config.get("target_format", ""))).lower()
+        loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", ""))).lower()
+        architecture = normalize_architecture_name(
+            model_config.get("architecture", checkpoint_config.get("architecture", "baseline_detector_fcn"))
+        )
+        architecture_params = dict(
+            model_config.get(
+                "architecture_params",
+                checkpoint_config.get("architecture_params", {}),
+            )
+            or {}
+        )
+        in_channels = int(model_config.get("in_channels", checkpoint_config.get("channels", 1)))
+        num_classes = int(model_config.get("num_classes", 2))
+        if target_format != "baseline_heatmap" and loss_mode != "baseline_heatmap":
+            raise ValueError(
+                "Baseline detector checkpoint must be trained with loss_mode=baseline_heatmap; "
+                f"got loss_mode={loss_mode!r}, target_format={target_format!r}"
+            )
+        if num_classes != 2:
+            raise ValueError(f"Baseline detector checkpoint must have num_classes=2, got {num_classes}")
+
+        model = create_model(
+            architecture,
+            in_channels=in_channels,
+            num_classes=num_classes,
+            **architecture_params,
+        ).to(self.device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+
+        self.baseline_detector_model = model
+        self.baseline_detector_in_channels = in_channels
+        self.baseline_detector_image_height = int(checkpoint_config.get("image_height", 0) or 0)
+        self.baseline_detector_architecture = architecture
 
     def print_summary(self) -> None:
         epoch = self.checkpoint.get("epoch", "?")
@@ -151,6 +209,13 @@ class TextRecognizer:
                 f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}, "
                 f"line_pad_px={self.baseline_line_pad_px:.1f}"
             )
+            if self.baseline_detector_model is not None:
+                print(
+                    "  neural_detector="
+                    f"{self.baseline_detector_checkpoint} "
+                    f"threshold={self.baseline_detector_threshold:.3f} "
+                    f"architecture={self.baseline_detector_architecture}"
+                )
 
     def class_label(self, index: int) -> str:
         return display_char(self.idx_to_char.get(index, f"<{index}>"))
@@ -176,6 +241,8 @@ class TextRecognizer:
             "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_line_pad": self.baseline_line_pad,
             "baseline_line_pad_px": self.baseline_line_pad_px,
+            "baseline_detector_checkpoint": str(self.baseline_detector_checkpoint) if self.baseline_detector_checkpoint else None,
+            "baseline_detector_threshold": self.baseline_detector_threshold,
             "x_pad": self.x_pad,
             "x_pad_mode": "border_median_original",
         }
@@ -363,7 +430,7 @@ class TextRecognizer:
         return self._pil_fill_value(image.mode)
 
     def _apply_baseline_crop(self, image: Image.Image, collect_debug: bool) -> tuple[Image.Image, PreprocessDebug]:
-        if cv2 is None:
+        if cv2 is None and self.baseline_detector_model is None:
             raise RuntimeError("opencv-python is required for baseline_crop inference preprocessing")
 
         debug_images: list[tuple[str, Image.Image]] = []
@@ -481,6 +548,208 @@ class TextRecognizer:
         return cropped, PreprocessDebug(metadata=metadata, images=debug_images)
 
     def _detect_baseline(self, image: Image.Image) -> dict[str, Any]:
+        if self.baseline_detector_model is not None:
+            return self._detect_baseline_neural(image)
+        return self._detect_baseline_heuristic(image)
+
+    def _detect_baseline_neural(self, image: Image.Image) -> dict[str, Any]:
+        if self.baseline_detector_model is None:
+            return self._detect_baseline_heuristic(image)
+
+        tensor, scale_x, scale_y, detector_size = self._baseline_detector_input(image)
+        with torch.no_grad():
+            logits = self.baseline_detector_model(tensor)
+            if logits.dim() != 4 or logits.size(1) != 2:
+                raise ValueError(
+                    "Baseline detector must output logits shaped (B, 2, H, W), "
+                    f"got {tuple(logits.shape)}"
+                )
+            probs = torch.sigmoid(logits[:, :2])
+            if probs.shape[-2:] != (detector_size[1], detector_size[0]):
+                probs = torch.nn.functional.interpolate(
+                    probs,
+                    size=(detector_size[1], detector_size[0]),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+        heatmaps = probs[0].detach().cpu().numpy()
+        top_line = self._line_from_baseline_heatmap(heatmaps[0], "neural_top")
+        bottom_line = self._line_from_baseline_heatmap(heatmaps[1], "neural_bottom")
+        cleaned_mask = self._baseline_heatmap_mask(heatmaps, image.size)
+        foreground_pixels = int(np.count_nonzero(cleaned_mask))
+        if top_line is None or bottom_line is None:
+            return {
+                "ok": False,
+                "status": "neural_baseline_fit_failed",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_heatmap",
+                "mask_name": "baseline_detector",
+            }
+
+        top_line = self._scale_baseline_line(top_line, scale_x=scale_x, scale_y=scale_y)
+        bottom_line = self._scale_baseline_line(bottom_line, scale_x=scale_x, scale_y=scale_y)
+        x_mid = max(0.0, (image.width - 1) * 0.5)
+        top_mid = float(top_line["slope"]) * x_mid + float(top_line["intercept"])
+        bottom_mid = float(bottom_line["slope"]) * x_mid + float(bottom_line["intercept"])
+        if top_mid >= bottom_mid:
+            return {
+                "ok": False,
+                "status": "neural_baseline_lines_reversed",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_heatmap",
+                "mask_name": "baseline_detector",
+                "topline_confidence": float(top_line["confidence"]),
+                "baseline_confidence": float(bottom_line["confidence"]),
+            }
+
+        xs = np.concatenate((top_line["profile_x"], bottom_line["profile_x"]))
+        ys = np.concatenate((top_line["profile_y"], bottom_line["profile_y"]))
+        if xs.size == 0 or ys.size == 0:
+            return {
+                "ok": False,
+                "status": "neural_baseline_empty_profiles",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_heatmap",
+                "mask_name": "baseline_detector",
+            }
+
+        paired_crop = self._paired_baseline_crop_box(
+            top_slope=float(top_line["slope"]),
+            top_intercept=float(top_line["intercept"]),
+            bottom_slope=float(bottom_line["slope"]),
+            bottom_intercept=float(bottom_line["intercept"]),
+            xs=xs,
+            ys=ys,
+            image_width=image.width,
+        )
+        if paired_crop is None:
+            return {
+                "ok": False,
+                "status": "neural_baseline_crop_failed",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_heatmap",
+                "mask_name": "baseline_detector",
+                "topline_confidence": float(top_line["confidence"]),
+                "baseline_confidence": float(bottom_line["confidence"]),
+            }
+        crop_box, text_height = paired_crop
+        confidence = min(float(top_line["confidence"]), float(bottom_line["confidence"]))
+        angle_degrees = math.degrees(math.atan(float(bottom_line["slope"])))
+        top_y = top_line["slope"] * xs + top_line["intercept"]
+        bottom_y = bottom_line["slope"] * xs + bottom_line["intercept"]
+        text_bbox = (
+            max(0, int(math.floor(float(xs.min())))),
+            max(0, int(math.floor(float(min(top_y.min(), ys.min()))))),
+            min(image.width, int(math.ceil(float(xs.max()) + 1.0))),
+            min(image.height, int(math.ceil(float(max(bottom_y.max(), ys.max())) + 1.0))),
+        )
+        return {
+            "ok": True,
+            "status": "ok",
+            "mask_name": "baseline_detector",
+            "method": "neural_heatmap",
+            "cleaned_mask": cleaned_mask,
+            "foreground_pixels": foreground_pixels,
+            "slope": float(bottom_line["slope"]),
+            "intercept": float(bottom_line["intercept"]),
+            "angle_degrees": float(angle_degrees),
+            "confidence": float(confidence),
+            "bottom_confidence": float(bottom_line["confidence"]),
+            "inlier_ratio": float(bottom_line["inlier_ratio"]),
+            "profile_coverage": float(bottom_line["profile_coverage"]),
+            "residual_mad": float(bottom_line["residual_mad"]),
+            "residual_rmse": float(bottom_line["residual_rmse"]),
+            "profile_x": bottom_line["profile_x"],
+            "profile_y": bottom_line["profile_y"],
+            "inlier_mask": bottom_line["inlier_mask"],
+            "crop_box": crop_box,
+            "text_bbox": text_bbox,
+            "text_height": int(text_height),
+            "bottom_slope": float(bottom_line["slope"]),
+            "bottom_intercept": float(bottom_line["intercept"]),
+            "bottom_angle_degrees": float(angle_degrees),
+            "topline_detected": True,
+            **self._topline_metadata(top_line),
+        }
+
+    def _baseline_detector_input(self, image: Image.Image) -> tuple[torch.Tensor, float, float, tuple[int, int]]:
+        mode = "RGB" if self.baseline_detector_in_channels == 3 else "L"
+        detector_image = image.convert(mode)
+        if self.baseline_detector_image_height > 0 and detector_image.height != self.baseline_detector_image_height:
+            new_width = max(1, round(detector_image.width * self.baseline_detector_image_height / detector_image.height))
+            detector_image = detector_image.resize((new_width, self.baseline_detector_image_height), Image.Resampling.BICUBIC)
+
+        scale_x = detector_image.width / max(1.0, float(image.width))
+        scale_y = detector_image.height / max(1.0, float(image.height))
+        array = np.asarray(detector_image, dtype=np.float32) / 255.0
+        if self.baseline_detector_in_channels == 1:
+            tensor = torch.from_numpy(array).unsqueeze(0).unsqueeze(0)
+        else:
+            tensor = torch.from_numpy(array).permute(2, 0, 1).unsqueeze(0)
+        return tensor.to(self.device), float(scale_x), float(scale_y), detector_image.size
+
+    def _line_from_baseline_heatmap(self, heatmap: np.ndarray, method: str) -> dict[str, Any] | None:
+        if heatmap.ndim != 2 or heatmap.size == 0:
+            return None
+        height, width = heatmap.shape
+        scores = heatmap.max(axis=0)
+        y_positions = heatmap.argmax(axis=0).astype(np.float64)
+        keep = scores >= self.baseline_detector_threshold
+        min_points = max(6, int(round(width * 0.08)))
+        if int(np.count_nonzero(keep)) < min_points:
+            return None
+
+        profile_x = np.flatnonzero(keep).astype(np.float64)
+        profile_y = y_positions[keep].astype(np.float64)
+        profile_weights = np.maximum(scores[keep].astype(np.float64), 1e-3)
+        profile_coverage = float(profile_x.size) / max(1.0, float(width))
+        line = self._fit_baseline_line(
+            profile_x,
+            profile_y,
+            profile_weights,
+            image_height=height,
+            text_width=width,
+            profile_coverage=profile_coverage,
+        )
+        if line is None:
+            return None
+
+        mean_score = float(np.mean(profile_weights))
+        line["confidence"] = float(0.55 * float(line["confidence"]) + 0.45 * mean_score)
+        line.update(
+            {
+                "method": method,
+                "profile_x": profile_x,
+                "profile_y": profile_y,
+                "profile_coverage": profile_coverage,
+            }
+        )
+        return line
+
+    @staticmethod
+    def _scale_baseline_line(line: dict[str, Any], scale_x: float, scale_y: float) -> dict[str, Any]:
+        scale_x = max(scale_x, 1e-6)
+        scale_y = max(scale_y, 1e-6)
+        scaled = dict(line)
+        scaled["slope"] = float(line["slope"]) * scale_x / scale_y
+        scaled["intercept"] = float(line["intercept"]) / scale_y
+        scaled["profile_x"] = np.asarray(line["profile_x"], dtype=np.float64) / scale_x
+        scaled["profile_y"] = np.asarray(line["profile_y"], dtype=np.float64) / scale_y
+        scaled["inlier_mask"] = np.asarray(line["inlier_mask"], dtype=bool)
+        return scaled
+
+    def _baseline_heatmap_mask(self, heatmaps: np.ndarray, output_size: tuple[int, int]) -> np.ndarray:
+        combined = np.max(heatmaps, axis=0)
+        combined = (combined >= self.baseline_detector_threshold).astype(np.uint8) * 255
+        mask_image = Image.fromarray(combined, mode="L").resize(output_size, Image.Resampling.BILINEAR)
+        return np.asarray(mask_image, dtype=np.uint8)
+
+    def _detect_baseline_heuristic(self, image: Image.Image) -> dict[str, Any]:
         gray = np.asarray(image.convert("L"), dtype=np.uint8)
         detections: list[dict[str, Any]] = []
         bbox_fallbacks: list[dict[str, Any]] = []

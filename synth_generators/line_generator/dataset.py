@@ -70,6 +70,11 @@ class SingleLineDatasetConfig(BaseModel):
     min_crop_text_length: int = Field(default=1, ge=1)
     edge_char_min_visible_ratio: float = Field(default=0.75, ge=0.0, le=1.0)
     edge_fragment_max_visible_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
+    neighbor_lines_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    neighbor_line_min_crop_ratio: float = Field(default=0.55, ge=0.0, le=1.0)
+    neighbor_line_visible_ratio_min: float = Field(default=0.08, ge=0.0, le=1.0)
+    neighbor_line_gap_min: int = Field(default=0, ge=0)
+    neighbor_line_gap_max: int = Field(default=6, ge=0)
     font_paths: list[str] | None = None
     font_dir: str | None = None
     font_check: bool = True
@@ -100,8 +105,10 @@ class SingleLineDatasetConfig(BaseModel):
     overwrite: bool = False
     save_dense_targets: bool = False
     save_cut_projection_targets: bool = False
+    save_baseline_targets: bool = False
     cut_projection_peak_radius: int = Field(default=1, ge=0)
     cut_projection_include_margins: bool = False
+    baseline_target_radius: int = Field(default=1, ge=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -121,6 +128,15 @@ class SingleLineDatasetConfig(BaseModel):
         if self.edge_fragment_max_visible_ratio > self.edge_char_min_visible_ratio:
             raise ValueError(
                 "edge_fragment_max_visible_ratio must be <= edge_char_min_visible_ratio"
+            )
+        if self.neighbor_line_gap_max < self.neighbor_line_gap_min:
+            raise ValueError("neighbor_line_gap_max must be >= neighbor_line_gap_min")
+        max_visible_ratio = 1.0 - self.neighbor_line_min_crop_ratio
+        if self.neighbor_lines_probability > 0.0 and max_visible_ratio <= 0.0:
+            raise ValueError("neighbor_line_min_crop_ratio must be < 1 when neighbor_lines_probability > 0")
+        if self.neighbor_lines_probability > 0.0 and self.neighbor_line_visible_ratio_min > max_visible_ratio:
+            raise ValueError(
+                "neighbor_line_visible_ratio_min must be <= 1 - neighbor_line_min_crop_ratio"
             )
         return self
 
@@ -299,6 +315,7 @@ class GeneratedLineSample:
     length: int
     dense_target: torch.Tensor | None
     cut_projection_target: torch.Tensor | None
+    baseline_target: torch.Tensor | None
 
 
 class SingleLineDataset(Dataset):
@@ -307,8 +324,8 @@ class SingleLineDataset(Dataset):
     def __init__(self, config: SingleLineDatasetConfig, target_format: str = "text"):
         self.config = config
         self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols", "cut_projection"}:
-            raise ValueError("target_format must be 'text', 'dense_symbols', or 'cut_projection'")
+        if self.target_format not in {"text", "dense_symbols", "cut_projection", "baseline_heatmap"}:
+            raise ValueError("target_format must be 'text', 'dense_symbols', 'cut_projection', or 'baseline_heatmap'")
         self.alphabet = config.alphabet or config.sample_alphabet
         self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
@@ -349,6 +366,10 @@ class SingleLineDataset(Dataset):
             if sample.cut_projection_target is None:
                 raise RuntimeError("cut projection target was not generated for this sample")
             return sample.image, sample.cut_projection_target, torch.tensor(-1, dtype=torch.long)
+        if self.target_format == "baseline_heatmap":
+            if sample.baseline_target is None:
+                raise RuntimeError("baseline target was not generated for this sample")
+            return sample.image, sample.baseline_target, torch.tensor(-1, dtype=torch.long)
         return sample.image, sample.target, torch.tensor(sample.length, dtype=torch.long)
 
     def generate_sample_from_index(self, index: int) -> GeneratedLineSample:
@@ -402,8 +423,8 @@ class SingleLineDataset(Dataset):
             raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
         style = style or self._sample_text_style(rng)
         font = font or self._load_font_that_fits(text, rng, style)
-        image, spans = self._render_text(text, font, rng, style)
-        return self._make_sample(image, text, spans)
+        image, spans, baseline_top, baseline_bottom = self._render_text(text, font, rng, style)
+        return self._make_sample(image, text, spans, baseline_top, baseline_bottom)
 
     def _validate_text(self, text: str) -> None:
         text = self._normalize_spaces(text)
@@ -456,8 +477,8 @@ class SingleLineDataset(Dataset):
             text = self._make_line_text(rng)
             style = self._sample_text_style(rng)
             font = self._load_font_for_line(text, rng)
-            image, spans = self._render_long_text(text, font, rng, style)
-            samples = self._slice_line_image(image, spans)
+            image, spans, baseline_top, baseline_bottom = self._render_long_text(text, font, rng, style)
+            samples = self._slice_line_image(image, spans, baseline_top, baseline_bottom, rng)
             if samples:
                 return samples
 
@@ -516,34 +537,215 @@ class SingleLineDataset(Dataset):
             f"{details}"
         )
 
+    def _sample_centered_text_y(
+        self,
+        bbox: tuple[float, float, float, float],
+        height: int,
+        rng: random.Random,
+    ) -> float:
+        text_height = bbox[3] - bbox[1]
+        y_jitter = rng.randint(-2, 2)
+        y_min = -bbox[1]
+        y_max = height - bbox[3]
+        y = (height - text_height) // 2 - bbox[1] + y_jitter
+        return float(min(max(y, y_min), y_max))
+
+    def _sample_neighbor_line_layout(
+        self,
+        main_bbox: tuple[float, float, float, float],
+        width: int,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle,
+        rng: random.Random,
+    ) -> dict[str, Any] | None:
+        cfg = self.config
+        if cfg.neighbor_lines_probability <= 0.0:
+            return None
+
+        use_top = rng.random() <= cfg.neighbor_lines_probability
+        use_bottom = rng.random() <= cfg.neighbor_lines_probability
+        if not use_top and not use_bottom:
+            return None
+
+        top_text = self._make_neighbor_line_text(rng, font, style, width) if use_top else None
+        bottom_text = self._make_neighbor_line_text(rng, font, style, width) if use_bottom else None
+        top_bbox = self._text_bbox(top_text, font, style) if top_text is not None else None
+        bottom_bbox = self._text_bbox(bottom_text, font, style) if bottom_text is not None else None
+        main_height = main_bbox[3] - main_bbox[1]
+
+        for _ in range(50):
+            top_visible = (
+                self._sample_neighbor_visible_pixels(top_bbox[3] - top_bbox[1], rng)
+                if top_bbox is not None
+                else 0
+            )
+            bottom_visible = (
+                self._sample_neighbor_visible_pixels(bottom_bbox[3] - bottom_bbox[1], rng)
+                if bottom_bbox is not None
+                else 0
+            )
+            if (use_top and top_visible <= 0) or (use_bottom and bottom_visible <= 0):
+                continue
+
+            top_gap = rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max) if use_top else 0
+            bottom_gap = rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max) if use_bottom else 0
+            main_top_min = top_visible + top_gap if use_top else 0
+            main_bottom_max = cfg.image_height - bottom_visible - bottom_gap if use_bottom else cfg.image_height
+            if main_bottom_max - main_top_min < main_height:
+                continue
+
+            y_min = max(-main_bbox[1], main_top_min - main_bbox[1])
+            y_max = min(cfg.image_height - main_bbox[3], main_bottom_max - main_bbox[3])
+            if y_max < y_min:
+                continue
+            slack = y_max - y_min
+            if slack <= 0.0:
+                main_y = y_min
+            else:
+                center = (y_min + y_max) * 0.5
+                jitter = rng.uniform(-min(2.0, slack * 0.5), min(2.0, slack * 0.5))
+                main_y = min(max(center + jitter, y_min), y_max)
+
+            layout: dict[str, Any] = {
+                "main_y": float(main_y),
+            }
+            if top_text is not None and top_bbox is not None:
+                layout.update(
+                    {
+                        "top_text": top_text,
+                        "top_x": self._sample_neighbor_text_x(top_bbox, width, rng),
+                        "top_y": float(top_visible - top_bbox[3]),
+                    }
+                )
+            if bottom_text is not None and bottom_bbox is not None:
+                layout.update(
+                    {
+                        "bottom_text": bottom_text,
+                        "bottom_x": self._sample_neighbor_text_x(bottom_bbox, width, rng),
+                        "bottom_y": float(cfg.image_height - bottom_visible - bottom_bbox[1]),
+                    }
+                )
+            return layout
+
+        return None
+
+    def _sample_neighbor_visible_pixels(self, text_height: float, rng: random.Random) -> int:
+        max_visible_ratio = 1.0 - self.config.neighbor_line_min_crop_ratio
+        if max_visible_ratio <= 0.0 or text_height <= 0.0:
+            return 0
+        min_visible_ratio = min(self.config.neighbor_line_visible_ratio_min, max_visible_ratio)
+        visible_ratio = rng.uniform(min_visible_ratio, max_visible_ratio)
+        return max(1, int(round(text_height * visible_ratio)))
+
+    def _sample_neighbor_text_x(
+        self,
+        bbox: tuple[float, float, float, float],
+        width: int,
+        rng: random.Random,
+    ) -> float:
+        left_aligned = self.config.horizontal_padding - bbox[0]
+        text_width = bbox[2] - bbox[0]
+        if text_width <= width - 2 * self.config.horizontal_padding:
+            x_min = self.config.horizontal_padding - bbox[0]
+            x_max = width - self.config.horizontal_padding - bbox[2]
+            free_x = max(0, int(math.floor(x_max - x_min)))
+            return float(x_min + rng.randint(0, free_x))
+
+        max_shift = max(0, int(math.ceil(text_width - width + 2 * self.config.horizontal_padding)))
+        return float(left_aligned - rng.randint(0, max_shift))
+
+    def _make_neighbor_line_text(
+        self,
+        rng: random.Random,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle,
+        min_width: int,
+    ) -> str:
+        parts = [self._make_line_text(rng)]
+        space = self.config.space_char
+        for _ in range(12):
+            text = self._normalize_spaces(space.join(parts))
+            width = self._text_advance(text, font, style)
+            if width >= min_width:
+                return text
+
+            if width <= 0.0:
+                parts.append(self._make_line_text(rng))
+                continue
+
+            missing_ratio = max(0.0, (min_width - width) / width)
+            add_count = max(1, min(4, int(math.ceil(missing_ratio))))
+            for _ in range(add_count):
+                parts.append(self._make_line_text(rng))
+
+        return self._normalize_spaces(space.join(parts))
+
+    def _draw_neighbor_lines(
+        self,
+        draw: ImageDraw.ImageDraw,
+        layout: dict[str, Any],
+        font: ImageFont.FreeTypeFont,
+        fill: int,
+        style: TextRenderStyle,
+    ) -> None:
+        if "top_text" in layout:
+            self._draw_text(
+                draw,
+                float(layout["top_x"]),
+                float(layout["top_y"]),
+                str(layout["top_text"]),
+                font,
+                fill,
+                style,
+            )
+        if "bottom_text" in layout:
+            self._draw_text(
+                draw,
+                float(layout["bottom_x"]),
+                float(layout["bottom_y"]),
+                str(layout["bottom_text"]),
+                font,
+                fill,
+                style,
+            )
+
     def _render_text(
         self,
         text: str,
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
         style: TextRenderStyle,
-    ) -> tuple[Image.Image, list[tuple[str, float, float]]]:
+    ) -> tuple[Image.Image, list[tuple[str, float, float]], float, float]:
         cfg = self.config
         image = self._make_background(rng)
         draw = ImageDraw.Draw(image)
 
         bbox = self._text_bbox(text, font, style)
         text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
         x_min = cfg.horizontal_padding - bbox[0]
         x_max = cfg.image_width - cfg.horizontal_padding - bbox[2]
         free_x = max(0, int(math.floor(x_max - x_min)))
         x = x_min + rng.randint(0, free_x)
-        y_jitter = rng.randint(-2, 2)
-        y_min = -bbox[1]
-        y_max = cfg.image_height - bbox[3]
-        y = (cfg.image_height - text_height) // 2 - bbox[1] + y_jitter
-        y = min(max(y, y_min), y_max)
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
+        neighbor_layout = self._sample_neighbor_line_layout(
+            main_bbox=bbox,
+            width=cfg.image_width,
+            font=font,
+            style=style,
+            rng=rng,
+        )
+
+        if neighbor_layout is None:
+            y = self._sample_centered_text_y(bbox, cfg.image_height, rng)
+        else:
+            y = neighbor_layout["main_y"]
+            self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
         spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
+        baseline_top = float(y + bbox[1])
+        baseline_bottom = float(y + bbox[3] - 1)
 
-        return image, spans
+        return image, spans, baseline_top, baseline_bottom
 
     def _render_long_text(
         self,
@@ -551,7 +753,7 @@ class SingleLineDataset(Dataset):
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
         style: TextRenderStyle,
-    ) -> tuple[Image.Image, list[tuple[str, float, float]]]:
+    ) -> tuple[Image.Image, list[tuple[str, float, float]], float, float]:
         cfg = self.config
         bbox = self._text_bbox(text, font, style)
         text_width = bbox[2] - bbox[0]
@@ -570,21 +772,33 @@ class SingleLineDataset(Dataset):
         image = self._make_background(rng, width=line_width, height=cfg.image_height)
         draw = ImageDraw.Draw(image)
 
-        text_height = bbox[3] - bbox[1]
-        y_jitter = rng.randint(-2, 2)
-        y_min = -bbox[1]
-        y_max = cfg.image_height - bbox[3]
-        y = (cfg.image_height - text_height) // 2 - bbox[1] + y_jitter
-        y = min(max(y, y_min), y_max)
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
+        neighbor_layout = self._sample_neighbor_line_layout(
+            main_bbox=bbox,
+            width=line_width,
+            font=font,
+            style=style,
+            rng=rng,
+        )
+
+        if neighbor_layout is None:
+            y = self._sample_centered_text_y(bbox, cfg.image_height, rng)
+        else:
+            y = neighbor_layout["main_y"]
+            self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
         spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
-        return image, spans
+        baseline_top = float(y + bbox[1])
+        baseline_bottom = float(y + bbox[3] - 1)
+        return image, spans, baseline_top, baseline_bottom
 
     def _slice_line_image(
         self,
         image: Image.Image,
         spans: list[tuple[str, float, float]],
+        baseline_top: float,
+        baseline_bottom: float,
+        rng: random.Random,
     ) -> list[GeneratedLineSample]:
         cfg = self.config
         stride = cfg.crop_stride or cfg.image_width
@@ -601,7 +815,15 @@ class SingleLineDataset(Dataset):
             if len(text) > cfg.max_text_length:
                 continue
             crop = image.crop((left, 0, right, cfg.image_height))
-            samples.append(self._make_sample(crop, text, crop_spans))
+            samples.append(
+                self._make_sample(
+                    crop,
+                    text,
+                    crop_spans,
+                    baseline_top,
+                    baseline_bottom,
+                )
+            )
 
         return samples
 
@@ -654,6 +876,8 @@ class SingleLineDataset(Dataset):
         image: Image.Image,
         text: str,
         spans: list[tuple[str, float, float]],
+        baseline_top: float,
+        baseline_bottom: float,
     ) -> GeneratedLineSample:
         target = self._encode_text(text)
         dense_target = None
@@ -662,6 +886,18 @@ class SingleLineDataset(Dataset):
         cut_projection_target = None
         if self.target_format == "cut_projection" or self.config.save_cut_projection_targets:
             cut_projection_target = self._encode_cut_projection(spans, image.width)
+        baseline_target = None
+        if self.target_format == "baseline_heatmap" or self.config.save_baseline_targets:
+            x_start = min(start for _, start, _ in spans)
+            x_end = max(end for _, _, end in spans)
+            baseline_target = self._encode_baseline_heatmap(
+                baseline_top,
+                baseline_bottom,
+                image.height,
+                image.width,
+                x_start=x_start,
+                x_end=x_end,
+            )
         length = len(text)
 
         if self.config.channels == 3:
@@ -678,6 +914,7 @@ class SingleLineDataset(Dataset):
             length=length,
             dense_target=dense_target,
             cut_projection_target=cut_projection_target,
+            baseline_target=baseline_target,
         )
 
     def _encode_text(self, text: str) -> torch.Tensor:
@@ -754,6 +991,41 @@ class SingleLineDataset(Dataset):
             mark_peak((prev_end + next_start) * 0.5)
 
         return projection
+
+    def _encode_baseline_heatmap(
+        self,
+        baseline_top: float,
+        baseline_bottom: float,
+        height: int,
+        width: int,
+        x_start: float = 0.0,
+        x_end: float | None = None,
+    ) -> torch.Tensor:
+        target = torch.zeros((2, height, width), dtype=torch.float32)
+        radius = self.config.baseline_target_radius
+        left = int(math.floor(max(0.0, x_start)))
+        right = int(math.ceil(min(float(width), float(width if x_end is None else x_end))))
+        if right <= left:
+            left = 0
+            right = width
+
+        def mark_line(channel: int, y_value: float) -> None:
+            center = int(round(min(max(y_value, 0.0), float(height - 1))))
+            if radius == 0:
+                target[channel, center, left:right] = 1.0
+                return
+            for offset in range(-radius, radius + 1):
+                y = center + offset
+                if 0 <= y < height:
+                    value = 1.0 - (abs(offset) / float(radius + 1))
+                    target[channel, y, left:right] = torch.maximum(
+                        target[channel, y, left:right],
+                        torch.full((right - left,), value, dtype=target.dtype),
+                    )
+
+        mark_line(0, baseline_top)
+        mark_line(1, baseline_bottom)
+        return target
 
     def _char_spans(
         self,

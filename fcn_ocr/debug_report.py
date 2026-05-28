@@ -324,6 +324,10 @@ def save_debug_image(
         info_lines.append(f"baseline line pad: {float(metadata['baseline_line_pad']):.3f}")
     if metadata.get("baseline_line_pad_px") is not None:
         info_lines.append(f"baseline line pad px: {float(metadata['baseline_line_pad_px']):.1f}")
+    if metadata.get("baseline_detector_checkpoint"):
+        info_lines.append(f"baseline detector: {metadata['baseline_detector_checkpoint']}")
+    if metadata.get("baseline_detector_checkpoint") and metadata.get("baseline_detector_threshold") is not None:
+        info_lines.append(f"baseline detector threshold: {float(metadata['baseline_detector_threshold']):.3f}")
     if metadata.get("baseline_status"):
         info_lines.append(f"baseline status: {metadata['baseline_status']}")
     if metadata.get("baseline_angle_degrees") is not None:

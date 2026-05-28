@@ -229,6 +229,17 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Extra absolute strict top/bottom line crop margin in source pixels, added on top of --baseline-line-pad.",
     )
+    parser.add_argument(
+        "--baseline-detector-checkpoint",
+        default=None,
+        help="Optional neural top/bottom baseline detector checkpoint used by --baseline-crop instead of the heuristic.",
+    )
+    parser.add_argument(
+        "--baseline-detector-threshold",
+        type=float,
+        default=0.35,
+        help="Minimum sigmoid probability for top/bottom baseline heatmap columns.",
+    )
     parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
     parser.add_argument(
         "--debug-image",
@@ -266,6 +277,8 @@ def main() -> None:
         baseline_strict_lines=not args.no_baseline_strict_lines,
         baseline_line_pad=args.baseline_line_pad,
         baseline_line_pad_px=args.baseline_line_pad_px,
+        baseline_detector_checkpoint=args.baseline_detector_checkpoint,
+        baseline_detector_threshold=args.baseline_detector_threshold,
     )
     segmentator = None
     segmentator_checkpoint_path = None
@@ -288,6 +301,8 @@ def main() -> None:
             baseline_strict_lines=not args.no_baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
             baseline_line_pad_px=args.baseline_line_pad_px,
+            baseline_detector_checkpoint=args.baseline_detector_checkpoint,
+            baseline_detector_threshold=args.baseline_detector_threshold,
             cut_threshold=args.segmentator_cut_threshold,
             peak_min_distance=args.segmentator_peak_min_distance,
             cut_postprocess=args.segmentator_cut_postprocess,

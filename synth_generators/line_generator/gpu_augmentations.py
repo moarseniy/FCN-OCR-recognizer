@@ -178,7 +178,7 @@ class GpuTextAugmenter:
         if params_by_sample is None:
             return targets
         if name == "cycle_shift":
-            return self._cycle_shift_targets(targets, params_by_sample)
+            return self._cycle_shift_targets(targets, target_format, params_by_sample)
         if name == "preprocess_geometry":
             return self._affine_targets(
                 targets,
@@ -207,11 +207,14 @@ class GpuTextAugmenter:
             return self._x_pad_targets(targets, target_format, params_by_sample)
         if name == "crop_x":
             return self._crop_x_targets(targets, target_format, params_by_sample)
+        if name == "crop_y":
+            return self._crop_y_targets(targets, target_format, params_by_sample)
         return targets
 
     def _cycle_shift_targets(
         self,
         targets: torch.Tensor,
+        target_format: str,
         params_by_sample: list[AugmentationParams],
     ) -> torch.Tensor:
         output = targets.clone()
@@ -219,7 +222,11 @@ class GpuTextAugmenter:
             if not params:
                 continue
             shift_x = int(params.get("shift_x", 0))
-            if shift_x != 0:
+            shift_y = int(params.get("shift_y", 0))
+            if target_format == "baseline_heatmap":
+                if shift_x != 0 or shift_y != 0:
+                    output[index] = torch.roll(targets[index], shifts=(shift_y, shift_x), dims=(-2, -1))
+            elif shift_x != 0:
                 output[index] = torch.roll(targets[index], shifts=shift_x, dims=-1)
         return output
 
@@ -233,6 +240,9 @@ class GpuTextAugmenter:
         width = int(targets.size(-1))
         if width <= 0:
             return output
+
+        if target_format == "baseline_heatmap":
+            return self._crop_x_targets_2d(targets, params_by_sample)
 
         for index, params in enumerate(params_by_sample):
             if not params:
@@ -256,6 +266,9 @@ class GpuTextAugmenter:
         width = int(targets.size(-1))
         if width <= 0:
             return targets
+
+        if target_format == "baseline_heatmap":
+            return self._x_pad_targets_2d(targets, params_by_sample)
 
         fill = self._target_fill_value(target_format)
         output = torch.full_like(targets, fill)
@@ -283,6 +296,22 @@ class GpuTextAugmenter:
     ) -> torch.Tensor:
         if targets.numel() == 0:
             return targets
+
+        if target_format == "baseline_heatmap":
+            if targets.dim() != 4:
+                raise ValueError(
+                    "baseline_heatmap augmentation targets must have shape (B, 2, H, W), "
+                    f"got {tuple(targets.shape)}"
+                )
+            grid = F.affine_grid(theta, targets.shape, align_corners=False)
+            warped = F.grid_sample(
+                targets.to(dtype=torch.float32),
+                grid,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
+            )
+            return warped.clamp(0.0, 1.0).to(dtype=targets.dtype)
 
         is_dense = target_format == "dense_symbols"
         mode = "nearest" if is_dense else "bilinear"
@@ -318,6 +347,100 @@ class GpuTextAugmenter:
         resized = F.interpolate(target_map, size=width, mode=mode, align_corners=False)
         return resized[:, 0, :].to(dtype=targets.dtype)
 
+    def _crop_x_targets_2d(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        output = targets.clone()
+        height = int(targets.size(-2))
+        width = int(targets.size(-1))
+        if height <= 0 or width <= 0:
+            return output
+
+        for index, params in enumerate(params_by_sample):
+            if not params:
+                continue
+            left = int(params.get("crop_left", 0))
+            right = int(params.get("crop_right", 0))
+            if left + right <= 0:
+                continue
+            if left + right >= width:
+                right = max(0, width - left - 1)
+            cropped = targets[index : index + 1, :, :, left : width - right]
+            output[index : index + 1] = F.interpolate(
+                cropped.float(),
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            ).to(dtype=targets.dtype)
+        return output.clamp(0.0, 1.0)
+
+    def _crop_y_targets(
+        self,
+        targets: torch.Tensor,
+        target_format: str,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        if target_format != "baseline_heatmap":
+            return targets
+
+        output = targets.clone()
+        height = int(targets.size(-2))
+        width = int(targets.size(-1))
+        if height <= 0 or width <= 0:
+            return output
+
+        for index, params in enumerate(params_by_sample):
+            if not params:
+                continue
+            top = int(params.get("crop_top", 0))
+            bottom = int(params.get("crop_bottom", 0))
+            if top + bottom <= 0:
+                continue
+            if top + bottom >= height:
+                bottom = max(0, height - top - 1)
+            cropped = targets[index : index + 1, :, top : height - bottom, :]
+            output[index : index + 1] = F.interpolate(
+                cropped.float(),
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            ).to(dtype=targets.dtype)
+        return output.clamp(0.0, 1.0)
+
+    def _x_pad_targets_2d(
+        self,
+        targets: torch.Tensor,
+        params_by_sample: list[AugmentationParams],
+    ) -> torch.Tensor:
+        height = int(targets.size(-2))
+        width = int(targets.size(-1))
+        if height <= 0 or width <= 0:
+            return targets
+
+        output = torch.zeros_like(targets)
+        for index, params in enumerate(params_by_sample):
+            if not params:
+                output[index : index + 1] = targets[index : index + 1]
+                continue
+            left = int(params.get("pad_left", 0))
+            right = int(params.get("pad_right", 0))
+            if left + right <= 0:
+                output[index : index + 1] = targets[index : index + 1]
+                continue
+            if left + right >= width:
+                right = max(0, width - left - 1)
+            inner_width = max(1, width - left - right)
+            resized = F.interpolate(
+                targets[index : index + 1].float(),
+                size=(height, inner_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            output[index : index + 1, :, :, left : left + inner_width] = resized.to(dtype=targets.dtype)
+        return output.clamp(0.0, 1.0)
+
     def _theta_from_preprocess_geometry(
         self,
         targets: torch.Tensor,
@@ -328,7 +451,12 @@ class GpuTextAugmenter:
             1.0 / (1.0 + max(-0.95, float(params.get("scale_x", 0.0)))) if params else 1.0
             for params in params_by_sample
         ]
+        y_values = [
+            1.0 + max(-0.95, float(params.get("y_pad", 0.0))) if params else 1.0
+            for params in params_by_sample
+        ]
         theta[:, 0, 0] = torch.tensor(values, device=targets.device, dtype=torch.float32)
+        theta[:, 1, 1] = torch.tensor(y_values, device=targets.device, dtype=torch.float32)
         return theta
 
     def _theta_from_scale(
@@ -341,7 +469,12 @@ class GpuTextAugmenter:
             1.0 / max(1e-6, float(params.get("factor_x", 1.0))) if params else 1.0
             for params in params_by_sample
         ]
+        y_values = [
+            1.0 / max(1e-6, float(params.get("factor_y", 1.0))) if params else 1.0
+            for params in params_by_sample
+        ]
         theta[:, 0, 0] = torch.tensor(values, device=targets.device, dtype=torch.float32)
+        theta[:, 1, 1] = torch.tensor(y_values, device=targets.device, dtype=torch.float32)
         return theta
 
     def _theta_from_rotate(
@@ -375,12 +508,24 @@ class GpuTextAugmenter:
             float(params.get("tx_px", 0.0)) / float(width) if params else 0.0
             for params in params_by_sample
         ]
+        use_vertical_geometry = targets.dim() == 4
+        height = max(1, int(targets.size(-2))) if use_vertical_geometry else 1
+        ty = [
+            float(params.get("ty_px", 0.0)) / float(height) if params and use_vertical_geometry else 0.0
+            for params in params_by_sample
+        ]
         shear_x = [
             float(params.get("shear_x_px", 0.0)) / float(width) if params else 0.0
             for params in params_by_sample
         ]
+        shear_y = [
+            float(params.get("shear_y_px", 0.0)) / float(height) if params and use_vertical_geometry else 0.0
+            for params in params_by_sample
+        ]
         theta[:, 0, 1] = torch.tensor(shear_x, device=targets.device, dtype=torch.float32)
+        theta[:, 1, 0] = torch.tensor(shear_y, device=targets.device, dtype=torch.float32)
         theta[:, 0, 2] = torch.tensor(tx, device=targets.device, dtype=torch.float32)
+        theta[:, 1, 2] = torch.tensor(ty, device=targets.device, dtype=torch.float32)
         return theta
 
     @staticmethod

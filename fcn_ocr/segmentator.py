@@ -27,6 +27,8 @@ class VerticalSegmentator(TextRecognizer):
         baseline_strict_lines: bool = True,
         baseline_line_pad: float = 0.08,
         baseline_line_pad_px: float = 0.0,
+        baseline_detector_checkpoint: str | Path | None = None,
+        baseline_detector_threshold: float = 0.35,
         cut_threshold: float | None = None,
         peak_min_distance: int | None = None,
         cut_postprocess: str | None = None,
@@ -50,6 +52,8 @@ class VerticalSegmentator(TextRecognizer):
             baseline_strict_lines=baseline_strict_lines,
             baseline_line_pad=baseline_line_pad,
             baseline_line_pad_px=baseline_line_pad_px,
+            baseline_detector_checkpoint=baseline_detector_checkpoint,
+            baseline_detector_threshold=baseline_detector_threshold,
         )
         checkpoint_config = self.checkpoint.get("config", {})
         model_config = self.checkpoint.get("model_config", {})

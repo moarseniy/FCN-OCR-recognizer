@@ -25,6 +25,7 @@ architecture_params:
 
 - legacy OCR: `loss_mode: legacy_logreg`, `legacy_target_mode: dense_symbols`
 - вертикальный сегментатор разрезов: `loss_mode: cut_projection`
+- детектор верхней/нижней базовой линии: `loss_mode: baseline_heatmap`
 
 Старые конфиги и checkpoint без поля `architecture` используют `legacy_fcn`.
 
@@ -37,6 +38,8 @@ architecture_params:
   каналов через `width_multiplier`; это самый безопасный drop-in эксперимент
   для OCR, потому что ширина выхода совпадает с `legacy_fcn`.
 - `vertical_segmentator_fcn` - легкая width-preserving сеть для cut projection.
+- `baseline_detector_fcn` - height/width-preserving сеть с выходом
+  `B x 2 x H x W` для top/bottom baseline heatmap.
 - `residual_temporal_fcn` - более тяжелая width-preserving FCN с residual-блоками
   и dilated temporal convolutions по X; подходит и для OCR, и для cut projection.
 
@@ -46,3 +49,4 @@ architecture_params:
 - `configs/eng_train_101_highres.yaml`
 - `configs/eng_train_101_residual.yaml`
 - `configs/eng_train_101_cuts_residual.yaml`
+- `configs/eng_train_101_baselines.yaml`

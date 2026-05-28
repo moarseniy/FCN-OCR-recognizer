@@ -274,6 +274,57 @@ def cut_projection_loss(
     return per_column.mean()
 
 
+def baseline_heatmap_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    strict_size: bool = True,
+    loss: str = "bce",
+    positive_weight: float = 4.0,
+) -> torch.Tensor:
+    """
+    Two-channel top/bottom text-line heatmap loss.
+
+    logits:  (B, 2, H, W)
+    targets: (B, 2, H, W), values in [0, 1].
+    """
+    if positive_weight < 1.0:
+        raise ValueError("positive_weight must be >= 1.0")
+    if logits.dim() != 4:
+        raise ValueError(f"baseline_heatmap logits must have shape (B, 2, H, W), got {tuple(logits.shape)}")
+    if logits.size(1) != 2:
+        raise ValueError(f"baseline_heatmap expects two output channels, got C={logits.size(1)}")
+    if targets.dim() != 4 or targets.size(1) != 2:
+        raise ValueError(f"baseline_heatmap targets must have shape (B, 2, H, W), got {tuple(targets.shape)}")
+    if logits.size(0) != targets.size(0):
+        raise ValueError(
+            f"batch mismatch between logits {tuple(logits.shape)} and targets {tuple(targets.shape)}"
+        )
+
+    targets = targets.to(device=logits.device, dtype=torch.float32).clamp(0.0, 1.0)
+    if logits.shape[-2:] != targets.shape[-2:]:
+        if strict_size:
+            raise ValueError(
+                "baseline_heatmap strict_size requires logits and targets to have the same HxW, "
+                f"got logits={tuple(logits.shape)} targets={tuple(targets.shape)}"
+            )
+        targets = F.interpolate(targets, size=logits.shape[-2:], mode="bilinear", align_corners=False).clamp(0.0, 1.0)
+
+    loss = loss.lower()
+    if loss == "bce":
+        per_pixel = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    elif loss == "mse":
+        per_pixel = F.mse_loss(torch.sigmoid(logits), targets, reduction="none")
+    elif loss == "smooth_l1":
+        per_pixel = F.smooth_l1_loss(torch.sigmoid(logits), targets, reduction="none")
+    else:
+        raise ValueError("baseline_heatmap loss must be 'bce', 'mse', or 'smooth_l1'")
+
+    if positive_weight > 1.0:
+        weights = 1.0 + (positive_weight - 1.0) * targets
+        per_pixel = per_pixel * weights
+    return per_pixel.mean()
+
+
 def legacy_logreg_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,

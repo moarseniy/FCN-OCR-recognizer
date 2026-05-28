@@ -11,7 +11,7 @@
 
 - `images`: тензор `N x C x H x W` в `uint8`;
 - `texts`: исходная текстовая разметка;
-- опционально `dense_targets` и `cut_projection_targets` для конкретных
+- опционально `dense_targets`, `cut_projection_targets` и `baseline_targets` для конкретных
   режимов обучения.
 
 Основной OCR-режим сейчас — `loss_mode: legacy_logreg` и
@@ -21,6 +21,9 @@
 Для вертикального сегментатора используется `loss_mode: cut_projection`:
 `final` имеет 1 выход, а таргет содержит одномерную heatmap-проекцию с пиками
 в координатах правильных разрезов между символами.
+Для нейронного детектора базовых линий используется `loss_mode:
+baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где канал 0 отвечает за
+верхнюю линию текстового поля, а канал 1 - за нижнюю.
 
 В generation-конфиге `sample_alphabet` задает символы, из которых синтезируются
 строки. В training-конфиге `alphabet` задает классы модели. В примерах оба
@@ -34,6 +37,7 @@
 - `configs/eng_train_001.yaml` — обучение.
 - `synth_generators/line_generator/configs/eng_101.yaml` — генерация OCR-чанков с `dense_targets`;
 - `synth_generators/line_generator/configs/eng_101_cuts.yaml` — генерация чанков для вертикального cut-сегментатора.
+- `synth_generators/line_generator/configs/eng_101_baselines.yaml` — генерация чанков для top/bottom baseline-детектора.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -196,8 +200,10 @@ word_spacing_multiplier_max: 1.7
 ```yaml
 save_dense_targets: true
 save_cut_projection_targets: true
+save_baseline_targets: true
 cut_projection_peak_radius: 1
 cut_projection_include_margins: false
+baseline_target_radius: 1
 ```
 
 Тогда в чанки также попадет `dense_targets` (`N x W`) — класс символа для
@@ -206,9 +212,30 @@ cut_projection_include_margins: false
 правильных вертикальных разрезов. При обучении loss делает crop и при необходимости
 пересэмплирует эту разметку к выходной ширине сети `T`. Для
 `vertical_segmentator_fcn` ширина выхода сохраняется 1:1, поэтому в конфиге
-используются crop `0/0` и strict-width. Рядом создается `metadata.yaml` с
-параметрами.
-датасета: алфавитом, `space_char`, размерами картинок, числом каналов и
+используются crop `0/0` и strict-width. Если включен `save_baseline_targets`, в чанки попадет
+`baseline_targets` (`N x 2 x H x W`, `uint8`) — две горизонтальные heatmap-линии
+для верхней и нижней границы основной строки. Для baseline-датасета можно
+добавлять соседние строки как вертикальный мусор: основная строка остается
+целиком в середине, а верхняя и нижняя строки рисуются так, чтобы больше
+заданной доли каждой из них было обрезано верхним/нижним краем картинки:
+
+```yaml
+neighbor_lines_probability: 0.7
+neighbor_line_min_crop_ratio: 0.65
+neighbor_line_visible_ratio_min: 0.06
+neighbor_line_gap_min: 0
+neighbor_line_gap_max: 5
+```
+
+`neighbor_lines_probability` применяется независимо к верхней и нижней строке,
+поэтому в датасете встречаются все варианты: обе соседние строки, только
+верхняя, только нижняя или чистая основная строка.
+`neighbor_line_min_crop_ratio: 0.65` означает, что у каждой добавленной
+мусорной строки будет видно не больше 35% высоты. `neighbor_line_gap_*`
+задает расстояние в пикселях между основной
+строкой и видимым фрагментом соседней строки.
+Рядом создается `metadata.yaml` с параметрами датасета: алфавитом,
+`space_char`, размерами картинок, числом каналов и
 максимальной длиной текста. Настройки обучения и настройки аугментаций в
 offline-датасет не сохраняются. `output_dir`, `chunk_size`, `num_workers` и
 `overwrite` задаются в generation-конфиге. Датасет сохраняется в подпапку с
@@ -254,6 +281,17 @@ architecture: vertical_segmentator_fcn
 architecture_params:
   base_channels: 16
   temporal_kernel: 5
+  dropout: 0.05
+```
+
+Для детекции базовых линий есть `baseline_detector_fcn`: она сохраняет и
+ширину, и высоту, а на выходе дает два канала top/bottom heatmap:
+
+```yaml
+architecture: baseline_detector_fcn
+architecture_params:
+  base_channels: 24
+  depth: 6
   dropout: 0.05
 ```
 
@@ -318,6 +356,19 @@ segmentator_cut_smooth_radius: 1
 
 Пример конфига: `configs/eng_train_101_cuts.yaml`.
 Соответствующий generation-конфиг: `synth_generators/line_generator/configs/eng_101_cuts.yaml`.
+
+Для обучения нейронного детектора верхней/нижней базовой линии:
+
+```yaml
+loss_mode: baseline_heatmap
+baseline_heatmap_strict_size: true
+baseline_heatmap_loss: bce
+baseline_heatmap_positive_weight: 6.0
+```
+
+Пример конфига: `configs/eng_train_101_baselines.yaml`.
+Соответствующий generation-конфиг:
+`synth_generators/line_generator/configs/eng_101_baselines.yaml`.
 
 Для уже обученного cuts-чекпоинта эти параметры можно переопределять прямо в
 `inference.py`: `--segmentator-cut-threshold`,
@@ -482,6 +533,7 @@ python inference.py \
   --y-pad 0.0 \
   --x-pad 0.0 \
   --baseline-crop \
+  --baseline-detector-checkpoint checkpoints/baseline_detector/best_model.pth \
   --debug-image output/inference_debug.png \
   --debug-top-k 8
 ```
@@ -548,9 +600,11 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 2. Входная картинка приводится к `RGB` или `L` в зависимости от `channels`.
    В `--debug-image` этот шаг подписан как `preprocess 00 input converted`.
 3. Если включен `--baseline-crop`, запускается детектор нижней и верхней
-   текстовых линий. Нижняя линия используется для deskew, после поворота
-   линии ищутся повторно, а вертикальный crop в режиме по умолчанию строится
-   строго по паре верх/низ без bbox-fallback.
+   текстовых линий. Если передан `--baseline-detector-checkpoint`, линии
+   берутся из нейронного `baseline_heatmap`-детектора; иначе используется
+   эвристика по текстовым маскам. Нижняя линия используется для deskew, после
+   поворота линии ищутся повторно, а вертикальный crop в режиме по умолчанию
+   строится строго по паре верх/низ без bbox-fallback.
 4. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
    справа долю текущей ширины, но не отражает символы: поля заполняются
    медианным фоном боковой полосы исходной геометрии. В debug это
@@ -603,6 +657,8 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 | `--no-baseline-strict-lines` | Возвращает старый мягкий crop через bbox/fallback. По умолчанию crop строгий: обе линии обязательны. |
 | `--baseline-line-pad` | Запас для строгого crop сверху и снизу как доля высоты строки. `0.08` оставляет примерно 8% высоты с каждой стороны, `0` отключает относительный запас. |
 | `--baseline-line-pad-px` | Абсолютный запас в пикселях исходной картинки, добавляется к `--baseline-line-pad`. Полезно, если линии найдены слишком близко к буквам. |
+| `--baseline-detector-checkpoint` | Optional checkpoint нейронного top/bottom baseline-детектора. Если задан, `--baseline-crop` использует его вместо эвристики по маскам. |
+| `--baseline-detector-threshold` | Порог sigmoid heatmap для колонок верхней/нижней линии нейронного baseline-детектора. |
 | `--baseline-top-pad` | Верхний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--baseline-bottom-pad` | Нижний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--no-baseline-deskew` | Отключает поворот по найденной baseline, но оставляет сам crop включенным. |
