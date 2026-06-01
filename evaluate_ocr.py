@@ -195,10 +195,9 @@ def build_rows_and_jobs(
             "error": "",
         }
 
-        if image_path.exists():
-            jobs.append((len(rows), image_path))
-        else:
-            row["error"] = f"image_not_found: {image_path}"
+        if not image_path.exists():
+            continue
+        jobs.append((len(rows), image_path))
         rows.append(row)
 
     return rows, jobs
