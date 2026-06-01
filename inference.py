@@ -108,6 +108,21 @@ def parse_args() -> argparse.Namespace:
         help="Number of OCR class candidates to keep per legacy+cuts interval in --debug-image.",
     )
     parser.add_argument(
+        "--segmentator-decode-center-fraction",
+        type=float,
+        default=0.6,
+        help=(
+            "Fraction of the central OCR timesteps inside each legacy+cuts interval used for class scoring. "
+            "1.0 restores the old full-interval averaging."
+        ),
+    )
+    parser.add_argument(
+        "--segmentator-decode-min-score-width",
+        type=int,
+        default=1,
+        help="Minimum number of OCR timesteps kept for central legacy+cuts class scoring.",
+    )
+    parser.add_argument(
         "--no-segmentator-edge-trim",
         action="store_true",
         help="Disable foreground-based trimming of empty edge intervals in legacy+cuts decoding.",
@@ -442,6 +457,8 @@ def main() -> None:
                 edge_min_width=args.segmentator_edge_min_width,
                 boundary_cuts=args.segmentator_boundary_cuts,
                 boundary_cut_max_edge_ratio=args.segmentator_boundary_cut_max_edge_ratio,
+                center_fraction=args.segmentator_decode_center_fraction,
+                min_score_width=args.segmentator_decode_min_score_width,
             )
             debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
             debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
@@ -450,6 +467,8 @@ def main() -> None:
             debug_metadata["legacy_cuts_edge_min_width"] = args.segmentator_edge_min_width
             debug_metadata["legacy_cuts_boundary_cuts"] = args.segmentator_boundary_cuts
             debug_metadata["legacy_cuts_boundary_cut_max_edge_ratio"] = args.segmentator_boundary_cut_max_edge_ratio
+            debug_metadata["legacy_cuts_decode_center_fraction"] = args.segmentator_decode_center_fraction
+            debug_metadata["legacy_cuts_decode_min_score_width"] = args.segmentator_decode_min_score_width
             print(f"Recognized text (legacy+cuts): '{cut_decoding_result.text}'")
 
     print(f"Recognized text: '{result.text}'")

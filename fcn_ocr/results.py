@@ -35,6 +35,8 @@ class CutDecodedSymbol:
     source_start: int
     source_end: int
     candidates: list[ClassConfidence]
+    score_start: int | None = None
+    score_end: int | None = None
 
 
 @dataclass(frozen=True)

@@ -417,6 +417,13 @@ def save_debug_image(
                 "legacy+cuts boundary cut ratio: "
                 f"{float(metadata['legacy_cuts_boundary_cut_max_edge_ratio']):.3f}"
             )
+        if "legacy_cuts_decode_center_fraction" in metadata:
+            info_lines.append(
+                "legacy+cuts score center fraction: "
+                f"{float(metadata['legacy_cuts_decode_center_fraction']):.3f}"
+            )
+        if "legacy_cuts_decode_min_score_width" in metadata:
+            info_lines.append(f"legacy+cuts min score width: {metadata['legacy_cuts_decode_min_score_width']}")
 
     expected_text = metadata.get("expected_text")
     result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)
@@ -622,6 +629,10 @@ def save_debug_image(
             fill = (255, 255, 255) if row_index % 2 == 0 else (248, 250, 252)
             candidates_text = format_candidate_row(item.candidates)
             span = f"{item.start}-{item.end - 1}" if item.end > item.start else "-"
+            if item.score_start is not None and item.score_end is not None:
+                score_span = f"{item.score_start}-{item.score_end - 1}" if item.score_end > item.score_start else "-"
+                if score_span != span:
+                    span = f"{span} / score {score_span}"
             cells = [
                 str(row_index + 1),
                 display_char(item.char),

@@ -2553,6 +2553,32 @@ class TextRecognizer:
         ]
         return left_boundary, right_boundary, cuts
 
+    @staticmethod
+    def _central_decode_span(
+        start: int,
+        end: int,
+        center_fraction: float,
+        min_width: int,
+    ) -> tuple[int, int]:
+        if end <= start:
+            return start, end
+        if not 0.0 < center_fraction <= 1.0:
+            raise ValueError("center_fraction must be in (0, 1]")
+        if min_width < 1:
+            raise ValueError("min_width must be >= 1")
+
+        width = end - start
+        if center_fraction >= 1.0 or width <= 1:
+            return start, end
+
+        score_width = int(round(float(width) * center_fraction))
+        score_width = max(1, min(width, max(int(min_width), score_width)))
+        center = (float(start) + float(end)) * 0.5
+        score_start = int(round(center - float(score_width) * 0.5))
+        score_start = max(start, min(end - score_width, score_start))
+        score_end = score_start + score_width
+        return int(score_start), int(score_end)
+
     def decode_legacy_with_cuts(
         self,
         logits: torch.Tensor,
@@ -2567,6 +2593,8 @@ class TextRecognizer:
         edge_min_width: int = 2,
         boundary_cuts: str = "auto",
         boundary_cut_max_edge_ratio: float = 0.45,
+        center_fraction: float = 0.6,
+        min_score_width: int = 1,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -2575,6 +2603,10 @@ class TextRecognizer:
             )
         if logits.dim() != 3 or logits.size(0) != 1:
             raise ValueError(f"legacy+cuts decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
+        if not 0.0 < center_fraction <= 1.0:
+            raise ValueError("center_fraction must be in (0, 1]")
+        if min_score_width < 1:
+            raise ValueError("min_score_width must be >= 1")
 
         probs = torch.softmax(logits, dim=1)[0]
         ocr_width = int(probs.size(1))
@@ -2662,7 +2694,15 @@ class TextRecognizer:
         for start, end in intervals:
             if end <= start:
                 continue
-            scores = probs[:, start:end].mean(dim=1)
+            score_start, score_end = self._central_decode_span(
+                start,
+                end,
+                center_fraction=center_fraction,
+                min_width=min_score_width,
+            )
+            if score_end <= score_start:
+                score_start, score_end = start, end
+            scores = probs[:, score_start:score_end].mean(dim=1)
             top_confidences, top_indices = scores.topk(top_k)
             class_index = int(top_indices[0].detach().cpu().item())
             char = self.idx_to_char.get(class_index)
@@ -2690,6 +2730,8 @@ class TextRecognizer:
                     source_start=self._map_boundary_to_source(start, segmentator_width, ocr_width),
                     source_end=self._map_boundary_to_source(end, segmentator_width, ocr_width),
                     candidates=candidates,
+                    score_start=int(score_start),
+                    score_end=int(score_end),
                 )
             )
 

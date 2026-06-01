@@ -680,6 +680,8 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 | Параметр | Что делает |
 | --- | --- |
 | `--segmentator-checkpoint` | Checkpoint вертикального сегментатора. Без него сегментатор не запускается. |
+| `--segmentator-decode-center-fraction` | Для `--decode-with-segmentator`: доля центральных OCR timestep-ов внутри каждого cut-интервала, по которым выбирается класс. `1.0` возвращает старое среднее по всему интервалу. |
+| `--segmentator-decode-min-score-width` | Минимальное число OCR timestep-ов, которое оставляется для выбора класса внутри cut-интервала. |
 | `--segmentator-cut-threshold` | Порог для основных cut peak-ов. Если score выше порога, peak становится cut-точкой. |
 | `--segmentator-peak-min-distance` | Минимальная дистанция между raw peak-ами при первичном выборе пиков. |
 | `--segmentator-cut-postprocess` | Постобработка cut-пиков: `peaks` оставляет найденные пики, `widths` дополнительно контролирует ширины интервалов. |
