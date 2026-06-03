@@ -149,7 +149,7 @@ def segment_batch(
             input_shape=(1, segmentator.in_channels, segmentator.image_height, tensors[batch_index].size(2)),
         )
         cut_count = segment_count(result)
-        pred_len = cut_count + 1 if result.raw_indices else 0
+        pred_len = max(0, cut_count - 1) if result.raw_indices else 0
         predictions[row_index] = {
             "pred_len": pred_len,
             "cut_count": cut_count,
@@ -515,6 +515,10 @@ def optimize(
     x_pad: float,
     tune_baseline_crop: bool,
     tune_baseline_params: bool,
+    tune_baseline_bbox_pads: bool,
+    tune_baseline_line_pad: bool,
+    tune_baseline_line_pad_px: bool,
+    tune_baseline_max_angle: bool,
     tune_baseline_deskew: bool,
     baseline_crop: bool,
     baseline_top_pad: float,
@@ -593,6 +597,19 @@ def optimize(
             if tune_baseline_crop
             else baseline_crop
         )
+        tune_active_line_pad = bool(trial_baseline_crop) and (
+            tune_baseline_line_pad
+            or (tune_baseline_params and baseline_strict_lines)
+        )
+        tune_active_bbox_pads = bool(trial_baseline_crop) and (
+            tune_baseline_bbox_pads
+            or (tune_baseline_params and not baseline_strict_lines)
+        )
+        tune_active_line_pad_px = bool(trial_baseline_crop) and tune_baseline_line_pad_px
+        tune_active_max_angle = bool(trial_baseline_crop) and tune_baseline_max_angle
+        tune_active_detector = bool(trial_baseline_crop) and baseline_detector_checkpoint is not None
+        tune_active_curve = tune_active_detector and baseline_rectify == "curved"
+
         trial_baseline_top_pad = baseline_top_pad
         trial_baseline_bottom_pad = baseline_bottom_pad
         trial_baseline_line_pad = baseline_line_pad
@@ -601,7 +618,7 @@ def optimize(
         trial_baseline_detector_threshold = baseline_detector_threshold
         trial_baseline_curve_smooth_radius = baseline_curve_smooth_radius
         trial_baseline_curve_min_coverage = baseline_curve_min_coverage
-        if bool(trial_baseline_crop) and tune_baseline_params:
+        if tune_active_bbox_pads:
             trial_baseline_top_pad = trial.suggest_float(
                 "baseline_top_pad",
                 baseline_top_pad_min,
@@ -612,22 +629,25 @@ def optimize(
                 baseline_bottom_pad_min,
                 baseline_bottom_pad_max,
             )
+        if tune_active_line_pad:
             trial_baseline_line_pad = trial.suggest_float(
                 "baseline_line_pad",
                 baseline_line_pad_min,
                 baseline_line_pad_max,
             )
+        if tune_active_line_pad_px:
             trial_baseline_line_pad_px = trial.suggest_float(
                 "baseline_line_pad_px",
                 baseline_line_pad_px_min,
                 baseline_line_pad_px_max,
             )
+        if tune_active_max_angle:
             trial_baseline_max_angle = trial.suggest_float(
                 "baseline_max_angle",
                 baseline_max_angle_min,
                 baseline_max_angle_max,
             )
-        if bool(trial_baseline_crop):
+        if tune_active_detector:
             if baseline_detector_threshold_min is not None or baseline_detector_threshold_max is not None:
                 if baseline_detector_threshold_min is None or baseline_detector_threshold_max is None:
                     raise ValueError("baseline detector threshold tuning requires both min and max")
@@ -636,6 +656,7 @@ def optimize(
                     baseline_detector_threshold_min,
                     baseline_detector_threshold_max,
                 )
+        if tune_active_curve:
             if baseline_curve_smooth_radius_min is not None or baseline_curve_smooth_radius_max is not None:
                 if baseline_curve_smooth_radius_min is None or baseline_curve_smooth_radius_max is None:
                     raise ValueError("baseline curve smooth radius tuning requires both min and max")
@@ -702,6 +723,10 @@ def optimize(
         f"x_pad={x_pad}, baseline_detector={baseline_detector_checkpoint}, "
         f"tune_baseline_crop={tune_baseline_crop}, "
         f"tune_baseline_params={tune_baseline_params}, "
+        f"tune_bbox_pads={tune_baseline_bbox_pads}, "
+        f"tune_line_pad={tune_baseline_line_pad}, "
+        f"tune_line_pad_px={tune_baseline_line_pad_px}, "
+        f"tune_max_angle={tune_baseline_max_angle}, "
         f"tune_baseline_deskew={tune_baseline_deskew}"
     )
     study.optimize(objective, n_trials=trials)
@@ -878,7 +903,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--optuna-tune-baseline-params",
         action="store_true",
-        help="Tune baseline crop paddings and max angle when baseline crop is enabled in a trial.",
+        help=(
+            "Tune active baseline crop params. With strict lines this tunes only baseline_line_pad; "
+            "with --no-baseline-strict-lines it tunes old bbox top/bottom pads."
+        ),
+    )
+    parser.add_argument(
+        "--optuna-tune-baseline-bbox-pads",
+        action="store_true",
+        help="Explicitly tune old bbox-assisted baseline_top_pad/baseline_bottom_pad.",
+    )
+    parser.add_argument(
+        "--optuna-tune-baseline-line-pad",
+        action="store_true",
+        help="Explicitly tune strict-lines baseline_line_pad.",
+    )
+    parser.add_argument(
+        "--optuna-tune-baseline-line-pad-px",
+        action="store_true",
+        help="Explicitly tune absolute strict-lines baseline_line_pad_px.",
+    )
+    parser.add_argument(
+        "--optuna-tune-baseline-max-angle",
+        action="store_true",
+        help="Explicitly tune baseline_max_angle.",
     )
     parser.add_argument(
         "--optuna-tune-baseline-deskew",
@@ -933,6 +981,10 @@ def main() -> None:
             x_pad=args.x_pad,
             tune_baseline_crop=args.optuna_tune_baseline_crop,
             tune_baseline_params=args.optuna_tune_baseline_params,
+            tune_baseline_bbox_pads=args.optuna_tune_baseline_bbox_pads,
+            tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
+            tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
+            tune_baseline_max_angle=args.optuna_tune_baseline_max_angle,
             tune_baseline_deskew=args.optuna_tune_baseline_deskew,
             baseline_crop=args.baseline_crop,
             baseline_top_pad=args.baseline_top_pad,

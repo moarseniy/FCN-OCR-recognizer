@@ -511,7 +511,13 @@ def _trial_params_snapshot(metrics: dict[str, Any]) -> dict[str, Any]:
     return {name: metrics[name] for name in names if name in metrics}
 
 
-def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], metric_name: str) -> None:
+def append_trial_log(
+    path: Path,
+    trial_number: int,
+    metrics: dict[str, Any],
+    metric_name: str,
+    trial_params: dict[str, Any] | None = None,
+) -> None:
     is_new_file = not path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as file:
@@ -520,7 +526,11 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
                 "trial\tparams\tmetric\tmetric_value\tline_accuracy\taverage_char_accuracy\t"
                 "global_char_accuracy\taverage_levenshtein\ttotal_levenshtein\tspeed\n"
             )
-        params = json.dumps(_trial_params_snapshot(metrics), ensure_ascii=False, sort_keys=True)
+        params = json.dumps(
+            trial_params if trial_params is not None else _trial_params_snapshot(metrics),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         file.write(
             f"{trial_number}\t{params}\t{metric_name}\t{metrics[metric_name]:.8f}\t"
             f"{metrics['line_accuracy']:.8f}\t{metrics['average_char_accuracy']:.8f}\t"
@@ -580,6 +590,8 @@ def optimize_preprocess(
     trials_output: Path | None,
     study_name: str | None = None,
     storage: str | None = None,
+    optuna_tune_baseline_line_pad: bool = False,
+    optuna_tune_baseline_line_pad_px: bool = False,
     baseline_crop: bool = False,
     baseline_top_pad: float = 0.12,
     baseline_bottom_pad: float = 0.18,
@@ -663,113 +675,187 @@ def optimize_preprocess(
     )
 
     def objective(trial) -> float:
+        tune_active_baseline_line_pad = bool(baseline_crop) and bool(baseline_strict_lines) and (
+            bool(optuna_tune_baseline_line_pad)
+            or baseline_line_pad_min is not None
+            or baseline_line_pad_max is not None
+        )
+        tune_active_baseline_line_pad_px = (
+            bool(baseline_crop)
+            and bool(baseline_strict_lines)
+            and bool(optuna_tune_baseline_line_pad_px)
+        )
+        tune_active_baseline_detector = bool(baseline_crop) and baseline_detector_checkpoint is not None
+        tune_active_baseline_curve = tune_active_baseline_detector and baseline_rectify == "curved"
+        tune_active_segmentator = bool(decode_with_segmentator) and segmentator_checkpoint is not None
+
         scale_x = trial.suggest_float("scale_x", scale_x_min, scale_x_max)
         y_pad = trial.suggest_float("y_pad", y_pad_min, y_pad_max)
         current_x_pad = _suggest_float_or_fixed(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
-        current_baseline_detector_threshold = _suggest_float_or_fixed(
-            trial,
-            "baseline_detector_threshold",
-            baseline_detector_threshold,
-            baseline_detector_threshold_min,
-            baseline_detector_threshold_max,
+        current_baseline_detector_threshold = (
+            _suggest_float_or_fixed(
+                trial,
+                "baseline_detector_threshold",
+                baseline_detector_threshold,
+                baseline_detector_threshold_min,
+                baseline_detector_threshold_max,
+            )
+            if tune_active_baseline_detector
+            else baseline_detector_threshold
         )
-        current_baseline_line_pad = _suggest_float_or_fixed(
-            trial,
-            "baseline_line_pad",
-            baseline_line_pad,
-            baseline_line_pad_min,
-            baseline_line_pad_max,
+        current_baseline_line_pad = (
+            _suggest_float_or_fixed(
+                trial,
+                "baseline_line_pad",
+                baseline_line_pad,
+                baseline_line_pad_min,
+                baseline_line_pad_max,
+            )
+            if tune_active_baseline_line_pad
+            else baseline_line_pad
         )
-        current_baseline_line_pad_px = _suggest_float_or_fixed(
-            trial,
-            "baseline_line_pad_px",
-            baseline_line_pad_px,
-            baseline_line_pad_px_min,
-            baseline_line_pad_px_max,
+        current_baseline_line_pad_px = (
+            _suggest_float_or_fixed(
+                trial,
+                "baseline_line_pad_px",
+                baseline_line_pad_px,
+                baseline_line_pad_px_min,
+                baseline_line_pad_px_max,
+            )
+            if tune_active_baseline_line_pad_px
+            else baseline_line_pad_px
         )
-        current_baseline_curve_smooth_radius = _suggest_int_or_fixed(
-            trial,
-            "baseline_curve_smooth_radius",
-            baseline_curve_smooth_radius,
-            baseline_curve_smooth_radius_min,
-            baseline_curve_smooth_radius_max,
+        current_baseline_curve_smooth_radius = (
+            _suggest_int_or_fixed(
+                trial,
+                "baseline_curve_smooth_radius",
+                baseline_curve_smooth_radius,
+                baseline_curve_smooth_radius_min,
+                baseline_curve_smooth_radius_max,
+            )
+            if tune_active_baseline_curve
+            else baseline_curve_smooth_radius
         )
-        current_baseline_curve_min_coverage = _suggest_float_or_fixed(
-            trial,
-            "baseline_curve_min_coverage",
-            baseline_curve_min_coverage,
-            baseline_curve_min_coverage_min,
-            baseline_curve_min_coverage_max,
+        current_baseline_curve_min_coverage = (
+            _suggest_float_or_fixed(
+                trial,
+                "baseline_curve_min_coverage",
+                baseline_curve_min_coverage,
+                baseline_curve_min_coverage_min,
+                baseline_curve_min_coverage_max,
+            )
+            if tune_active_baseline_curve
+            else baseline_curve_min_coverage
         )
-        current_segmentator_cut_threshold = _suggest_float_or_fixed(
-            trial,
-            "segmentator_cut_threshold",
-            segmentator_cut_threshold,
-            segmentator_cut_threshold_min,
-            segmentator_cut_threshold_max,
+        current_segmentator_cut_threshold = (
+            _suggest_float_or_fixed(
+                trial,
+                "segmentator_cut_threshold",
+                segmentator_cut_threshold,
+                segmentator_cut_threshold_min,
+                segmentator_cut_threshold_max,
+            )
+            if tune_active_segmentator
+            else segmentator_cut_threshold
         )
-        current_segmentator_peak_min_distance = _suggest_int_or_fixed(
-            trial,
-            "segmentator_peak_min_distance",
-            segmentator_peak_min_distance,
-            segmentator_peak_min_distance_min,
-            segmentator_peak_min_distance_max,
+        current_segmentator_peak_min_distance = (
+            _suggest_int_or_fixed(
+                trial,
+                "segmentator_peak_min_distance",
+                segmentator_peak_min_distance,
+                segmentator_peak_min_distance_min,
+                segmentator_peak_min_distance_max,
+            )
+            if tune_active_segmentator
+            else segmentator_peak_min_distance
         )
-        current_segmentator_cut_min_width = _suggest_int_or_fixed(
-            trial,
-            "segmentator_cut_min_width",
-            segmentator_cut_min_width,
-            segmentator_cut_min_width_min,
-            segmentator_cut_min_width_max,
+        current_segmentator_cut_min_width = (
+            _suggest_int_or_fixed(
+                trial,
+                "segmentator_cut_min_width",
+                segmentator_cut_min_width,
+                segmentator_cut_min_width_min,
+                segmentator_cut_min_width_max,
+            )
+            if tune_active_segmentator
+            else segmentator_cut_min_width
         )
-        current_segmentator_cut_max_width = _suggest_int_or_fixed(
-            trial,
-            "segmentator_cut_max_width",
-            segmentator_cut_max_width,
-            segmentator_cut_max_width_min,
-            segmentator_cut_max_width_max,
+        current_segmentator_cut_max_width = (
+            _suggest_int_or_fixed(
+                trial,
+                "segmentator_cut_max_width",
+                segmentator_cut_max_width,
+                segmentator_cut_max_width_min,
+                segmentator_cut_max_width_max,
+            )
+            if tune_active_segmentator
+            else segmentator_cut_max_width
         )
-        current_segmentator_cut_candidate_threshold = _suggest_float_or_fixed(
-            trial,
-            "segmentator_cut_candidate_threshold",
-            segmentator_cut_candidate_threshold,
-            segmentator_cut_candidate_threshold_min,
-            segmentator_cut_candidate_threshold_max,
+        current_segmentator_cut_candidate_threshold = (
+            _suggest_float_or_fixed(
+                trial,
+                "segmentator_cut_candidate_threshold",
+                segmentator_cut_candidate_threshold,
+                segmentator_cut_candidate_threshold_min,
+                segmentator_cut_candidate_threshold_max,
+            )
+            if tune_active_segmentator
+            else segmentator_cut_candidate_threshold
         )
-        current_segmentator_cut_smooth_radius = _suggest_int_or_fixed(
-            trial,
-            "segmentator_cut_smooth_radius",
-            segmentator_cut_smooth_radius,
-            segmentator_cut_smooth_radius_min,
-            segmentator_cut_smooth_radius_max,
+        current_segmentator_cut_smooth_radius = (
+            _suggest_int_or_fixed(
+                trial,
+                "segmentator_cut_smooth_radius",
+                segmentator_cut_smooth_radius,
+                segmentator_cut_smooth_radius_min,
+                segmentator_cut_smooth_radius_max,
+            )
+            if tune_active_segmentator
+            else segmentator_cut_smooth_radius
         )
-        current_segmentator_boundary_cut_max_edge_ratio = _suggest_float_or_fixed(
-            trial,
-            "segmentator_boundary_cut_max_edge_ratio",
-            segmentator_boundary_cut_max_edge_ratio,
-            segmentator_boundary_cut_max_edge_ratio_min,
-            segmentator_boundary_cut_max_edge_ratio_max,
+        current_segmentator_boundary_cut_max_edge_ratio = (
+            _suggest_float_or_fixed(
+                trial,
+                "segmentator_boundary_cut_max_edge_ratio",
+                segmentator_boundary_cut_max_edge_ratio,
+                segmentator_boundary_cut_max_edge_ratio_min,
+                segmentator_boundary_cut_max_edge_ratio_max,
+            )
+            if tune_active_segmentator
+            else segmentator_boundary_cut_max_edge_ratio
         )
-        current_segmentator_decode_center_fraction = _suggest_float_or_fixed(
-            trial,
-            "segmentator_decode_center_fraction",
-            segmentator_decode_center_fraction,
-            segmentator_decode_center_fraction_min,
-            segmentator_decode_center_fraction_max,
+        current_segmentator_decode_center_fraction = (
+            _suggest_float_or_fixed(
+                trial,
+                "segmentator_decode_center_fraction",
+                segmentator_decode_center_fraction,
+                segmentator_decode_center_fraction_min,
+                segmentator_decode_center_fraction_max,
+            )
+            if tune_active_segmentator
+            else segmentator_decode_center_fraction
         )
-        current_segmentator_decode_min_score_width = _suggest_int_or_fixed(
-            trial,
-            "segmentator_decode_min_score_width",
-            segmentator_decode_min_score_width,
-            segmentator_decode_min_score_width_min,
-            segmentator_decode_min_score_width_max,
+        current_segmentator_decode_min_score_width = (
+            _suggest_int_or_fixed(
+                trial,
+                "segmentator_decode_min_score_width",
+                segmentator_decode_min_score_width,
+                segmentator_decode_min_score_width_min,
+                segmentator_decode_min_score_width_max,
+            )
+            if tune_active_segmentator
+            else segmentator_decode_min_score_width
         )
-        current_segmentator_edge_min_width = _suggest_int_or_fixed(
-            trial,
-            "segmentator_edge_min_width",
-            segmentator_edge_min_width,
-            segmentator_edge_min_width_min,
-            segmentator_edge_min_width_max,
+        current_segmentator_edge_min_width = (
+            _suggest_int_or_fixed(
+                trial,
+                "segmentator_edge_min_width",
+                segmentator_edge_min_width,
+                segmentator_edge_min_width_min,
+                segmentator_edge_min_width_max,
+            )
+            if tune_active_segmentator
+            else segmentator_edge_min_width
         )
 
         metrics = evaluate_prepared(
@@ -820,14 +906,16 @@ def optimize_preprocess(
             if isinstance(value, (int, float, bool, str)):
                 trial.set_user_attr(key, value)
         if trials_output is not None:
-            append_trial_log(trials_output, trial.number, metrics, metric_name)
+            append_trial_log(trials_output, trial.number, metrics, metric_name, dict(trial.params))
         return float(metrics[metric_name])
 
     print(
         "Optuna OCR search: "
         f"trials={trials}, metric={metric_name}, "
         f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
-        f"decode_with_segmentator={decode_with_segmentator}, baseline_crop={baseline_crop}"
+        f"decode_with_segmentator={decode_with_segmentator}, baseline_crop={baseline_crop}, "
+        f"tune_baseline_line_pad={optuna_tune_baseline_line_pad}, "
+        f"tune_baseline_line_pad_px={optuna_tune_baseline_line_pad_px}"
     )
     study.optimize(objective, n_trials=trials)
 
@@ -1102,6 +1190,16 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--optuna-x-pad-min", type=float, default=None)
     parser.add_argument("--optuna-x-pad-max", type=float, default=None)
+    parser.add_argument(
+        "--optuna-tune-baseline-line-pad",
+        action="store_true",
+        help="Explicitly tune strict-lines baseline_line_pad when its min/max range is provided.",
+    )
+    parser.add_argument(
+        "--optuna-tune-baseline-line-pad-px",
+        action="store_true",
+        help="Explicitly tune absolute strict-lines baseline_line_pad_px.",
+    )
     parser.add_argument("--optuna-baseline-detector-threshold-min", type=float, default=None)
     parser.add_argument("--optuna-baseline-detector-threshold-max", type=float, default=None)
     parser.add_argument("--optuna-baseline-line-pad-min", type=float, default=None)
@@ -1194,6 +1292,8 @@ def main() -> None:
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
+            optuna_tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
+            optuna_tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
             x_pad_min=args.optuna_x_pad_min,
             x_pad_max=args.optuna_x_pad_max,
             baseline_detector_threshold_min=args.optuna_baseline_detector_threshold_min,
