@@ -2011,14 +2011,12 @@ class TextRecognizer:
     ) -> Image.Image:
         output = image.convert("RGB")
         draw = ImageDraw.Draw(output)
-        line_width = max(1, int(round(image.height / 96)))
         self._draw_textline(
             draw,
             image_width=image.width,
             slope=float(detection["slope"]),
             intercept=float(detection["intercept"]),
             color=(230, 30, 30),
-            width=line_width,
         )
         if detection.get("topline_detected"):
             self._draw_textline(
@@ -2027,13 +2025,12 @@ class TextRecognizer:
                 slope=float(detection["topline_slope"]),
                 intercept=float(detection["topline_intercept"]),
                 color=(40, 110, 240),
-                width=line_width,
             )
         profile_x = detection.get("profile_x")
         profile_y = detection.get("profile_y")
         inlier_mask = detection.get("inlier_mask")
         if profile_x is not None and profile_y is not None:
-            radius = max(1, line_width)
+            radius = 1
             step = max(1, int(math.ceil(len(profile_x) / 500)))
             for index in range(0, len(profile_x), step):
                 x = float(profile_x[index])
@@ -2045,7 +2042,7 @@ class TextRecognizer:
         top_profile_y = detection.get("topline_profile_y")
         top_inlier_mask = detection.get("topline_inlier_mask")
         if top_profile_x is not None and top_profile_y is not None:
-            radius = max(1, line_width)
+            radius = 1
             step = max(1, int(math.ceil(len(top_profile_x) / 500)))
             for index in range(0, len(top_profile_x), step):
                 x = float(top_profile_x[index])
@@ -2054,9 +2051,9 @@ class TextRecognizer:
                 color = (70, 190, 230) if is_inlier else (80, 120, 240)
                 draw.rectangle((x - radius, y - radius, x + radius, y + radius), fill=color)
         if crop_box is not None:
-            draw.rectangle(crop_box, outline=(20, 150, 60), width=line_width)
+            draw.rectangle(crop_box, outline=(20, 150, 60), width=1)
         if "text_bbox" in detection:
-            draw.rectangle(detection["text_bbox"], outline=(80, 120, 240), width=max(1, line_width // 2))
+            draw.rectangle(detection["text_bbox"], outline=(80, 120, 240), width=1)
         return output
 
     def _draw_baseline_lines_debug(
@@ -2067,7 +2064,6 @@ class TextRecognizer:
     ) -> Image.Image:
         output = image.convert("RGB")
         draw = ImageDraw.Draw(output)
-        line_width = max(1, int(round(image.height / 180)))
 
         if crop_box is not None:
             overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
@@ -2081,7 +2077,7 @@ class TextRecognizer:
                 overlay_draw.rectangle((0, visible_bottom, output.width, output.height), fill=(0, 0, 0, 55))
             output = Image.alpha_composite(output.convert("RGBA"), overlay).convert("RGB")
             draw = ImageDraw.Draw(output)
-            draw.rectangle(crop_box, outline=(30, 190, 70), width=max(2, line_width // 2))
+            draw.rectangle(crop_box, outline=(30, 190, 70), width=1)
 
         if detection.get("topline_detected"):
             self._draw_textline(
@@ -2090,7 +2086,6 @@ class TextRecognizer:
                 slope=float(detection["topline_slope"]),
                 intercept=float(detection["topline_intercept"]),
                 color=(0, 190, 255),
-                width=line_width,
             )
 
         self._draw_textline(
@@ -2099,7 +2094,6 @@ class TextRecognizer:
             slope=float(detection["slope"]),
             intercept=float(detection["intercept"]),
             color=(255, 45, 45),
-            width=line_width,
         )
 
         return output
@@ -2111,7 +2105,6 @@ class TextRecognizer:
         crop_box: tuple[int, int, int, int] | None = None,
     ) -> Image.Image:
         output = image.convert("RGB")
-        line_width = max(1, int(round(image.height / 180)))
 
         if crop_box is not None:
             overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
@@ -2127,7 +2120,7 @@ class TextRecognizer:
 
         draw = ImageDraw.Draw(output)
         if crop_box is not None:
-            draw.rectangle(crop_box, outline=(30, 190, 70), width=max(2, line_width // 2))
+            draw.rectangle(crop_box, outline=(30, 190, 70), width=1)
 
         curve_x = np.asarray(detection["curve_x"], dtype=np.float64)
         self._draw_curve(
@@ -2135,14 +2128,12 @@ class TextRecognizer:
             curve_x,
             np.asarray(detection["top_curve_y"], dtype=np.float64),
             color=(0, 190, 255),
-            width=line_width,
         )
         self._draw_curve(
             draw,
             curve_x,
             np.asarray(detection["bottom_curve_y"], dtype=np.float64),
             color=(255, 45, 45),
-            width=line_width,
         )
         return output
 
@@ -2175,13 +2166,12 @@ class TextRecognizer:
         slope: float,
         intercept: float,
         color: tuple[int, int, int],
-        width: int,
     ) -> None:
         x0 = 0
         x1 = max(0, image_width - 1)
         y0 = slope * x0 + intercept
         y1 = slope * x1 + intercept
-        draw.line((x0, y0, x1, y1), fill=color, width=width)
+        draw.line((x0, y0, x1, y1), fill=color, width=1)
 
     @staticmethod
     def _draw_curve(
@@ -2189,7 +2179,6 @@ class TextRecognizer:
         xs: np.ndarray,
         ys: np.ndarray,
         color: tuple[int, int, int],
-        width: int,
     ) -> None:
         if xs.size < 2 or ys.size != xs.size:
             return
@@ -2197,7 +2186,7 @@ class TextRecognizer:
         points = [(float(xs[index]), float(ys[index])) for index in range(0, xs.size, step)]
         if points[-1] != (float(xs[-1]), float(ys[-1])):
             points.append((float(xs[-1]), float(ys[-1])))
-        draw.line(points, fill=color, width=width)
+        draw.line(points, fill=color, width=1)
 
     def _crop_with_fill(self, image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
         left, top, right, bottom = box

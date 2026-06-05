@@ -118,25 +118,16 @@ def draw_segmentation_lines(image: Image.Image, result: VerticalSegmentationResu
     if timesteps <= 0:
         return output
 
-    overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    line_width = max(2, round(output.width / 260))
+    draw = ImageDraw.Draw(output)
 
     for run in result.runs:
         if run.label != 1:
             continue
 
-        left = segmentation_x_for_timestep(float(run.start), output.width, timesteps)
-        right = segmentation_x_for_timestep(float(run.end + 1), output.width, timesteps)
-        if right <= left:
-            right = min(output.width - 1, left + 1)
         center = segmentation_x_for_timestep((run.start + run.end + 1) * 0.5, output.width, timesteps)
+        draw.line((center, 0, center, output.height - 1), fill=(255, 0, 0), width=1)
 
-        overlay_draw.rectangle((left, 0, right, output.height), fill=(255, 30, 30, 42))
-        overlay_draw.line((center, 0, center, output.height), fill=(0, 0, 0, 230), width=line_width + 2)
-        overlay_draw.line((center, 0, center, output.height), fill=(255, 0, 0, 255), width=line_width)
-
-    return Image.alpha_composite(output.convert("RGBA"), overlay).convert("RGB")
+    return output
 
 
 def render_segmentation_panel(
@@ -204,7 +195,7 @@ def render_segmentation_panel(
         right = max(left + 1, right)
         band_draw.rectangle((left, 0, right, band_height - 1), outline=(180, 20, 20), width=1)
         center = segmentation_x_for_timestep((run.start + run.end + 1) * 0.5, image.width, timesteps)
-        band_draw.line((center, 0, center, band_height), fill=(255, 0, 0), width=2)
+        band_draw.line((center, 0, center, band_height - 1), fill=(255, 0, 0), width=1)
 
     draw.rectangle((padding - 1, y - 1, padding + image.width, y + band_height), outline=(160, 160, 160))
     panel.paste(band, (padding, y))

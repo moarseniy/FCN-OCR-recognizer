@@ -189,15 +189,55 @@ def normalize_text(text: str, config: SingleLineDatasetConfig) -> str:
     return config.space_char.join(part for part in text.split(config.space_char) if part)
 
 
-def _blend_heatmap(
+def _blend_line_mask(
     image_array: np.ndarray,
-    heatmap: np.ndarray,
+    line_mask: np.ndarray,
     color: tuple[int, int, int],
     opacity: float,
 ) -> None:
-    alpha = np.clip(heatmap.astype(np.float32), 0.0, 1.0)[..., None] * float(opacity)
+    alpha = line_mask.astype(np.float32)[..., None] * float(opacity)
     color_array = np.asarray(color, dtype=np.float32).reshape(1, 1, 3)
     image_array[:] = image_array * (1.0 - alpha) + color_array * alpha
+
+
+def _baseline_centerline(heatmap: np.ndarray) -> np.ndarray:
+    line_mask = np.zeros_like(heatmap, dtype=bool)
+    if heatmap.size == 0:
+        return line_mask
+
+    column_scores = heatmap.max(axis=0)
+    active_columns = column_scores > 0.0
+    active_x = np.flatnonzero(active_columns)
+    if active_x.size:
+        center_y = heatmap[:, active_x].argmax(axis=0)
+        line_mask[center_y, active_x] = True
+    return line_mask
+
+
+def _projection_centerlines(projection: np.ndarray, height: int) -> np.ndarray:
+    line_mask = np.zeros((height, projection.shape[0]), dtype=bool)
+    if projection.size == 0:
+        return line_mask
+
+    left = np.concatenate(([float("-inf")], projection[:-1]))
+    right = np.concatenate((projection[1:], [float("-inf")]))
+    maxima = (projection > 0.0) & (projection >= left) & (projection >= right)
+    indices = np.flatnonzero(maxima)
+    if indices.size == 0:
+        return line_mask
+
+    run_start = 0
+    while run_start < indices.size:
+        run_end = run_start
+        while run_end + 1 < indices.size and indices[run_end + 1] == indices[run_end] + 1:
+            run_end += 1
+        run = indices[run_start : run_end + 1]
+        values = projection[run]
+        best = run[values == values.max()]
+        center = int(best[len(best) // 2])
+        line_mask[:, center] = True
+        run_start = run_end + 1
+    return line_mask
 
 
 def overlay_full_markup(
@@ -230,8 +270,18 @@ def overlay_full_markup(
                 f"does not match image shape {(height, width)}"
             )
         baseline_array = baseline.numpy()
-        _blend_heatmap(image_array, baseline_array[0], (255, 45, 45), opacity=0.78)
-        _blend_heatmap(image_array, baseline_array[1], (45, 105, 255), opacity=0.78)
+        _blend_line_mask(
+            image_array,
+            _baseline_centerline(baseline_array[0]),
+            (255, 45, 45),
+            opacity=0.92,
+        )
+        _blend_line_mask(
+            image_array,
+            _baseline_centerline(baseline_array[1]),
+            (45, 105, 255),
+            opacity=0.92,
+        )
 
     if cut_projection_target is not None:
         cut_projection = target_to_float(cut_projection_target)
@@ -245,8 +295,8 @@ def overlay_full_markup(
                 f"cut projection markup width {cut_projection.shape[0]} "
                 f"does not match image width {width}"
             )
-        cut_heatmap = np.broadcast_to(cut_projection.numpy()[None, :], (height, width))
-        _blend_heatmap(image_array, cut_heatmap, (30, 230, 80), opacity=0.72)
+        cut_lines = _projection_centerlines(cut_projection.numpy(), height)
+        _blend_line_mask(image_array, cut_lines, (30, 230, 80), opacity=0.92)
 
     return Image.fromarray(np.clip(image_array, 0, 255).astype(np.uint8)), markup_metadata
 

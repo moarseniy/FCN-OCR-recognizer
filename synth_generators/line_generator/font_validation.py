@@ -154,7 +154,7 @@ def render_font_validation_image(
 
         glyph_box = (x0 + 8, y0 + 8, x1 - 8, y0 + 64)
         if char == " ":
-            draw.line((glyph_box[0] + 16, y0 + 38, glyph_box[2] - 16, y0 + 38), fill=(150, 150, 150), width=2)
+            draw.line((glyph_box[0] + 16, y0 + 38, glyph_box[2] - 16, y0 + 38), fill=(150, 150, 150), width=1)
         else:
             draw_centered_text(draw, glyph_box, char, glyph_font, fill=(20, 20, 20))
 
