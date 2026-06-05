@@ -477,11 +477,15 @@ class SingleLineDataset(Dataset):
             text = self._make_line_text(rng)
             style = self._sample_text_style(rng)
             font = self._load_font_for_line(text, rng)
-            image, spans, cut_spans, baseline_top, baseline_bottom = self._render_long_text(
-                text,
-                font,
-                rng,
-                style,
+            (
+                image,
+                spans,
+                cut_spans,
+                baseline_top,
+                baseline_bottom,
+                baseline_mask,
+            ) = self._render_long_text(
+                text, font, rng, style
             )
             samples = self._slice_line_image(
                 image,
@@ -489,6 +493,7 @@ class SingleLineDataset(Dataset):
                 cut_spans,
                 baseline_top,
                 baseline_bottom,
+                baseline_mask,
                 rng,
             )
             if samples:
@@ -760,8 +765,16 @@ class SingleLineDataset(Dataset):
             self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
         spans, cut_spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
-        baseline_top = float(y + bbox[1])
-        baseline_bottom = float(y + bbox[3] - 1)
+        baseline_top, baseline_bottom, _ = self._visible_text_y_bounds(
+            width=image.width,
+            height=image.height,
+            x=float(x),
+            y=float(y),
+            text=text,
+            font=font,
+            style=style,
+            fallback_bbox=bbox,
+        )
 
         return image, spans, cut_spans, baseline_top, baseline_bottom
 
@@ -777,6 +790,7 @@ class SingleLineDataset(Dataset):
         list[tuple[str, float, float]],
         float,
         float,
+        Image.Image | None,
     ]:
         cfg = self.config
         bbox = self._text_bbox(text, font, style)
@@ -812,9 +826,17 @@ class SingleLineDataset(Dataset):
             self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
         spans, cut_spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
-        baseline_top = float(y + bbox[1])
-        baseline_bottom = float(y + bbox[3] - 1)
-        return image, spans, cut_spans, baseline_top, baseline_bottom
+        baseline_top, baseline_bottom, baseline_mask = self._visible_text_y_bounds(
+            width=image.width,
+            height=image.height,
+            x=float(x),
+            y=float(y),
+            text=text,
+            font=font,
+            style=style,
+            fallback_bbox=bbox,
+        )
+        return image, spans, cut_spans, baseline_top, baseline_bottom, baseline_mask
 
     def _slice_line_image(
         self,
@@ -823,6 +845,7 @@ class SingleLineDataset(Dataset):
         cut_spans: list[tuple[str, float, float]],
         baseline_top: float,
         baseline_bottom: float,
+        baseline_mask: Image.Image | None,
         rng: random.Random,
     ) -> list[GeneratedLineSample]:
         cfg = self.config
@@ -841,14 +864,21 @@ class SingleLineDataset(Dataset):
             if len(text) > cfg.max_text_length:
                 continue
             crop = image.crop((left, 0, right, cfg.image_height))
+            crop_baseline_top = baseline_top
+            crop_baseline_bottom = baseline_bottom
+            if baseline_mask is not None:
+                crop_mask_bbox = baseline_mask.crop((left, 0, right, cfg.image_height)).getbbox()
+                if crop_mask_bbox is not None:
+                    crop_baseline_top = float(crop_mask_bbox[1])
+                    crop_baseline_bottom = float(crop_mask_bbox[3] - 1)
             samples.append(
                 self._make_sample(
                     crop,
                     text,
                     crop_spans,
                     crop_cut_spans,
-                    baseline_top,
-                    baseline_bottom,
+                    crop_baseline_top,
+                    crop_baseline_bottom,
                 )
             )
 
@@ -1136,6 +1166,36 @@ class SingleLineDataset(Dataset):
             if char != self.config.space_char:
                 draw.text((origin, y), char, font=font, fill=fill)
         return spans, self._glyph_cut_spans(spans, origins, font)
+
+    def _visible_text_y_bounds(
+        self,
+        width: int,
+        height: int,
+        x: float,
+        y: float,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle,
+        fallback_bbox: tuple[float, float, float, float],
+    ) -> tuple[float, float, Image.Image | None]:
+        fallback = (float(y + fallback_bbox[1]), float(y + fallback_bbox[3] - 1))
+        if self.target_format != "baseline_heatmap" and not self.config.save_baseline_targets:
+            return fallback[0], fallback[1], None
+
+        mask = Image.new("L", (width, height), color=0)
+        mask_draw = ImageDraw.Draw(mask)
+        if not self._has_custom_spacing(style):
+            mask_draw.text((x, y), text, font=font, fill=255)
+        else:
+            spans, origins = self._styled_char_layout(text, font, x, style)
+            for (char, _, _), origin in zip(spans, origins):
+                if char != self.config.space_char:
+                    mask_draw.text((origin, y), char, font=font, fill=255)
+
+        visible_bbox = mask.getbbox()
+        if visible_bbox is None:
+            return fallback[0], fallback[1], mask
+        return float(visible_bbox[1]), float(visible_bbox[3] - 1), mask
 
     def _glyph_cut_spans(
         self,
