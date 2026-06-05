@@ -569,6 +569,8 @@ class SingleLineDataset(Dataset):
 
     def _sample_neighbor_line_layout(
         self,
+        main_text: str,
+        main_x: float,
         main_bbox: tuple[float, float, float, float],
         width: int,
         font: ImageFont.FreeTypeFont,
@@ -588,71 +590,198 @@ class SingleLineDataset(Dataset):
         bottom_text = self._make_neighbor_line_text(rng, font, style, width) if use_bottom else None
         top_bbox = self._text_bbox(top_text, font, style) if top_text is not None else None
         bottom_bbox = self._text_bbox(bottom_text, font, style) if bottom_text is not None else None
-        main_height = main_bbox[3] - main_bbox[1]
+        top_x = self._sample_neighbor_text_x(top_bbox, width, rng) if top_bbox is not None else 0.0
+        bottom_x = self._sample_neighbor_text_x(bottom_bbox, width, rng) if bottom_bbox is not None else 0.0
+        main_pixel_top, main_pixel_bottom = self._text_pixel_y_bounds(
+            text=main_text,
+            font=font,
+            style=style,
+            fallback_bbox=main_bbox,
+            canvas_width=width,
+            x=main_x,
+        )
+        main_height = max(1, main_pixel_bottom - main_pixel_top + 1)
+        top_pixel_bounds = (
+            self._text_pixel_y_bounds(
+                top_text,
+                font,
+                style,
+                top_bbox,
+                canvas_width=width,
+                x=top_x,
+            )
+            if top_text is not None and top_bbox is not None
+            else None
+        )
+        bottom_pixel_bounds = (
+            self._text_pixel_y_bounds(
+                bottom_text,
+                font,
+                style,
+                bottom_bbox,
+                canvas_width=width,
+                x=bottom_x,
+            )
+            if bottom_text is not None and bottom_bbox is not None
+            else None
+        )
 
-        for _ in range(50):
+        if top_bbox is not None and bottom_bbox is not None and top_pixel_bounds and bottom_pixel_bounds:
+            two_side_layouts = self._two_neighbor_vertical_layouts(
+                main_height=main_height,
+                top_height=top_pixel_bounds[1] - top_pixel_bounds[0] + 1,
+                bottom_height=bottom_pixel_bounds[1] - bottom_pixel_bounds[0] + 1,
+            )
+            if two_side_layouts:
+                top_visible, top_gap, bottom_visible, bottom_gap = rng.choice(two_side_layouts)
+            elif rng.random() < 0.5:
+                bottom_text = None
+                bottom_bbox = None
+                bottom_pixel_bounds = None
+                bottom_visible = 0
+                bottom_gap = 0
+                top_visible = self._sample_neighbor_visible_pixels(
+                    top_pixel_bounds[1] - top_pixel_bounds[0] + 1,
+                    rng,
+                )
+                top_gap = rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max)
+            else:
+                top_text = None
+                top_bbox = None
+                top_pixel_bounds = None
+                top_visible = 0
+                top_gap = 0
+                bottom_visible = self._sample_neighbor_visible_pixels(
+                    bottom_pixel_bounds[1] - bottom_pixel_bounds[0] + 1,
+                    rng,
+                )
+                bottom_gap = rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max)
+        else:
             top_visible = (
-                self._sample_neighbor_visible_pixels(top_bbox[3] - top_bbox[1], rng)
-                if top_bbox is not None
+                self._sample_neighbor_visible_pixels(
+                    top_pixel_bounds[1] - top_pixel_bounds[0] + 1,
+                    rng,
+                )
+                if top_pixel_bounds is not None
                 else 0
             )
             bottom_visible = (
-                self._sample_neighbor_visible_pixels(bottom_bbox[3] - bottom_bbox[1], rng)
+                self._sample_neighbor_visible_pixels(
+                    bottom_pixel_bounds[1] - bottom_pixel_bounds[0] + 1,
+                    rng,
+                )
+                if bottom_pixel_bounds is not None
+                else 0
+            )
+            top_gap = (
+                rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max)
+                if top_bbox is not None
+                else 0
+            )
+            bottom_gap = (
+                rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max)
                 if bottom_bbox is not None
                 else 0
             )
-            if (use_top and top_visible <= 0) or (use_bottom and bottom_visible <= 0):
-                continue
 
-            top_gap = rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max) if use_top else 0
-            bottom_gap = rng.randint(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max) if use_bottom else 0
-            main_top_min = top_visible + top_gap if use_top else 0
-            main_bottom_max = cfg.image_height - bottom_visible - bottom_gap if use_bottom else cfg.image_height
-            if main_bottom_max - main_top_min < main_height:
-                continue
+        if top_bbox is not None:
+            main_top = top_visible + top_gap
+        elif bottom_bbox is not None:
+            main_top = cfg.image_height - bottom_visible - bottom_gap - main_height
+        else:
+            return None
 
-            y_min = max(-main_bbox[1], main_top_min - main_bbox[1])
-            y_max = min(cfg.image_height - main_bbox[3], main_bottom_max - main_bbox[3])
-            if y_max < y_min:
-                continue
-            slack = y_max - y_min
-            if slack <= 0.0:
-                main_y = y_min
-            else:
-                center = (y_min + y_max) * 0.5
-                jitter = rng.uniform(-min(2.0, slack * 0.5), min(2.0, slack * 0.5))
-                main_y = min(max(center + jitter, y_min), y_max)
+        main_bottom = main_top + main_height
+        if main_top < 0 or main_bottom > cfg.image_height:
+            return None
 
-            layout: dict[str, Any] = {
-                "main_y": float(main_y),
-            }
-            if top_text is not None and top_bbox is not None:
-                layout.update(
-                    {
-                        "top_text": top_text,
-                        "top_x": self._sample_neighbor_text_x(top_bbox, width, rng),
-                        "top_y": float(top_visible - top_bbox[3]),
-                    }
-                )
-            if bottom_text is not None and bottom_bbox is not None:
-                layout.update(
-                    {
-                        "bottom_text": bottom_text,
-                        "bottom_x": self._sample_neighbor_text_x(bottom_bbox, width, rng),
-                        "bottom_y": float(cfg.image_height - bottom_visible - bottom_bbox[1]),
-                    }
-                )
-            return layout
+        main_y = float(main_top - main_pixel_top)
+        layout: dict[str, Any] = {"main_y": main_y}
+        if top_text is not None and top_bbox is not None and top_pixel_bounds is not None:
+            layout.update(
+                {
+                    "top_text": top_text,
+                    "top_x": top_x,
+                    "top_y": float(top_visible - 1 - top_pixel_bounds[1]),
+                    "top_gap": int(top_gap),
+                }
+            )
+        if bottom_text is not None and bottom_bbox is not None and bottom_pixel_bounds is not None:
+            layout.update(
+                {
+                    "bottom_text": bottom_text,
+                    "bottom_x": bottom_x,
+                    "bottom_y": float(
+                        cfg.image_height - bottom_visible - bottom_pixel_bounds[0]
+                    ),
+                    "bottom_gap": int(bottom_gap),
+                }
+            )
+        return layout
 
-        return None
+    def _two_neighbor_vertical_layouts(
+        self,
+        main_height: int,
+        top_height: float,
+        bottom_height: float,
+    ) -> list[tuple[int, int, int, int]]:
+        cfg = self.config
+        top_min, top_max = self._neighbor_visible_pixel_bounds(top_height)
+        bottom_min, bottom_max = self._neighbor_visible_pixel_bounds(bottom_height)
+        layouts: list[tuple[int, int, int, int]] = []
+
+        for top_visible in range(top_min, top_max + 1):
+            for bottom_visible in range(bottom_min, bottom_max + 1):
+                remaining_gap = cfg.image_height - main_height - top_visible - bottom_visible
+                if remaining_gap < 2 * cfg.neighbor_line_gap_min:
+                    continue
+                if remaining_gap > 2 * cfg.neighbor_line_gap_max:
+                    continue
+                for top_gap in range(cfg.neighbor_line_gap_min, cfg.neighbor_line_gap_max + 1):
+                    bottom_gap = remaining_gap - top_gap
+                    if cfg.neighbor_line_gap_min <= bottom_gap <= cfg.neighbor_line_gap_max:
+                        layouts.append((top_visible, top_gap, bottom_visible, bottom_gap))
+        return layouts
 
     def _sample_neighbor_visible_pixels(self, text_height: float, rng: random.Random) -> int:
+        min_visible, max_visible = self._neighbor_visible_pixel_bounds(text_height)
+        return rng.randint(min_visible, max_visible)
+
+    def _neighbor_visible_pixel_bounds(self, text_height: float) -> tuple[int, int]:
         max_visible_ratio = 1.0 - self.config.neighbor_line_min_crop_ratio
         if max_visible_ratio <= 0.0 or text_height <= 0.0:
-            return 0
+            return 0, 0
         min_visible_ratio = min(self.config.neighbor_line_visible_ratio_min, max_visible_ratio)
-        visible_ratio = rng.uniform(min_visible_ratio, max_visible_ratio)
-        return max(1, int(round(text_height * visible_ratio)))
+        min_visible = max(1, int(round(text_height * min_visible_ratio)))
+        max_visible = max(min_visible, int(round(text_height * max_visible_ratio)))
+        return min_visible, max_visible
+
+    def _text_pixel_y_bounds(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle,
+        fallback_bbox: tuple[float, float, float, float],
+        canvas_width: int | None = None,
+        x: float | None = None,
+    ) -> tuple[int, int]:
+        padding = 2
+        width = canvas_width or max(
+            1,
+            int(math.ceil(fallback_bbox[2] - fallback_bbox[0])) + 2 * padding,
+        )
+        height = max(1, int(math.ceil(fallback_bbox[3] - fallback_bbox[1])) + 2 * padding)
+        draw_x = float(padding - fallback_bbox[0]) if x is None else float(x)
+        draw_y = float(padding - fallback_bbox[1])
+        mask = Image.new("L", (width, height), color=0)
+        self._draw_text(ImageDraw.Draw(mask), draw_x, draw_y, text, font, 255, style)
+        visible_bbox = mask.getbbox()
+        if visible_bbox is None:
+            return int(math.floor(fallback_bbox[1])), int(math.ceil(fallback_bbox[3])) - 1
+        return (
+            int(round(visible_bbox[1] - draw_y)),
+            int(round(visible_bbox[3] - 1 - draw_y)),
+        )
 
     def _sample_neighbor_text_x(
         self,
@@ -751,6 +880,8 @@ class SingleLineDataset(Dataset):
         x = x_min + rng.randint(0, free_x)
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
         neighbor_layout = self._sample_neighbor_line_layout(
+            main_text=text,
+            main_x=float(x),
             main_bbox=bbox,
             width=cfg.image_width,
             font=font,
@@ -812,6 +943,8 @@ class SingleLineDataset(Dataset):
 
         fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
         neighbor_layout = self._sample_neighbor_line_layout(
+            main_text=text,
+            main_x=float(x),
             main_bbox=bbox,
             width=line_width,
             font=font,
