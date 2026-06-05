@@ -423,8 +423,8 @@ class SingleLineDataset(Dataset):
             raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
         style = style or self._sample_text_style(rng)
         font = font or self._load_font_that_fits(text, rng, style)
-        image, spans, baseline_top, baseline_bottom = self._render_text(text, font, rng, style)
-        return self._make_sample(image, text, spans, baseline_top, baseline_bottom)
+        image, spans, cut_spans, baseline_top, baseline_bottom = self._render_text(text, font, rng, style)
+        return self._make_sample(image, text, spans, cut_spans, baseline_top, baseline_bottom)
 
     def _validate_text(self, text: str) -> None:
         text = self._normalize_spaces(text)
@@ -477,8 +477,20 @@ class SingleLineDataset(Dataset):
             text = self._make_line_text(rng)
             style = self._sample_text_style(rng)
             font = self._load_font_for_line(text, rng)
-            image, spans, baseline_top, baseline_bottom = self._render_long_text(text, font, rng, style)
-            samples = self._slice_line_image(image, spans, baseline_top, baseline_bottom, rng)
+            image, spans, cut_spans, baseline_top, baseline_bottom = self._render_long_text(
+                text,
+                font,
+                rng,
+                style,
+            )
+            samples = self._slice_line_image(
+                image,
+                spans,
+                cut_spans,
+                baseline_top,
+                baseline_bottom,
+                rng,
+            )
             if samples:
                 return samples
 
@@ -715,7 +727,13 @@ class SingleLineDataset(Dataset):
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
         style: TextRenderStyle,
-    ) -> tuple[Image.Image, list[tuple[str, float, float]], float, float]:
+    ) -> tuple[
+        Image.Image,
+        list[tuple[str, float, float]],
+        list[tuple[str, float, float]],
+        float,
+        float,
+    ]:
         cfg = self.config
         image = self._make_background(rng)
         draw = ImageDraw.Draw(image)
@@ -741,11 +759,11 @@ class SingleLineDataset(Dataset):
             y = neighbor_layout["main_y"]
             self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
-        spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
+        spans, cut_spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
         baseline_top = float(y + bbox[1])
         baseline_bottom = float(y + bbox[3] - 1)
 
-        return image, spans, baseline_top, baseline_bottom
+        return image, spans, cut_spans, baseline_top, baseline_bottom
 
     def _render_long_text(
         self,
@@ -753,7 +771,13 @@ class SingleLineDataset(Dataset):
         font: ImageFont.FreeTypeFont,
         rng: random.Random,
         style: TextRenderStyle,
-    ) -> tuple[Image.Image, list[tuple[str, float, float]], float, float]:
+    ) -> tuple[
+        Image.Image,
+        list[tuple[str, float, float]],
+        list[tuple[str, float, float]],
+        float,
+        float,
+    ]:
         cfg = self.config
         bbox = self._text_bbox(text, font, style)
         text_width = bbox[2] - bbox[0]
@@ -787,15 +811,16 @@ class SingleLineDataset(Dataset):
             y = neighbor_layout["main_y"]
             self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
-        spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
+        spans, cut_spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
         baseline_top = float(y + bbox[1])
         baseline_bottom = float(y + bbox[3] - 1)
-        return image, spans, baseline_top, baseline_bottom
+        return image, spans, cut_spans, baseline_top, baseline_bottom
 
     def _slice_line_image(
         self,
         image: Image.Image,
         spans: list[tuple[str, float, float]],
+        cut_spans: list[tuple[str, float, float]],
         baseline_top: float,
         baseline_bottom: float,
         rng: random.Random,
@@ -806,9 +831,10 @@ class SingleLineDataset(Dataset):
 
         for left in range(0, image.width - cfg.image_width + 1, stride):
             right = left + cfg.image_width
-            crop_spans = self._crop_spans(spans, left, right)
-            if crop_spans is None:
+            cropped = self._crop_spans(spans, cut_spans, left, right)
+            if cropped is None:
                 continue
+            crop_spans, crop_cut_spans = cropped
             text = "".join(char for char, _, _ in crop_spans)
             if len(text) < cfg.min_crop_text_length:
                 continue
@@ -820,6 +846,7 @@ class SingleLineDataset(Dataset):
                     crop,
                     text,
                     crop_spans,
+                    crop_cut_spans,
                     baseline_top,
                     baseline_bottom,
                 )
@@ -830,11 +857,19 @@ class SingleLineDataset(Dataset):
     def _crop_spans(
         self,
         spans: list[tuple[str, float, float]],
+        cut_spans: list[tuple[str, float, float]],
         left: int,
         right: int,
-    ) -> list[tuple[str, float, float]] | None:
-        cropped_spans = []
-        for char, start, end in spans:
+    ) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]] | None:
+        if len(spans) != len(cut_spans):
+            raise ValueError("logical and cut span counts must match")
+
+        cropped_pairs: list[
+            tuple[tuple[str, float, float], tuple[str, float, float]]
+        ] = []
+        for (char, start, end), (cut_char, cut_start, cut_end) in zip(spans, cut_spans):
+            if cut_char != char:
+                raise ValueError("logical and cut span characters must match")
             visible_start = max(float(start), float(left))
             visible_end = min(float(end), float(right))
             visible_width = visible_end - visible_start
@@ -850,42 +885,61 @@ class SingleLineDataset(Dataset):
                     continue
                 return None
 
-            cropped_spans.append((char, start - left, end - left))
-        return self._normalize_span_sequence(cropped_spans)
+            shifted_span = (char, start - left, end - left)
+            shifted_cut_start = max(0.0, float(cut_start) - float(left))
+            shifted_cut_end = min(float(right - left), float(cut_end) - float(left))
+            if shifted_cut_end <= shifted_cut_start:
+                shifted_cut_start = max(0.0, visible_start - float(left))
+                shifted_cut_end = min(float(right - left), visible_end - float(left))
+            shifted_cut_span = (char, shifted_cut_start, shifted_cut_end)
+            cropped_pairs.append((shifted_span, shifted_cut_span))
+        return self._normalize_span_sequence(cropped_pairs)
 
     def _normalize_span_sequence(
         self,
-        spans: list[tuple[str, float, float]],
-    ) -> list[tuple[str, float, float]]:
+        span_pairs: list[
+            tuple[tuple[str, float, float], tuple[str, float, float]]
+        ],
+    ) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]]:
         space = self.config.space_char
-        normalized = []
+        normalized: list[
+            tuple[tuple[str, float, float], tuple[str, float, float]]
+        ] = []
         previous_was_space = False
-        for char, start, end in spans:
+        for logical_span, cut_span in span_pairs:
+            char = logical_span[0]
             is_space = char == space
             if is_space and (not normalized or previous_was_space):
                 continue
-            normalized.append((char, start, end))
+            normalized.append((logical_span, cut_span))
             previous_was_space = is_space
 
-        while normalized and normalized[-1][0] == space:
+        while normalized and normalized[-1][0][0] == space:
             normalized.pop()
-        return normalized
+        return (
+            [logical_span for logical_span, _ in normalized],
+            [cut_span for _, cut_span in normalized],
+        )
 
     def _make_sample(
         self,
         image: Image.Image,
         text: str,
         spans: list[tuple[str, float, float]],
+        cut_spans: list[tuple[str, float, float]],
         baseline_top: float,
         baseline_bottom: float,
     ) -> GeneratedLineSample:
+        if len(spans) != len(cut_spans):
+            raise ValueError("logical and cut span counts must match")
+
         target = self._encode_text(text)
         dense_target = None
         if self.target_format == "dense_symbols" or self.config.save_dense_targets:
             dense_target = self._encode_dense_symbols(spans, image.width)
         cut_projection_target = None
         if self.target_format == "cut_projection" or self.config.save_cut_projection_targets:
-            cut_projection_target = self._encode_cut_projection(spans, image.width)
+            cut_projection_target = self._encode_cut_projection(cut_spans, image.width)
         baseline_target = None
         if self.target_format == "baseline_heatmap" or self.config.save_baseline_targets:
             x_start = min(start for _, start, _ in spans)
@@ -971,10 +1025,9 @@ class SingleLineDataset(Dataset):
         radius = self.config.cut_projection_peak_radius
 
         def mark_peak(center: float) -> None:
-            center_index = int(round(center - 0.5))
+            center_index = min(width - 1, max(0, int(math.floor(center))))
             if radius == 0:
-                if 0 <= center_index < width:
-                    projection[center_index] = 1.0
+                projection[center_index] = 1.0
                 return
 
             for offset in range(-radius, radius + 1):
@@ -1071,16 +1124,43 @@ class SingleLineDataset(Dataset):
         font: ImageFont.FreeTypeFont,
         fill: int,
         style: TextRenderStyle,
-    ) -> list[tuple[str, float, float]]:
+    ) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]]:
         if not self._has_custom_spacing(style):
             draw.text((x, y), text, font=font, fill=fill)
-            return self._char_spans(text, font, x)
+            spans = self._char_spans(text, font, x)
+            origins = [start for _, start, _ in spans]
+            return spans, self._glyph_cut_spans(spans, origins, font)
 
         spans, origins = self._styled_char_layout(text, font, x, style)
         for (char, _, _), origin in zip(spans, origins):
             if char != self.config.space_char:
                 draw.text((origin, y), char, font=font, fill=fill)
-        return spans
+        return spans, self._glyph_cut_spans(spans, origins, font)
+
+    def _glyph_cut_spans(
+        self,
+        spans: list[tuple[str, float, float]],
+        origins: list[float],
+        font: ImageFont.FreeTypeFont,
+    ) -> list[tuple[str, float, float]]:
+        if len(spans) != len(origins):
+            raise ValueError("span and origin counts must match")
+
+        cut_spans: list[tuple[str, float, float]] = []
+        for (char, logical_start, logical_end), origin in zip(spans, origins):
+            # A space has no ink bbox, but it remains a regular segmentator cell.
+            if char == self.config.space_char:
+                cut_spans.append((char, logical_start, logical_end))
+                continue
+
+            bbox = self._plain_text_bbox(char, font)
+            ink_start = float(origin + bbox[0])
+            ink_end = float(origin + bbox[2])
+            if ink_end <= ink_start:
+                ink_start = logical_start
+                ink_end = logical_end
+            cut_spans.append((char, ink_start, ink_end))
+        return cut_spans
 
     def _styled_char_layout(
         self,
