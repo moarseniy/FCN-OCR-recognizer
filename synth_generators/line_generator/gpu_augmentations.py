@@ -68,6 +68,40 @@ class GpuTextAugmenter:
             return augmented, augmented_targets, metadata or [[] for _ in range(images.size(0))]
         return augmented, metadata or [[] for _ in range(images.size(0))]
 
+    def apply_metadata_to_targets(
+        self,
+        targets: torch.Tensor,
+        target_format: str,
+        metadata: list[list[dict[str, Any]]],
+    ) -> torch.Tensor:
+        """Replay sampled geometric augmentations on another target tensor."""
+        if targets.size(0) != len(metadata):
+            raise ValueError(
+                f"target batch size {targets.size(0)} does not match metadata batch size {len(metadata)}"
+            )
+
+        output = targets
+        for name in SUPPORTED_AUGMENTATIONS:
+            params_by_sample: list[AugmentationParams] = []
+            has_params = False
+            for sample_metadata in metadata:
+                params = next(
+                    (
+                        item.get("params")
+                        for item in sample_metadata
+                        if item.get("name") == name
+                    ),
+                    None,
+                )
+                params_by_sample.append(params)
+                has_params = has_params or params is not None
+            if has_params:
+                output = self._apply_target_one(name, output, target_format, params_by_sample)
+
+        if target_format.lower() != "dense_symbols":
+            output = output.clamp(0.0, 1.0)
+        return output
+
     def _augment(
         self,
         images: torch.Tensor,

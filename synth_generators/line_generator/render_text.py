@@ -59,6 +59,15 @@ def tensor_to_float_image(sample_tensor: torch.Tensor) -> torch.Tensor:
     raise ValueError(f"Unsupported image tensor shape: {tuple(tensor.shape)}")
 
 
+def target_to_float(target: torch.Tensor | None) -> torch.Tensor | None:
+    if target is None:
+        return None
+    output = target.detach().cpu().float()
+    if target.dtype == torch.uint8:
+        output = output / 255.0
+    return output.clamp(0.0, 1.0).contiguous()
+
+
 def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLineDatasetConfig:
     with config_path.open("r") as file:
         raw_config = yaml.safe_load(file) or {}
@@ -84,18 +93,53 @@ def apply_augmentations(
     config: SingleLineDatasetConfig,
     device: torch.device,
     enabled: bool,
-) -> tuple[torch.Tensor, list[dict[str, Any]]]:
+    cut_projection_target: torch.Tensor | None = None,
+    baseline_target: torch.Tensor | None = None,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    list[dict[str, Any]],
+]:
     image = tensor_to_float_image(image)
+    cut_projection_target = target_to_float(cut_projection_target)
+    baseline_target = target_to_float(baseline_target)
     if not enabled:
-        return image, []
+        return image, cut_projection_target, baseline_target, []
 
     augmenter = GpuTextAugmenter(config)
     batch = image.unsqueeze(0).to(device)
     augmented, metadata = augmenter.augment_with_metadata(batch)
-    return augmented[0].detach().cpu(), metadata[0]
+    if cut_projection_target is not None:
+        cut_projection_target = augmenter.apply_metadata_to_targets(
+            cut_projection_target.unsqueeze(0).to(device),
+            "cut_projection",
+            metadata,
+        )[0].detach().cpu()
+    if baseline_target is not None:
+        baseline_target = augmenter.apply_metadata_to_targets(
+            baseline_target.unsqueeze(0).to(device),
+            "baseline_heatmap",
+            metadata,
+        )[0].detach().cpu()
+    return (
+        augmented[0].detach().cpu(),
+        cut_projection_target,
+        baseline_target,
+        metadata[0],
+    )
 
 
-def load_chunk_sample(chunks_dir: Path, index: int) -> tuple[torch.Tensor, str, dict[str, Any]]:
+def load_chunk_sample(
+    chunks_dir: Path,
+    index: int,
+) -> tuple[
+    torch.Tensor,
+    str,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    dict[str, Any],
+]:
     chunk_paths = sorted(chunks_dir.glob("chunk_*.pt"))
     if not chunk_paths:
         raise FileNotFoundError(f"No chunk_*.pt files found in {chunks_dir}")
@@ -112,11 +156,19 @@ def load_chunk_sample(chunks_dir: Path, index: int) -> tuple[torch.Tensor, str, 
         sample_count = int(images.shape[0])
         if offset <= index < offset + sample_count:
             local_index = index - offset
-            return images[local_index], str(texts[local_index]), {
-                "chunk_file": str(path),
-                "chunk_local_index": local_index,
-                "global_index": index,
-            }
+            cut_targets = chunk.get("cut_projection_targets")
+            baseline_targets = chunk.get("baseline_targets")
+            return (
+                images[local_index],
+                str(texts[local_index]),
+                cut_targets[local_index] if cut_targets is not None else None,
+                baseline_targets[local_index] if baseline_targets is not None else None,
+                {
+                    "chunk_file": str(path),
+                    "chunk_local_index": local_index,
+                    "global_index": index,
+                },
+            )
         offset += sample_count
 
     raise IndexError(f"Chunk sample index out of range: {index}")
@@ -137,6 +189,68 @@ def normalize_text(text: str, config: SingleLineDatasetConfig) -> str:
     return config.space_char.join(part for part in text.split(config.space_char) if part)
 
 
+def _blend_heatmap(
+    image_array: np.ndarray,
+    heatmap: np.ndarray,
+    color: tuple[int, int, int],
+    opacity: float,
+) -> None:
+    alpha = np.clip(heatmap.astype(np.float32), 0.0, 1.0)[..., None] * float(opacity)
+    color_array = np.asarray(color, dtype=np.float32).reshape(1, 1, 3)
+    image_array[:] = image_array * (1.0 - alpha) + color_array * alpha
+
+
+def overlay_full_markup(
+    image: Image.Image,
+    cut_projection_target: torch.Tensor | None,
+    baseline_target: torch.Tensor | None,
+) -> tuple[Image.Image, dict[str, Any]]:
+    image_array = np.asarray(image.convert("RGB"), dtype=np.float32).copy()
+    height, width = image_array.shape[:2]
+    markup_metadata: dict[str, Any] = {
+        "cut_projection": cut_projection_target is not None,
+        "baseline": baseline_target is not None,
+        "legend": {
+            "cut_projection": "green",
+            "baseline_top": "red",
+            "baseline_bottom": "blue",
+        },
+    }
+
+    if baseline_target is not None:
+        baseline = target_to_float(baseline_target)
+        if baseline is None or baseline.ndim != 3 or baseline.shape[0] != 2:
+            raise ValueError(
+                "baseline markup target must have shape (2, H, W), "
+                f"got {None if baseline is None else tuple(baseline.shape)}"
+            )
+        if tuple(baseline.shape[-2:]) != (height, width):
+            raise ValueError(
+                f"baseline markup shape {tuple(baseline.shape[-2:])} "
+                f"does not match image shape {(height, width)}"
+            )
+        baseline_array = baseline.numpy()
+        _blend_heatmap(image_array, baseline_array[0], (255, 45, 45), opacity=0.78)
+        _blend_heatmap(image_array, baseline_array[1], (45, 105, 255), opacity=0.78)
+
+    if cut_projection_target is not None:
+        cut_projection = target_to_float(cut_projection_target)
+        if cut_projection is None or cut_projection.ndim != 1:
+            raise ValueError(
+                "cut projection markup target must have shape (W,), "
+                f"got {None if cut_projection is None else tuple(cut_projection.shape)}"
+            )
+        if cut_projection.shape[0] != width:
+            raise ValueError(
+                f"cut projection markup width {cut_projection.shape[0]} "
+                f"does not match image width {width}"
+            )
+        cut_heatmap = np.broadcast_to(cut_projection.numpy()[None, :], (height, width))
+        _blend_heatmap(image_array, cut_heatmap, (30, 230, 80), opacity=0.72)
+
+    return Image.fromarray(np.clip(image_array, 0, 255).astype(np.uint8)), markup_metadata
+
+
 def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     lines = [
         f"source: {metadata['source']}",
@@ -147,6 +261,15 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     ]
     if metadata["source"] == "chunk":
         lines.append(f"chunk: {metadata['chunk_file']}[{metadata['chunk_local_index']}]")
+
+    markup = metadata.get("full_markup")
+    if markup is not None:
+        lines.append(
+            "markup: "
+            f"cuts={'green' if markup['cut_projection'] else 'absent'}, "
+            f"top baseline={'red' if markup['baseline'] else 'absent'}, "
+            f"bottom baseline={'blue' if markup['baseline'] else 'absent'}"
+        )
 
     augmentations = metadata["augmentations"]
     if not augmentations:
@@ -215,6 +338,12 @@ def main() -> None:
     parser.add_argument("--canvas-width", type=int, default=900, help="Annotated output width without scaling the source crop.")
     parser.add_argument("--annotate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--no-augmentations", action="store_true", help="Disable render-time augmentations.")
+    parser.add_argument(
+        "--show-full-markup",
+        "--show-full--markup",
+        action="store_true",
+        help="Overlay available cut-projection and top/bottom baseline targets on the rendered image.",
+    )
     args = parser.parse_args()
 
     if bool(args.text) == bool(args.chunks_dir):
@@ -234,13 +363,26 @@ def main() -> None:
 
     source_metadata: dict[str, Any] = {}
     if chunks_dir:
-        image_tensor, text, source_metadata = load_chunk_sample(chunks_dir, args.index)
+        (
+            image_tensor,
+            text,
+            cut_projection_target,
+            baseline_target,
+            source_metadata,
+        ) = load_chunk_sample(chunks_dir, args.index)
         text = normalize_text(text, config)
-        image_tensor, augmentations = apply_augmentations(
+        (
+            image_tensor,
+            cut_projection_target,
+            baseline_target,
+            augmentations,
+        ) = apply_augmentations(
             image_tensor,
             config,
             device,
             enabled=not args.no_augmentations,
+            cut_projection_target=cut_projection_target,
+            baseline_target=baseline_target,
         )
         source = "chunk"
     else:
@@ -248,14 +390,28 @@ def main() -> None:
             raise RuntimeError("dataset must be initialized for text rendering")
         sample = dataset.generate_text_sample(args.text, rng)
         text = sample.text
-        image_tensor, augmentations = apply_augmentations(
+        (
+            image_tensor,
+            cut_projection_target,
+            baseline_target,
+            augmentations,
+        ) = apply_augmentations(
             sample.image,
             config,
             device,
             enabled=not args.no_augmentations,
+            cut_projection_target=sample.cut_projection_target,
+            baseline_target=sample.baseline_target,
         )
         source = "text"
     image = tensor_to_image(image_tensor)
+    full_markup = None
+    if args.show_full_markup:
+        image, full_markup = overlay_full_markup(
+            image,
+            cut_projection_target=cut_projection_target,
+            baseline_target=baseline_target,
+        )
 
     metadata = {
         "source": source,
@@ -267,6 +423,8 @@ def main() -> None:
         "augmentations": augmentations,
         **source_metadata,
     }
+    if full_markup is not None:
+        metadata["full_markup"] = full_markup
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,6 +443,12 @@ def main() -> None:
     print(f"Image size: {image.width}x{image.height}")
     print(f"Output size: {output_image.width}x{output_image.height}")
     print(f"Augmentations: {len(augmentations)}")
+    if full_markup is not None:
+        print(
+            "Markup: "
+            f"cuts={'yes' if full_markup['cut_projection'] else 'no'}, "
+            f"baseline={'yes' if full_markup['baseline'] else 'no'}"
+        )
 
 
 if __name__ == "__main__":
