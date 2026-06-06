@@ -16,10 +16,6 @@
     </div>
     <div class="status-area">
       <span id="saveStatus">Ready</span>
-      <label class="complete-toggle">
-        <input id="completed" type="checkbox">
-        <span>Complete</span>
-      </label>
     </div>
   </header>
 
@@ -51,7 +47,7 @@
 
       <div class="progress">
         <div class="progress-label">
-          <span>Completed</span>
+          <span>Marked</span>
           <strong id="progressText">0 / 0</strong>
         </div>
         <div class="progress-track"><div id="progressBar"></div></div>
@@ -63,7 +59,10 @@
     <section class="stage">
       <div id="imageName" class="image-name"></div>
       <div id="canvasScroller" class="canvas-scroller">
-        <canvas id="canvas"></canvas>
+        <div id="canvasWrap" class="canvas-wrap">
+          <canvas id="canvas"></canvas>
+          <svg id="overlay" aria-label="Markup canvas"></svg>
+        </div>
       </div>
     </section>
   </main>
@@ -71,4 +70,3 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
-

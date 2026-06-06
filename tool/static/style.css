@@ -196,13 +196,6 @@ button {
   padding: 5px 4px;
 }
 
-.complete-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #e5eaec;
-}
-
 .stage {
   min-width: 0;
   display: grid;
@@ -231,11 +224,26 @@ button {
   background-size: 16px 16px;
 }
 
-#canvas {
-  display: block;
-  border: 1px solid #68747a;
+.canvas-wrap {
+  position: relative;
+  width: fit-content;
+  height: fit-content;
+  outline: 1px solid #68747a;
   box-shadow: 0 8px 28px rgb(0 0 0 / 35%);
+}
+
+#canvas,
+#overlay {
+  display: block;
+}
+
+#canvas {
   image-rendering: pixelated;
+}
+
+#overlay {
+  position: absolute;
+  inset: 0;
   cursor: crosshair;
   touch-action: none;
 }
@@ -253,4 +261,3 @@ button {
     grid-template-columns: 180px minmax(0, 1fr);
   }
 }
-

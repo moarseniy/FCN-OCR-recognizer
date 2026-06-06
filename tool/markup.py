@@ -76,6 +76,9 @@ def load_document(path: Path, images_root: Path | None = None) -> dict[str, Any]
     if images_root is not None:
         document["images_root"] = str(images_root.expanduser().resolve())
     document.setdefault("items", [])
+    for item in document["items"]:
+        if isinstance(item, dict):
+            item.pop("completed", None)
     return document
 
 
@@ -121,7 +124,6 @@ def ensure_item(
         "height": int(height),
         "cuts": [],
         "baselines": {"top": [], "bottom": []},
-        "completed": False,
         "updated_at": utc_now(),
     }
     document.setdefault("items", []).append(item)
@@ -164,7 +166,6 @@ def normalize_item(payload: dict[str, Any], width: int, height: int) -> dict[str
             "top": normalize_points(baselines.get("top", []), width, height),
             "bottom": normalize_points(baselines.get("bottom", []), width, height),
         },
-        "completed": bool(payload.get("completed", False)),
         "updated_at": utc_now(),
     }
 
@@ -183,16 +184,10 @@ def normalize_points(points: Any, width: int, height: int) -> list[list[float]]:
     return normalized
 
 
-def annotated_items(
-    document: dict[str, Any],
-    require_completed: bool = True,
-) -> list[dict[str, Any]]:
+def annotated_items(document: dict[str, Any]) -> list[dict[str, Any]]:
     items = []
     for item in document.get("items", []):
         if not isinstance(item, dict) or not item.get("image"):
             continue
-        if require_completed and not item.get("completed", False):
-            continue
         items.append(item)
     return items
-

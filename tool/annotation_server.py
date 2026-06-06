@@ -51,23 +51,26 @@ class AnnotationStore:
         with self.lock:
             annotations = item_by_image(self.document)
             images = []
-            completed_count = 0
+            marked_count = 0
             for relative_path in self.images:
                 item = annotations.get(relative_path)
-                completed = bool(item and item.get("completed"))
-                completed_count += int(completed)
+                cuts = len(item.get("cuts", [])) if item else 0
+                top_points = len((item.get("baselines") or {}).get("top", [])) if item else 0
+                bottom_points = len((item.get("baselines") or {}).get("bottom", [])) if item else 0
+                marked = bool(cuts or top_points or bottom_points)
+                marked_count += int(marked)
                 images.append(
                     {
                         "path": relative_path,
-                        "completed": completed,
-                        "cuts": len(item.get("cuts", [])) if item else 0,
-                        "top_points": len((item.get("baselines") or {}).get("top", [])) if item else 0,
-                        "bottom_points": len((item.get("baselines") or {}).get("bottom", [])) if item else 0,
+                        "marked": marked,
+                        "cuts": cuts,
+                        "top_points": top_points,
+                        "bottom_points": bottom_points,
                     }
                 )
             return {
                 "images": images,
-                "completed": completed_count,
+                "marked": marked_count,
                 "total": len(images),
                 "output": str(self.output_path),
             }

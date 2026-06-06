@@ -11,12 +11,19 @@ const state = {
   dragging: null,
   dirty: false,
   saveTimer: null,
+  revision: 0,
+  savePromise: Promise.resolve(true),
+  navigating: false,
 };
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+const canvasWrap = document.getElementById("canvasWrap");
+const overlay = document.getElementById("overlay");
+const canvasScroller = document.getElementById("canvasScroller");
 const imageList = document.getElementById("imageList");
 const saveStatus = document.getElementById("saveStatus");
+const zoomInput = document.getElementById("zoom");
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
@@ -41,34 +48,43 @@ async function loadState() {
   renderImageList();
   updateProgress();
   if (state.images.length) {
-    const firstIncomplete = state.images.findIndex((item) => !item.completed);
-    await openImage(firstIncomplete >= 0 ? firstIncomplete : 0);
+    const firstUnmarked = state.images.findIndex((item) => !item.marked);
+    await openImage(firstUnmarked >= 0 ? firstUnmarked : 0);
   } else {
     saveStatus.textContent = "No images";
   }
 }
 
 async function openImage(index) {
-  if (!state.images.length) return;
-  await saveNow();
-  state.index = Math.min(Math.max(index, 0), state.images.length - 1);
-  const item = state.images[state.index];
-  saveStatus.textContent = "Loading";
-  const [annotation, image] = await Promise.all([
-    requestJson(annotationUrl(item.path)),
-    loadImage(imageUrl(item.path)),
-  ]);
-  state.annotation = annotation;
-  state.image = image;
-  state.history = [];
-  state.dragging = null;
-  state.dirty = false;
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  applyZoom();
-  syncControls();
-  draw();
-  saveStatus.textContent = "Saved";
+  if (!state.images.length || state.navigating) return;
+  state.navigating = true;
+  try {
+    const saved = await saveNow(true);
+    if (!saved) return;
+
+    state.index = Math.min(Math.max(index, 0), state.images.length - 1);
+    const item = state.images[state.index];
+    saveStatus.textContent = "Loading";
+    const [annotation, image] = await Promise.all([
+      requestJson(annotationUrl(item.path)),
+      loadImage(imageUrl(item.path)),
+    ]);
+    state.annotation = annotation;
+    state.image = image;
+    state.history = [];
+    state.dragging = null;
+    state.dirty = false;
+    state.revision = 0;
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    overlay.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
+    applyZoom();
+    syncControls();
+    draw();
+    saveStatus.textContent = "Saved";
+  } finally {
+    state.navigating = false;
+  }
 }
 
 function loadImage(url) {
@@ -84,7 +100,6 @@ function snapshot() {
   return JSON.stringify({
     cuts: state.annotation.cuts,
     baselines: state.annotation.baselines,
-    completed: state.annotation.completed,
   });
 }
 
@@ -105,35 +120,53 @@ function undo() {
 
 function markDirty() {
   state.dirty = true;
+  state.revision += 1;
   saveStatus.textContent = "Unsaved";
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(saveNow, 450);
 }
 
-async function saveNow() {
+async function saveNow(force = false) {
   clearTimeout(state.saveTimer);
-  if (!state.dirty || !state.annotation || !state.images.length) return;
-  saveStatus.textContent = "Saving";
+  if (!state.annotation || !state.images.length) return true;
+  if (!state.dirty && !force) return true;
+
   const item = state.images[state.index];
-  try {
-    const payload = await requestJson(annotationUrl(item.path), {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(state.annotation),
-    });
-    state.annotation = payload.item;
-    state.dirty = false;
-    item.completed = state.annotation.completed;
-    item.cuts = state.annotation.cuts.length;
-    item.top_points = state.annotation.baselines.top.length;
-    item.bottom_points = state.annotation.baselines.bottom.length;
-    renderImageList();
-    updateProgress();
-    saveStatus.textContent = "Saved";
-  } catch (error) {
-    saveStatus.textContent = "Save failed";
-    console.error(error);
-  }
+  const path = item.path;
+  const revision = state.revision;
+  const body = JSON.stringify(state.annotation);
+
+  const operation = async () => {
+    saveStatus.textContent = "Saving";
+    try {
+      const payload = await requestJson(annotationUrl(path), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body,
+      });
+      item.cuts = payload.item.cuts.length;
+      item.top_points = payload.item.baselines.top.length;
+      item.bottom_points = payload.item.baselines.bottom.length;
+      item.marked = Boolean(item.cuts || item.top_points || item.bottom_points);
+
+      const currentPath = state.images[state.index]?.path;
+      if (currentPath === path && state.revision === revision) {
+        state.annotation = payload.item;
+        state.dirty = false;
+        saveStatus.textContent = "Saved";
+      }
+      renderImageList();
+      updateProgress();
+      return true;
+    } catch (error) {
+      saveStatus.textContent = "Save failed";
+      console.error(error);
+      return false;
+    }
+  };
+
+  state.savePromise = state.savePromise.then(operation, operation);
+  return state.savePromise;
 }
 
 function draw() {
@@ -141,48 +174,62 @@ function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(state.image, 0, 0);
-
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "#20df73";
-  for (const x of state.annotation.cuts) {
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, canvas.height);
-    ctx.stroke();
-  }
-
-  drawBaseline(state.annotation.baselines.top, "#ff4f55");
-  drawBaseline(state.annotation.baselines.bottom, "#438cff");
+  drawOverlay();
 }
 
-function drawBaseline(points, color) {
-  if (!points.length) return;
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    if (index === 0) ctx.moveTo(point[0] + 0.5, point[1] + 0.5);
-    else ctx.lineTo(point[0] + 0.5, point[1] + 0.5);
-  });
-  ctx.stroke();
-  for (const point of points) {
-    ctx.beginPath();
-    ctx.arc(point[0], point[1], Math.max(1.25, 3 / state.zoom), 0, Math.PI * 2);
-    ctx.fill();
+function drawOverlay() {
+  overlay.replaceChildren();
+  for (const x of state.annotation.cuts) {
+    overlay.append(createSvgElement("line", {
+      x1: x,
+      y1: 0,
+      x2: x,
+      y2: canvas.height,
+      stroke: "#20df73",
+      "stroke-width": 1,
+      "vector-effect": "non-scaling-stroke",
+    }));
   }
+
+  drawBaselineOverlay(state.annotation.baselines.top, "#ff4f55");
+  drawBaselineOverlay(state.annotation.baselines.bottom, "#438cff");
+}
+
+function drawBaselineOverlay(points, color) {
+  if (!points.length) return;
+  overlay.append(createSvgElement("polyline", {
+    points: points.map((point) => `${point[0]},${point[1]}`).join(" "),
+    fill: "none",
+    stroke: color,
+    "stroke-width": 1,
+    "vector-effect": "non-scaling-stroke",
+  }));
+  for (const point of points) {
+    overlay.append(createSvgElement("circle", {
+      cx: point[0],
+      cy: point[1],
+      r: 3 / state.zoom,
+      fill: color,
+    }));
+  }
+}
+
+function createSvgElement(name, attributes) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+  return element;
 }
 
 function canvasPoint(event) {
-  const rect = canvas.getBoundingClientRect();
+  const rect = overlay.getBoundingClientRect();
   return {
     x: Math.min(
       canvas.width - 1,
-      Math.max(0, (event.clientX - rect.left - canvas.clientLeft) * canvas.width / canvas.clientWidth),
+      Math.max(0, (event.clientX - rect.left) * canvas.width / rect.width),
     ),
     y: Math.min(
       canvas.height - 1,
-      Math.max(0, (event.clientY - rect.top - canvas.clientTop) * canvas.height / canvas.clientHeight),
+      Math.max(0, (event.clientY - rect.top) * canvas.height / rect.height),
     ),
   };
 }
@@ -211,7 +258,7 @@ function nearestCut(cuts, x) {
   return best;
 }
 
-canvas.addEventListener("pointerdown", (event) => {
+overlay.addEventListener("pointerdown", (event) => {
   if (!state.annotation || event.button !== 0) return;
   const point = canvasPoint(event);
   remember();
@@ -226,13 +273,13 @@ canvas.addEventListener("pointerdown", (event) => {
     const nearest = nearestPoint(points, point);
     if (nearest) {
       state.dragging = {mode: state.mode, index: nearest.index};
-      canvas.setPointerCapture(event.pointerId);
+      overlay.setPointerCapture(event.pointerId);
     } else {
       points.push([roundCoordinate(point.x), roundCoordinate(point.y)]);
       points.sort((a, b) => a[0] - b[0]);
       const index = points.findIndex((candidate) => candidate[0] === roundCoordinate(point.x) && candidate[1] === roundCoordinate(point.y));
       state.dragging = {mode: state.mode, index};
-      canvas.setPointerCapture(event.pointerId);
+      overlay.setPointerCapture(event.pointerId);
     }
   }
   markDirty();
@@ -240,7 +287,7 @@ canvas.addEventListener("pointerdown", (event) => {
   draw();
 });
 
-canvas.addEventListener("pointermove", (event) => {
+overlay.addEventListener("pointermove", (event) => {
   if (!state.dragging || !state.annotation) return;
   const point = canvasPoint(event);
   const points = state.annotation.baselines[state.dragging.mode];
@@ -251,11 +298,11 @@ canvas.addEventListener("pointermove", (event) => {
   draw();
 });
 
-canvas.addEventListener("pointerup", () => {
+overlay.addEventListener("pointerup", () => {
   state.dragging = null;
 });
 
-canvas.addEventListener("contextmenu", (event) => {
+overlay.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   if (!state.annotation) return;
   const point = canvasPoint(event);
@@ -295,17 +342,45 @@ function clearLayer() {
 }
 
 function applyZoom() {
-  state.zoom = Number(document.getElementById("zoom").value);
-  canvas.style.width = `${canvas.width * state.zoom + canvas.clientLeft * 2}px`;
-  canvas.style.height = `${canvas.height * state.zoom + canvas.clientTop * 2}px`;
+  state.zoom = Number(zoomInput.value);
+  const width = canvas.width * state.zoom;
+  const height = canvas.height * state.zoom;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  overlay.style.width = `${width}px`;
+  overlay.style.height = `${height}px`;
+  canvasWrap.style.width = `${width}px`;
+  canvasWrap.style.height = `${height}px`;
   document.getElementById("zoomValue").value = `${state.zoom}×`;
+}
+
+function zoomWithWheel(event) {
+  if (!state.image) return;
+  event.preventDefault();
+  const oldZoom = state.zoom;
+  const direction = event.deltaY < 0 ? 1 : -1;
+  const nextZoom = Math.min(
+    Number(zoomInput.max),
+    Math.max(Number(zoomInput.min), oldZoom + direction * Number(zoomInput.step)),
+  );
+  if (nextZoom === oldZoom) return;
+
+  const oldRect = overlay.getBoundingClientRect();
+  const sourceX = (event.clientX - oldRect.left) / oldZoom;
+  const sourceY = (event.clientY - oldRect.top) / oldZoom;
+  zoomInput.value = String(nextZoom);
+  applyZoom();
+  drawOverlay();
+
+  const newRect = overlay.getBoundingClientRect();
+  canvasScroller.scrollLeft += newRect.left + sourceX * nextZoom - event.clientX;
+  canvasScroller.scrollTop += newRect.top + sourceY * nextZoom - event.clientY;
 }
 
 function syncControls() {
   if (!state.annotation) return;
   document.getElementById("counter").textContent = `${state.index + 1} / ${state.images.length}`;
   document.getElementById("imageName").textContent = state.images[state.index].path;
-  document.getElementById("completed").checked = Boolean(state.annotation.completed);
   document.getElementById("cutsCount").textContent = state.annotation.cuts.length;
   document.getElementById("topCount").textContent = state.annotation.baselines.top.length;
   document.getElementById("bottomCount").textContent = state.annotation.baselines.bottom.length;
@@ -317,16 +392,16 @@ function renderImageList() {
   state.images.forEach((item, index) => {
     const option = document.createElement("option");
     option.value = String(index);
-    option.textContent = `${item.completed ? "✓" : "·"} ${item.path}`;
+    option.textContent = `${item.marked ? "✓" : "·"} ${item.path}`;
     imageList.append(option);
   });
   imageList.selectedIndex = state.index;
 }
 
 function updateProgress() {
-  const completed = state.images.filter((item) => item.completed).length;
-  document.getElementById("progressText").textContent = `${completed} / ${state.images.length}`;
-  document.getElementById("progressBar").style.width = `${state.images.length ? completed * 100 / state.images.length : 0}%`;
+  const marked = state.images.filter((item) => item.marked).length;
+  document.getElementById("progressText").textContent = `${marked} / ${state.images.length}`;
+  document.getElementById("progressBar").style.width = `${state.images.length ? marked * 100 / state.images.length : 0}%`;
 }
 
 document.querySelectorAll(".mode").forEach((button) => {
@@ -337,16 +412,11 @@ document.getElementById("next").addEventListener("click", () => openImage(state.
 document.getElementById("undo").addEventListener("click", undo);
 document.getElementById("clearLayer").addEventListener("click", clearLayer);
 document.getElementById("save").addEventListener("click", saveNow);
-document.getElementById("zoom").addEventListener("input", () => {
+zoomInput.addEventListener("input", () => {
   applyZoom();
-  draw();
+  drawOverlay();
 });
-document.getElementById("completed").addEventListener("change", (event) => {
-  if (!state.annotation) return;
-  remember();
-  state.annotation.completed = event.target.checked;
-  markDirty();
-});
+overlay.addEventListener("wheel", zoomWithWheel, {passive: false});
 imageList.addEventListener("change", () => openImage(Number(imageList.value)));
 
 window.addEventListener("keydown", (event) => {

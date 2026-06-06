@@ -86,7 +86,7 @@ def build_manual_rows_and_jobs(
 ) -> tuple[list[dict[str, Any]], list[tuple[int, Path]]]:
     rows: list[dict[str, Any]] = []
     jobs: list[tuple[int, Path]] = []
-    items = annotated_items(document, require_completed=True)
+    items = annotated_items(document)
     if limit is not None:
         items = items[:limit]
 

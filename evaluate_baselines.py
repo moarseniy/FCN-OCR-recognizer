@@ -28,7 +28,7 @@ def build_jobs(
         else Path(document["images_root"]).expanduser().resolve()
     )
     jobs: list[tuple[dict[str, Any], Path]] = []
-    for item in annotated_items(document, require_completed=True):
+    for item in annotated_items(document):
         baselines = item.get("baselines") or {}
         if len(baselines.get("top", [])) < 2 or len(baselines.get("bottom", [])) < 2:
             continue
@@ -386,7 +386,7 @@ def main() -> None:
         args.limit,
     )
     if not jobs:
-        raise ValueError("No completed samples with both top and bottom baseline markup")
+        raise ValueError("No saved samples with both top and bottom baseline markup")
     detector = BaselineDetector(
         args.checkpoint,
         device=args.device,
