@@ -487,6 +487,13 @@ class TextRecognizer:
             }
             for source_key, target_key in (
                 ("angle_degrees", "baseline_angle_degrees"),
+                ("bottom_angle_degrees", "baseline_bottom_angle_degrees"),
+                ("topline_angle_degrees", "baseline_top_angle_degrees"),
+                ("baseline_pair_angle_difference", "baseline_pair_angle_difference"),
+                ("baseline_pair_angle_max_difference", "baseline_pair_angle_max_difference"),
+                ("baseline_top_angle_weight", "baseline_top_angle_weight"),
+                ("baseline_bottom_angle_weight", "baseline_bottom_angle_weight"),
+                ("baseline_angle_method", "baseline_angle_method"),
                 ("confidence", "baseline_confidence"),
                 ("inlier_ratio", "baseline_inlier_ratio"),
                 ("profile_coverage", "baseline_profile_coverage"),
@@ -563,6 +570,15 @@ class TextRecognizer:
             "baseline_line_pad_px": self.baseline_line_pad_px,
             "baseline_angle_degrees": original_angle,
             "baseline_residual_angle_degrees": float(detection["angle_degrees"]),
+            "baseline_top_angle_degrees": float(first.get("topline_angle_degrees", original_angle)),
+            "baseline_bottom_angle_degrees": float(first.get("bottom_angle_degrees", original_angle)),
+            "baseline_pair_angle_difference": float(first.get("baseline_pair_angle_difference", 0.0)),
+            "baseline_pair_angle_max_difference": float(
+                first.get("baseline_pair_angle_max_difference", self._baseline_pair_angle_max_difference())
+            ),
+            "baseline_top_angle_weight": float(first.get("baseline_top_angle_weight", 0.0)),
+            "baseline_bottom_angle_weight": float(first.get("baseline_bottom_angle_weight", 1.0)),
+            "baseline_angle_method": first.get("baseline_angle_method", "bottom_only"),
             "baseline_crop_box": tuple(int(value) for value in detection["crop_box"]),
             "baseline_text_bbox": tuple(int(value) for value in detection["text_bbox"]),
             "baseline_text_height": int(detection["text_height"]),
@@ -769,7 +785,21 @@ class TextRecognizer:
             }
         crop_box, text_height = paired_crop
         confidence = min(float(top_line["confidence"]), float(bottom_line["confidence"]))
-        angle_degrees = math.degrees(math.atan(float(bottom_line["slope"])))
+        angle = self._combined_baseline_angle(top_line, bottom_line)
+        if self.baseline_strict_lines and not angle["baseline_pair_angle_consistent"]:
+            return {
+                "ok": False,
+                "status": "neural_baseline_angle_mismatch",
+                "cleaned_mask": cleaned_mask,
+                "foreground_pixels": foreground_pixels,
+                "method": "neural_heatmap",
+                "mask_name": "baseline_detector",
+                "topline_confidence": float(top_line["confidence"]),
+                "baseline_confidence": float(bottom_line["confidence"]),
+                **angle,
+                **self._topline_metadata(top_line),
+            }
+        angle_degrees = float(angle["angle_degrees"])
         top_y = top_line["slope"] * xs + top_line["intercept"]
         bottom_y = bottom_line["slope"] * xs + bottom_line["intercept"]
         text_bbox = (
@@ -802,8 +832,9 @@ class TextRecognizer:
             "text_height": int(text_height),
             "bottom_slope": float(bottom_line["slope"]),
             "bottom_intercept": float(bottom_line["intercept"]),
-            "bottom_angle_degrees": float(angle_degrees),
+            "bottom_angle_degrees": float(angle["bottom_angle_degrees"]),
             "topline_detected": True,
+            **angle,
             **self._topline_metadata(top_line),
         }
 
@@ -962,21 +993,33 @@ class TextRecognizer:
 
         candidate_count = len(detections)
         if detections:
-            best = max(detections, key=lambda item: float(item["confidence"]))
-            best["candidate_count"] = candidate_count
-            angle_degrees = float(best["angle_degrees"])
-            if abs(angle_degrees) <= self.baseline_max_angle and float(best["confidence"]) >= 0.24:
+            acceptable = [
+                item
+                for item in detections
+                if bool(item.get("baseline_pair_angle_consistent", True))
+                and abs(float(item["angle_degrees"])) <= self.baseline_max_angle
+                and float(item["confidence"]) >= 0.24
+            ]
+            if acceptable:
+                best = max(acceptable, key=lambda item: float(item["confidence"]))
+                best["candidate_count"] = candidate_count
                 best["ok"] = True
                 best["status"] = "ok"
                 return best
 
+            best = max(detections, key=lambda item: float(item["confidence"]))
+            best["candidate_count"] = candidate_count
+            angle_degrees = float(best["angle_degrees"])
+            pair_consistent = bool(best.get("baseline_pair_angle_consistent", True))
+
             if self.baseline_strict_lines:
                 best["ok"] = False
-                best["status"] = (
-                    "strict_lines_angle_rejected"
-                    if abs(angle_degrees) > self.baseline_max_angle
-                    else "strict_lines_low_confidence"
-                )
+                if not pair_consistent:
+                    best["status"] = "strict_lines_angle_mismatch"
+                elif abs(angle_degrees) > self.baseline_max_angle:
+                    best["status"] = "strict_lines_angle_rejected"
+                else:
+                    best["status"] = "strict_lines_low_confidence"
                 return best
 
             if bbox_fallbacks:
@@ -1148,7 +1191,6 @@ class TextRecognizer:
     ) -> dict[str, Any] | None:
         slope = float(line["slope"])
         intercept = float(line["intercept"])
-        angle_degrees = math.degrees(math.atan(slope))
         bottom_confidence = float(line["confidence"])
         top_line = self._detect_top_text_line(
             cleaned_mask,
@@ -1181,6 +1223,7 @@ class TextRecognizer:
             crop_box, text_height = paired_crop
         top_confidence = float(top_line["confidence"]) if top_line is not None else None
         confidence = min(bottom_confidence, top_confidence) if self.baseline_strict_lines and top_confidence is not None else bottom_confidence
+        angle = self._combined_baseline_angle(top_line, line)
         return {
             "ok": True,
             "status": "candidate",
@@ -1190,7 +1233,7 @@ class TextRecognizer:
             "foreground_pixels": foreground_pixels,
             "slope": slope,
             "intercept": intercept,
-            "angle_degrees": float(angle_degrees),
+            "angle_degrees": float(angle["angle_degrees"]),
             "confidence": float(confidence),
             "bottom_confidence": bottom_confidence,
             "inlier_ratio": float(line["inlier_ratio"]),
@@ -1205,8 +1248,9 @@ class TextRecognizer:
             "text_height": int(text_height),
             "bottom_slope": slope,
             "bottom_intercept": intercept,
-            "bottom_angle_degrees": float(angle_degrees),
+            "bottom_angle_degrees": float(angle["bottom_angle_degrees"]),
             "topline_detected": top_line is not None,
+            **angle,
             **self._topline_metadata(top_line),
         }
 
@@ -1298,6 +1342,56 @@ class TextRecognizer:
             "topline_profile_y": top_line["profile_y"],
             "topline_inlier_mask": top_line["inlier_mask"],
         }
+
+    def _combined_baseline_angle(
+        self,
+        top_line: dict[str, Any] | None,
+        bottom_line: dict[str, Any],
+    ) -> dict[str, Any]:
+        bottom_angle = math.degrees(math.atan(float(bottom_line["slope"])))
+        if top_line is None:
+            return {
+                "angle_degrees": float(bottom_angle),
+                "bottom_angle_degrees": float(bottom_angle),
+                "baseline_pair_angle_difference": 0.0,
+                "baseline_pair_angle_max_difference": self._baseline_pair_angle_max_difference(),
+                "baseline_pair_angle_consistent": True,
+                "baseline_top_angle_weight": 0.0,
+                "baseline_bottom_angle_weight": 1.0,
+                "baseline_angle_method": "bottom_only",
+            }
+
+        top_angle = math.degrees(math.atan(float(top_line["slope"])))
+        top_weight = self._baseline_line_angle_weight(top_line)
+        bottom_weight = self._baseline_line_angle_weight(bottom_line)
+        weight_sum = top_weight + bottom_weight
+        if weight_sum <= 1e-8:
+            top_weight = bottom_weight = 0.5
+            weight_sum = 1.0
+        top_weight /= weight_sum
+        bottom_weight /= weight_sum
+        angle = top_angle * top_weight + bottom_angle * bottom_weight
+        difference = abs(top_angle - bottom_angle)
+        max_difference = self._baseline_pair_angle_max_difference()
+        return {
+            "angle_degrees": float(angle),
+            "bottom_angle_degrees": float(bottom_angle),
+            "baseline_pair_angle_difference": float(difference),
+            "baseline_pair_angle_max_difference": float(max_difference),
+            "baseline_pair_angle_consistent": bool(difference <= max_difference),
+            "baseline_top_angle_weight": float(top_weight),
+            "baseline_bottom_angle_weight": float(bottom_weight),
+            "baseline_angle_method": "confidence_coverage_weighted_pair",
+        }
+
+    @staticmethod
+    def _baseline_line_angle_weight(line: dict[str, Any]) -> float:
+        confidence = max(0.0, float(line.get("confidence", 0.0)))
+        coverage = max(0.0, float(line.get("profile_coverage", 0.0)))
+        return max(1e-6, confidence * coverage)
+
+    def _baseline_pair_angle_max_difference(self) -> float:
+        return max(2.0, min(6.0, self.baseline_max_angle * 0.5))
 
     def _detect_top_text_line(
         self,

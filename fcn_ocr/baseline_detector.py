@@ -27,6 +27,7 @@ class BaselineDetector(TextRecognizer):
         self.baseline_line_pad = 0.0
         self.baseline_line_pad_px = 0.0
         self.baseline_strict_lines = True
+        self.baseline_max_angle = 12.0
         self.baseline_top_pad = 0.0
         self.baseline_bottom_pad = 0.0
         self.baseline_detector_model = None

@@ -322,7 +322,27 @@ def save_debug_image(
     if metadata.get("baseline_status"):
         info_lines.append(f"baseline status: {metadata['baseline_status']}")
     if metadata.get("baseline_angle_degrees") is not None:
-        info_lines.append(f"baseline angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
+        info_lines.append(f"alignment angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
+    if metadata.get("baseline_top_angle_degrees") is not None:
+        info_lines.append(f"alignment top angle: {float(metadata['baseline_top_angle_degrees']):+.3f} deg")
+    if metadata.get("baseline_bottom_angle_degrees") is not None:
+        info_lines.append(f"alignment bottom angle: {float(metadata['baseline_bottom_angle_degrees']):+.3f} deg")
+    if metadata.get("baseline_pair_angle_difference") is not None:
+        info_lines.append(
+            "alignment angle difference: "
+            f"{float(metadata['baseline_pair_angle_difference']):.3f}/"
+            f"{float(metadata.get('baseline_pair_angle_max_difference', 0.0)):.3f} deg"
+        )
+    if metadata.get("baseline_top_angle_weight") is not None:
+        info_lines.append(
+            "alignment weights top/bottom: "
+            f"{float(metadata['baseline_top_angle_weight']):.3f}/"
+            f"{float(metadata.get('baseline_bottom_angle_weight', 0.0)):.3f}"
+        )
+    if metadata.get("baseline_angle_method") is not None:
+        info_lines.append(f"alignment method: {metadata['baseline_angle_method']}")
+    if metadata.get("baseline_residual_angle_degrees") is not None:
+        info_lines.append(f"residual alignment angle: {float(metadata['baseline_residual_angle_degrees']):+.3f} deg")
     if metadata.get("baseline_confidence") is not None:
         info_lines.append(f"baseline confidence: {float(metadata['baseline_confidence']):.3f}")
     if metadata.get("baseline_bottom_confidence") is not None:
