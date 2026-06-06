@@ -4,6 +4,7 @@ import argparse
 import csv
 from copy import deepcopy
 import json
+import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -1269,11 +1270,113 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) -> None:
+    _, jobs = build_rows_and_jobs(Path(args.json), Path(args.images), args.limit)
+    image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
+    command = [
+        "python",
+        "inference.py",
+        "--checkpoint",
+        str(args.checkpoint),
+        "--image",
+        image_path,
+        "--scale-x",
+        str(metrics["scale_x"]),
+        "--y-pad",
+        str(metrics["y_pad"]),
+        "--x-pad",
+        str(metrics["x_pad"]),
+    ]
+    if args.device:
+        command.extend(["--device", str(args.device)])
+
+    if metrics["baseline_crop"]:
+        command.append("--baseline-crop")
+        command.extend(
+            [
+                "--baseline-top-pad",
+                str(args.baseline_top_pad),
+                "--baseline-bottom-pad",
+                str(args.baseline_bottom_pad),
+                "--baseline-line-pad",
+                str(metrics["baseline_line_pad"]),
+                "--baseline-line-pad-px",
+                str(metrics["baseline_line_pad_px"]),
+                "--baseline-max-angle",
+                str(args.baseline_max_angle),
+                "--baseline-detector-threshold",
+                str(metrics["baseline_detector_threshold"]),
+                "--baseline-rectify",
+                str(metrics["baseline_rectify"]),
+                "--baseline-curve-smooth-radius",
+                str(metrics["baseline_curve_smooth_radius"]),
+                "--baseline-curve-min-coverage",
+                str(metrics["baseline_curve_min_coverage"]),
+            ]
+        )
+        if args.no_baseline_deskew:
+            command.append("--no-baseline-deskew")
+        if args.no_baseline_strict_lines:
+            command.append("--no-baseline-strict-lines")
+        if metrics.get("baseline_detector_checkpoint"):
+            command.extend(
+                [
+                    "--baseline-detector-checkpoint",
+                    str(metrics["baseline_detector_checkpoint"]),
+                ]
+            )
+
+    if metrics.get("segmentator_checkpoint"):
+        command.extend(
+            [
+                "--segmentator-checkpoint",
+                str(metrics["segmentator_checkpoint"]),
+                "--segmentator-cut-threshold",
+                str(metrics["segmentator_cut_threshold"]),
+                "--segmentator-peak-min-distance",
+                str(metrics["segmentator_peak_min_distance"]),
+                "--segmentator-cut-postprocess",
+                str(metrics["segmentator_cut_postprocess"]),
+                "--segmentator-cut-min-width",
+                str(metrics["segmentator_cut_min_width"]),
+                "--segmentator-cut-max-width",
+                str(metrics["segmentator_cut_max_width"]),
+                "--segmentator-cut-candidate-threshold",
+                str(metrics["segmentator_cut_candidate_threshold"]),
+                "--segmentator-cut-smooth-radius",
+                str(metrics["segmentator_cut_smooth_radius"]),
+                "--segmentator-decode-top-k",
+                str(metrics["segmentator_decode_top_k"]),
+                "--segmentator-decode-center-fraction",
+                str(metrics["segmentator_decode_center_fraction"]),
+                "--segmentator-decode-min-score-width",
+                str(metrics["segmentator_decode_min_score_width"]),
+                "--segmentator-edge-min-ink-ratio",
+                str(metrics["segmentator_edge_min_ink_ratio"]),
+                "--segmentator-edge-min-pixel-density",
+                str(metrics["segmentator_edge_min_pixel_density"]),
+                "--segmentator-edge-min-width",
+                str(metrics["segmentator_edge_min_width"]),
+                "--segmentator-boundary-cuts",
+                str(metrics["segmentator_boundary_cuts"]),
+                "--segmentator-boundary-cut-max-edge-ratio",
+                str(metrics["segmentator_boundary_cut_max_edge_ratio"]),
+            ]
+        )
+        if metrics["decode_with_segmentator"]:
+            command.append("--decode-with-segmentator")
+        if not metrics["segmentator_edge_trim"]:
+            command.append("--no-segmentator-edge-trim")
+
+    print("\n=== Inference command ===")
+    print(shlex.join(command))
+
+
 def main() -> None:
     args = parse_args()
     common_kwargs = _common_eval_kwargs(args)
     if args.optuna_trials > 0:
-        optimize_preprocess(
+        metrics = optimize_preprocess(
             json_path=Path(args.json),
             images_dir=Path(args.images),
             checkpoint_path=Path(args.checkpoint),
@@ -1329,7 +1432,7 @@ def main() -> None:
             **common_kwargs,
         )
     else:
-        evaluate(
+        metrics = evaluate(
             json_path=Path(args.json),
             images_dir=Path(args.images),
             checkpoint_path=Path(args.checkpoint),
@@ -1343,6 +1446,7 @@ def main() -> None:
             log_every=args.log_every,
             **common_kwargs,
         )
+    _print_inference_command(args, metrics)
 
 
 if __name__ == "__main__":

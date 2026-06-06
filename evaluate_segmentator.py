@@ -4,6 +4,7 @@ import argparse
 import csv
 from copy import deepcopy
 import json
+import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -352,6 +353,11 @@ def evaluate_with_segmentator(
     metrics["segmentator_mode"] = getattr(segmentator, "target_format", "cut_projection")
     metrics["cut_threshold"] = float(segmentator.cut_threshold)
     metrics["peak_min_distance"] = int(segmentator.peak_min_distance)
+    metrics["cut_postprocess"] = str(segmentator.cut_postprocess)
+    metrics["cut_min_width"] = int(segmentator.cut_min_width)
+    metrics["cut_max_width"] = int(segmentator.cut_max_width)
+    metrics["cut_candidate_threshold"] = float(segmentator.cut_candidate_threshold)
+    metrics["cut_smooth_radius"] = int(segmentator.cut_smooth_radius)
     metrics["scale_x"] = float(segmentator.scale_x)
     metrics["y_pad"] = float(segmentator.y_pad)
     metrics["x_pad"] = float(segmentator.x_pad)
@@ -855,6 +861,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", required=True, help="Path to Label Studio export JSON.")
     parser.add_argument("--images", required=True, help="Folder with images.")
     parser.add_argument("--checkpoint", required=True, help="Path to vertical cut segmentator checkpoint.")
+    parser.add_argument(
+        "--inference-ocr-checkpoint",
+        default=None,
+        help="OCR checkpoint to place into the printed inference.py command. It is not loaded or executed.",
+    )
     parser.add_argument("--out", default="segmentator_length_metrics.csv", help="Output CSV path.")
     parser.add_argument("--device", default=None, help="Device to use: cuda, cpu, or empty for auto.")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -955,10 +966,90 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) -> None:
+    _, jobs = build_rows_and_jobs(Path(args.json), Path(args.images), args.limit)
+    image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
+    ocr_checkpoint = args.inference_ocr_checkpoint or "<OCR_CHECKPOINT>"
+    command = [
+        "python",
+        "inference.py",
+        "--checkpoint",
+        str(ocr_checkpoint),
+        "--image",
+        image_path,
+        "--segmentator-checkpoint",
+        str(args.checkpoint),
+        "--decode-with-segmentator",
+        "--segmentator-cut-threshold",
+        str(metrics["cut_threshold"]),
+        "--segmentator-peak-min-distance",
+        str(metrics["peak_min_distance"]),
+        "--segmentator-cut-postprocess",
+        str(metrics["cut_postprocess"]),
+        "--segmentator-cut-min-width",
+        str(metrics["cut_min_width"]),
+        "--segmentator-cut-max-width",
+        str(metrics["cut_max_width"]),
+        "--segmentator-cut-candidate-threshold",
+        str(metrics["cut_candidate_threshold"]),
+        "--segmentator-cut-smooth-radius",
+        str(metrics["cut_smooth_radius"]),
+        "--scale-x",
+        str(metrics["scale_x"]),
+        "--y-pad",
+        str(metrics["y_pad"]),
+        "--x-pad",
+        str(metrics["x_pad"]),
+    ]
+    if args.device:
+        command.extend(["--device", str(args.device)])
+
+    if metrics["baseline_crop"]:
+        command.append("--baseline-crop")
+        command.extend(
+            [
+                "--baseline-top-pad",
+                str(metrics["baseline_top_pad"]),
+                "--baseline-bottom-pad",
+                str(metrics["baseline_bottom_pad"]),
+                "--baseline-line-pad",
+                str(metrics["baseline_line_pad"]),
+                "--baseline-line-pad-px",
+                str(metrics["baseline_line_pad_px"]),
+                "--baseline-max-angle",
+                str(metrics["baseline_max_angle"]),
+                "--baseline-detector-threshold",
+                str(metrics["baseline_detector_threshold"]),
+                "--baseline-rectify",
+                str(metrics["baseline_rectify"]),
+                "--baseline-curve-smooth-radius",
+                str(metrics["baseline_curve_smooth_radius"]),
+                "--baseline-curve-min-coverage",
+                str(metrics["baseline_curve_min_coverage"]),
+            ]
+        )
+        if not metrics["baseline_deskew"]:
+            command.append("--no-baseline-deskew")
+        if not metrics["baseline_strict_lines"]:
+            command.append("--no-baseline-strict-lines")
+        if metrics.get("baseline_detector_checkpoint"):
+            command.extend(
+                [
+                    "--baseline-detector-checkpoint",
+                    str(metrics["baseline_detector_checkpoint"]),
+                ]
+            )
+
+    print("\n=== Inference command ===")
+    if args.inference_ocr_checkpoint is None:
+        print("Replace <OCR_CHECKPOINT> with the OCR model path:")
+    print(shlex.join(command))
+
+
 def main() -> None:
     args = parse_args()
     if args.optuna_trials > 0:
-        optimize(
+        metrics = optimize(
             json_path=Path(args.json),
             images_dir=Path(args.images),
             checkpoint_path=Path(args.checkpoint),
@@ -1019,7 +1110,7 @@ def main() -> None:
             storage=args.optuna_storage,
         )
     else:
-        evaluate(
+        metrics = evaluate(
             json_path=Path(args.json),
             images_dir=Path(args.images),
             checkpoint_path=Path(args.checkpoint),
@@ -1047,6 +1138,7 @@ def main() -> None:
             baseline_curve_smooth_radius=args.baseline_curve_smooth_radius,
             baseline_curve_min_coverage=args.baseline_curve_min_coverage,
         )
+    _print_inference_command(args, metrics)
 
 
 if __name__ == "__main__":
