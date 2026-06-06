@@ -408,9 +408,6 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     if metrics.get("baseline_detector_checkpoint"):
         print(f"baseline_detector:          {metrics['baseline_detector_checkpoint']}")
         print(f"baseline_detector_thr:      {metrics['baseline_detector_threshold']:.5f}")
-        print(f"baseline_rectify:           {metrics['baseline_rectify']}")
-        print(f"baseline_curve_smooth:      {metrics['baseline_curve_smooth_radius']}")
-        print(f"baseline_curve_coverage:    {metrics['baseline_curve_min_coverage']:.5f}")
     if output_csv is not None:
         print(f"CSV saved to:               {output_csv}")
 
@@ -431,9 +428,6 @@ def configure_segmentator(
     baseline_deskew: bool,
     baseline_max_angle: float,
     baseline_detector_threshold: float,
-    baseline_rectify: str,
-    baseline_curve_smooth_radius: int,
-    baseline_curve_min_coverage: float,
 ) -> None:
     if scale_x <= -0.95:
         raise ValueError("scale_x must be > -0.95")
@@ -453,15 +447,6 @@ def configure_segmentator(
         raise ValueError("baseline_max_angle must be > 0")
     if not 0.0 < baseline_detector_threshold < 1.0:
         raise ValueError("baseline_detector_threshold must be between 0 and 1")
-    baseline_rectify = baseline_rectify.lower()
-    if baseline_rectify == "line":
-        baseline_rectify = "lines"
-    if baseline_rectify not in {"lines", "curved"}:
-        raise ValueError("baseline_rectify must be 'lines' or 'curved'")
-    if baseline_curve_smooth_radius < 0:
-        raise ValueError("baseline_curve_smooth_radius must be >= 0")
-    if not 0.0 <= baseline_curve_min_coverage <= 1.0:
-        raise ValueError("baseline_curve_min_coverage must be between 0 and 1")
 
     segmentator.cut_threshold = segmentator._resolve_cut_threshold(
         cut_threshold,
@@ -486,9 +471,6 @@ def configure_segmentator(
     segmentator.baseline_deskew = bool(baseline_deskew)
     segmentator.baseline_max_angle = float(baseline_max_angle)
     segmentator.baseline_detector_threshold = float(baseline_detector_threshold)
-    segmentator.baseline_rectify = baseline_rectify
-    segmentator.baseline_curve_smooth_radius = int(baseline_curve_smooth_radius)
-    segmentator.baseline_curve_min_coverage = float(baseline_curve_min_coverage)
 
 
 def evaluate_with_segmentator(
@@ -535,9 +517,6 @@ def evaluate_with_segmentator(
         str(segmentator.baseline_detector_checkpoint) if segmentator.baseline_detector_checkpoint else ""
     )
     metrics["baseline_detector_threshold"] = float(segmentator.baseline_detector_threshold)
-    metrics["baseline_rectify"] = str(segmentator.baseline_rectify)
-    metrics["baseline_curve_smooth_radius"] = int(segmentator.baseline_curve_smooth_radius)
-    metrics["baseline_curve_min_coverage"] = float(segmentator.baseline_curve_min_coverage)
 
     if output_csv is not None:
         write_rows_csv(rows, output_csv)
@@ -570,9 +549,6 @@ def evaluate_prepared(
     baseline_max_angle: float,
     baseline_detector_checkpoint: Path | None,
     baseline_detector_threshold: float,
-    baseline_rectify: str,
-    baseline_curve_smooth_radius: int,
-    baseline_curve_min_coverage: float,
     cut_tolerance_px: float,
 ) -> dict[str, Any]:
     segmentator = VerticalSegmentator(
@@ -592,9 +568,6 @@ def evaluate_prepared(
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-        baseline_curve_min_coverage=baseline_curve_min_coverage,
         cut_threshold=cut_threshold,
         peak_min_distance=peak_min_distance,
     )
@@ -614,9 +587,6 @@ def evaluate_prepared(
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_detector_threshold=baseline_detector_threshold,
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-        baseline_curve_min_coverage=baseline_curve_min_coverage,
     )
     if verbose:
         segmentator.print_summary()
@@ -641,7 +611,7 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
                 "trial\tcut_threshold\tpeak_min_distance\tscale_x\ty_pad\tx_pad\t"
                 "baseline_crop\tbaseline_strict_lines\tbaseline_top_pad\tbaseline_bottom_pad\t"
                 "baseline_line_pad\tbaseline_line_pad_px\tbaseline_deskew\tbaseline_max_angle\t"
-                "baseline_detector_threshold\tbaseline_rectify\tbaseline_curve_smooth_radius\tbaseline_curve_min_coverage\t"
+                "baseline_detector_threshold\t"
                 "metric\tlength_accuracy\taverage_abs_length_error\ttotal_abs_length_error\t"
                 "average_signed_length_error\tnormalized_length_error\tcut_precision\tcut_recall\t"
                 "cut_f1\tcut_mae_px\tspeed\n"
@@ -655,8 +625,7 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
             f"{metrics['baseline_line_pad_px']:.8f}\t"
             f"{int(metrics['baseline_deskew'])}\t"
             f"{metrics['baseline_max_angle']:.8f}\t{metrics['baseline_detector_threshold']:.8f}\t"
-            f"{metrics['baseline_rectify']}\t{metrics['baseline_curve_smooth_radius']}\t"
-            f"{metrics['baseline_curve_min_coverage']:.8f}\t{metrics[metric_name]:.8f}\t"
+            f"{metrics[metric_name]:.8f}\t"
             f"{metrics['length_accuracy']:.8f}\t{metrics['average_abs_length_error']:.8f}\t"
             f"{metrics['total_abs_length_error']}\t{metrics['average_signed_length_error']:.8f}\t"
             f"{metrics['normalized_length_error']:.8f}\t{metrics['cut_precision']:.8f}\t"
@@ -703,9 +672,6 @@ def optimize(
     baseline_max_angle: float,
     baseline_detector_checkpoint: Path | None,
     baseline_detector_threshold: float,
-    baseline_rectify: str,
-    baseline_curve_smooth_radius: int,
-    baseline_curve_min_coverage: float,
     baseline_top_pad_min: float,
     baseline_top_pad_max: float,
     baseline_bottom_pad_min: float,
@@ -718,10 +684,6 @@ def optimize(
     baseline_max_angle_max: float,
     baseline_detector_threshold_min: float | None,
     baseline_detector_threshold_max: float | None,
-    baseline_curve_smooth_radius_min: int | None,
-    baseline_curve_smooth_radius_max: int | None,
-    baseline_curve_min_coverage_min: float | None,
-    baseline_curve_min_coverage_max: float | None,
     study_name: str | None = None,
     storage: str | None = None,
     cut_tolerance_px: float = 3.0,
@@ -760,9 +722,6 @@ def optimize(
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-        baseline_curve_min_coverage=baseline_curve_min_coverage,
     )
     direction = "maximize" if metric_name in {"length_accuracy", "cut_precision", "cut_recall", "cut_f1"} else "minimize"
     study = optuna.create_study(
@@ -789,7 +748,6 @@ def optimize(
         tune_active_line_pad_px = bool(trial_baseline_crop) and tune_baseline_line_pad_px
         tune_active_max_angle = bool(trial_baseline_crop) and tune_baseline_max_angle
         tune_active_detector = bool(trial_baseline_crop) and baseline_detector_checkpoint is not None
-        tune_active_curve = tune_active_detector and baseline_rectify == "curved"
 
         trial_baseline_top_pad = baseline_top_pad
         trial_baseline_bottom_pad = baseline_bottom_pad
@@ -797,8 +755,6 @@ def optimize(
         trial_baseline_line_pad_px = baseline_line_pad_px
         trial_baseline_max_angle = baseline_max_angle
         trial_baseline_detector_threshold = baseline_detector_threshold
-        trial_baseline_curve_smooth_radius = baseline_curve_smooth_radius
-        trial_baseline_curve_min_coverage = baseline_curve_min_coverage
         if tune_active_bbox_pads:
             trial_baseline_top_pad = trial.suggest_float(
                 "baseline_top_pad",
@@ -837,23 +793,6 @@ def optimize(
                     baseline_detector_threshold_min,
                     baseline_detector_threshold_max,
                 )
-        if tune_active_curve:
-            if baseline_curve_smooth_radius_min is not None or baseline_curve_smooth_radius_max is not None:
-                if baseline_curve_smooth_radius_min is None or baseline_curve_smooth_radius_max is None:
-                    raise ValueError("baseline curve smooth radius tuning requires both min and max")
-                trial_baseline_curve_smooth_radius = trial.suggest_int(
-                    "baseline_curve_smooth_radius",
-                    baseline_curve_smooth_radius_min,
-                    baseline_curve_smooth_radius_max,
-                )
-            if baseline_curve_min_coverage_min is not None or baseline_curve_min_coverage_max is not None:
-                if baseline_curve_min_coverage_min is None or baseline_curve_min_coverage_max is None:
-                    raise ValueError("baseline curve min coverage tuning requires both min and max")
-                trial_baseline_curve_min_coverage = trial.suggest_float(
-                    "baseline_curve_min_coverage",
-                    baseline_curve_min_coverage_min,
-                    baseline_curve_min_coverage_max,
-                )
         trial_baseline_deskew = (
             trial.suggest_categorical("baseline_deskew", [False, True])
             if bool(trial_baseline_crop) and tune_baseline_deskew
@@ -875,9 +814,6 @@ def optimize(
             baseline_deskew=bool(trial_baseline_deskew),
             baseline_max_angle=trial_baseline_max_angle,
             baseline_detector_threshold=trial_baseline_detector_threshold,
-            baseline_rectify=baseline_rectify,
-            baseline_curve_smooth_radius=trial_baseline_curve_smooth_radius,
-            baseline_curve_min_coverage=trial_baseline_curve_min_coverage,
         )
         metrics = evaluate_with_segmentator(
             base_rows=base_rows,
@@ -932,10 +868,6 @@ def optimize(
         best_params["baseline_max_angle"] = baseline_max_angle
     if "baseline_detector_threshold" not in best_params:
         best_params["baseline_detector_threshold"] = baseline_detector_threshold
-    if "baseline_curve_smooth_radius" not in best_params:
-        best_params["baseline_curve_smooth_radius"] = baseline_curve_smooth_radius
-    if "baseline_curve_min_coverage" not in best_params:
-        best_params["baseline_curve_min_coverage"] = baseline_curve_min_coverage
     print(f"Best params: {best_params}, {metric_name}={study.best_value:.8f}")
 
     configure_segmentator(
@@ -954,9 +886,6 @@ def optimize(
         baseline_deskew=bool(best_params["baseline_deskew"]),
         baseline_max_angle=float(best_params["baseline_max_angle"]),
         baseline_detector_threshold=float(best_params["baseline_detector_threshold"]),
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=int(best_params["baseline_curve_smooth_radius"]),
-        baseline_curve_min_coverage=float(best_params["baseline_curve_min_coverage"]),
     )
     final_metrics = evaluate_with_segmentator(
         base_rows=base_rows,
@@ -998,9 +927,6 @@ def evaluate(
     baseline_max_angle: float,
     baseline_detector_checkpoint: Path | None,
     baseline_detector_threshold: float,
-    baseline_rectify: str,
-    baseline_curve_smooth_radius: int,
-    baseline_curve_min_coverage: float,
     cut_tolerance_px: float,
 ) -> dict[str, Any]:
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
@@ -1028,9 +954,6 @@ def evaluate(
         baseline_max_angle=baseline_max_angle,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-        baseline_curve_min_coverage=baseline_curve_min_coverage,
         cut_tolerance_px=cut_tolerance_px,
     )
 
@@ -1076,9 +999,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--baseline-detector-checkpoint", default=None)
     parser.add_argument("--baseline-detector-threshold", type=float, default=0.35)
-    parser.add_argument("--baseline-rectify", choices=("lines", "curved"), default="lines")
-    parser.add_argument("--baseline-curve-smooth-radius", type=int, default=8)
-    parser.add_argument("--baseline-curve-min-coverage", type=float, default=0.25)
 
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument(
@@ -1149,10 +1069,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-baseline-max-angle-max", type=float, default=18.0)
     parser.add_argument("--optuna-baseline-detector-threshold-min", type=float, default=None)
     parser.add_argument("--optuna-baseline-detector-threshold-max", type=float, default=None)
-    parser.add_argument("--optuna-baseline-curve-smooth-radius-min", type=int, default=None)
-    parser.add_argument("--optuna-baseline-curve-smooth-radius-max", type=int, default=None)
-    parser.add_argument("--optuna-baseline-curve-min-coverage-min", type=float, default=None)
-    parser.add_argument("--optuna-baseline-curve-min-coverage-max", type=float, default=None)
     parser.add_argument("--optuna-trials-out", default=None)
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
@@ -1213,12 +1129,6 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 str(metrics["baseline_max_angle"]),
                 "--baseline-detector-threshold",
                 str(metrics["baseline_detector_threshold"]),
-                "--baseline-rectify",
-                str(metrics["baseline_rectify"]),
-                "--baseline-curve-smooth-radius",
-                str(metrics["baseline_curve_smooth_radius"]),
-                "--baseline-curve-min-coverage",
-                str(metrics["baseline_curve_min_coverage"]),
             ]
         )
         if not metrics["baseline_deskew"]:
@@ -1280,9 +1190,6 @@ def main() -> None:
             baseline_max_angle=args.baseline_max_angle,
             baseline_detector_checkpoint=Path(args.baseline_detector_checkpoint) if args.baseline_detector_checkpoint else None,
             baseline_detector_threshold=args.baseline_detector_threshold,
-            baseline_rectify=args.baseline_rectify,
-            baseline_curve_smooth_radius=args.baseline_curve_smooth_radius,
-            baseline_curve_min_coverage=args.baseline_curve_min_coverage,
             baseline_top_pad_min=args.optuna_baseline_top_pad_min,
             baseline_top_pad_max=args.optuna_baseline_top_pad_max,
             baseline_bottom_pad_min=args.optuna_baseline_bottom_pad_min,
@@ -1295,10 +1202,6 @@ def main() -> None:
             baseline_max_angle_max=args.optuna_baseline_max_angle_max,
             baseline_detector_threshold_min=args.optuna_baseline_detector_threshold_min,
             baseline_detector_threshold_max=args.optuna_baseline_detector_threshold_max,
-            baseline_curve_smooth_radius_min=args.optuna_baseline_curve_smooth_radius_min,
-            baseline_curve_smooth_radius_max=args.optuna_baseline_curve_smooth_radius_max,
-            baseline_curve_min_coverage_min=args.optuna_baseline_curve_min_coverage_min,
-            baseline_curve_min_coverage_max=args.optuna_baseline_curve_min_coverage_max,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
             cut_tolerance_px=args.cut_tolerance_px,
@@ -1328,9 +1231,6 @@ def main() -> None:
             baseline_max_angle=args.baseline_max_angle,
             baseline_detector_checkpoint=Path(args.baseline_detector_checkpoint) if args.baseline_detector_checkpoint else None,
             baseline_detector_threshold=args.baseline_detector_threshold,
-            baseline_rectify=args.baseline_rectify,
-            baseline_curve_smooth_radius=args.baseline_curve_smooth_radius,
-            baseline_curve_min_coverage=args.baseline_curve_min_coverage,
             cut_tolerance_px=args.cut_tolerance_px,
         )
     _print_inference_command(args, metrics)

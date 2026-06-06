@@ -42,17 +42,10 @@ def build_jobs(
     return root, jobs
 
 
-def prediction_curves(
+def prediction_lines(
     detection: dict[str, Any],
-    rectify: str,
     xs: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if rectify == "curved":
-        curve_x = np.asarray(detection["curve_x"], dtype=np.float64)
-        top_y = np.interp(xs, curve_x, np.asarray(detection["top_curve_y"], dtype=np.float64))
-        bottom_y = np.interp(xs, curve_x, np.asarray(detection["bottom_curve_y"], dtype=np.float64))
-        return top_y, bottom_y
-
     top_y = float(detection["topline_slope"]) * xs + float(detection["topline_intercept"])
     bottom_y = float(detection["bottom_slope"]) * xs + float(detection["bottom_intercept"])
     return top_y, bottom_y
@@ -60,12 +53,8 @@ def prediction_curves(
 
 def prediction_x_bounds(
     detection: dict[str, Any],
-    rectify: str,
     image_width: int,
 ) -> tuple[float, float]:
-    if rectify == "curved":
-        curve_x = np.asarray(detection["curve_x"], dtype=np.float64)
-        return float(curve_x.min()), float(curve_x.max())
     top_x = np.asarray(detection.get("topline_profile_x", []), dtype=np.float64)
     bottom_x = np.asarray(detection.get("profile_x", []), dtype=np.float64)
     if top_x.size and bottom_x.size:
@@ -125,7 +114,7 @@ def evaluate_detector(
                 polyline_x_bounds(baselines["top"])[1],
                 polyline_x_bounds(baselines["bottom"])[1],
             )
-            pred_left, pred_right = prediction_x_bounds(detection, detector.baseline_rectify, image.width)
+            pred_left, pred_right = prediction_x_bounds(detection, image.width)
             left = max(gt_left, pred_left, 0.0)
             right = min(gt_right, pred_right, float(image.width - 1))
             if right < left:
@@ -136,7 +125,7 @@ def evaluate_detector(
                 raise ValueError("Baseline overlap is too narrow")
             gt_top = interpolate_polyline(baselines["top"], xs)
             gt_bottom = interpolate_polyline(baselines["bottom"], xs)
-            pred_top, pred_bottom = prediction_curves(detection, detector.baseline_rectify, xs)
+            pred_top, pred_bottom = prediction_lines(detection, xs)
             valid = gt_bottom > gt_top
             if int(np.count_nonzero(valid)) < 2:
                 raise ValueError("Annotated top/bottom baselines are reversed")
@@ -200,9 +189,6 @@ def evaluate_detector(
             else float(failure_penalty)
         ),
         "threshold": detector.baseline_detector_threshold,
-        "rectify": detector.baseline_rectify,
-        "curve_smooth_radius": detector.baseline_curve_smooth_radius,
-        "curve_min_coverage": detector.baseline_curve_min_coverage,
         "elapsed": elapsed,
     }
     if output_csv is not None:
@@ -229,10 +215,6 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None) -> None:
     print(f"Failure-penalized MAE:      {metrics['failure_penalized_normalized_mae']:.5f}")
     print(f"Mean X coverage:            {metrics['mean_coverage']:.4f}")
     print(f"Threshold:                  {metrics['threshold']:.5f}")
-    print(f"Rectify:                    {metrics['rectify']}")
-    if metrics["rectify"] == "curved":
-        print(f"Curve smooth radius:        {metrics['curve_smooth_radius']}")
-        print(f"Curve minimum coverage:     {metrics['curve_min_coverage']:.5f}")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     if output_csv is not None:
         print(f"CSV saved to:               {output_csv}")
@@ -244,12 +226,11 @@ def append_trial(path: Path, trial_number: int, metrics: dict[str, Any]) -> None
     with path.open("a", encoding="utf-8") as file:
         if is_new:
             file.write(
-                "trial\tthreshold\tcurve_smooth_radius\tcurve_min_coverage\t"
-                "success_rate\tcombined_mae_px\tnormalized_mae\tfailure_penalized_normalized_mae\n"
+                "trial\tthreshold\tsuccess_rate\tcombined_mae_px\t"
+                "normalized_mae\tfailure_penalized_normalized_mae\n"
             )
         file.write(
-            f"{trial_number}\t{metrics['threshold']:.8f}\t{metrics['curve_smooth_radius']}\t"
-            f"{metrics['curve_min_coverage']:.8f}\t{metrics['success_rate']:.8f}\t"
+            f"{trial_number}\t{metrics['threshold']:.8f}\t{metrics['success_rate']:.8f}\t"
             f"{metrics['combined_mae_px']:.8f}\t{metrics['normalized_mae']:.8f}\t"
             f"{metrics['failure_penalized_normalized_mae']:.8f}\n"
         )
@@ -263,10 +244,6 @@ def optimize(
     failure_penalty: float,
     threshold_min: float,
     threshold_max: float,
-    smooth_min: int,
-    smooth_max: int,
-    coverage_min: float,
-    coverage_max: float,
     trials_output: Path | None,
     study_name: str | None,
     storage: str | None,
@@ -285,17 +262,6 @@ def optimize(
 
     def objective(trial) -> float:
         detector.baseline_detector_threshold = trial.suggest_float("threshold", threshold_min, threshold_max)
-        if detector.baseline_rectify == "curved":
-            detector.baseline_curve_smooth_radius = trial.suggest_int(
-                "curve_smooth_radius",
-                smooth_min,
-                smooth_max,
-            )
-            detector.baseline_curve_min_coverage = trial.suggest_float(
-                "curve_min_coverage",
-                coverage_min,
-                coverage_max,
-            )
         metrics = evaluate_detector(
             detector,
             jobs,
@@ -309,9 +275,6 @@ def optimize(
 
     study.optimize(objective, n_trials=trials)
     detector.baseline_detector_threshold = float(study.best_params["threshold"])
-    if detector.baseline_rectify == "curved":
-        detector.baseline_curve_smooth_radius = int(study.best_params["curve_smooth_radius"])
-        detector.baseline_curve_min_coverage = float(study.best_params["curve_min_coverage"])
     print(f"Best Optuna params: {json.dumps(study.best_params, sort_keys=True)}")
     print(f"Best failure-penalized normalized MAE: {study.best_value:.8f}")
     metrics = evaluate_detector(
@@ -338,12 +301,6 @@ def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], i
         str(args.checkpoint),
         "--baseline-detector-threshold",
         str(metrics["threshold"]),
-        "--baseline-rectify",
-        str(metrics["rectify"]),
-        "--baseline-curve-smooth-radius",
-        str(metrics["curve_smooth_radius"]),
-        "--baseline-curve-min-coverage",
-        str(metrics["curve_min_coverage"]),
     ]
     if args.device:
         command.extend(["--device", str(args.device)])
@@ -359,19 +316,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", default="output/baseline_metrics.csv")
     parser.add_argument("--device", default=None)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--rectify", choices=("lines", "curved"), default="lines")
     parser.add_argument("--threshold", type=float, default=0.35)
-    parser.add_argument("--curve-smooth-radius", type=int, default=8)
-    parser.add_argument("--curve-min-coverage", type=float, default=0.25)
     parser.add_argument("--failure-penalty", type=float, default=1.0)
     parser.add_argument("--inference-ocr-checkpoint", default=None)
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument("--optuna-threshold-min", type=float, default=0.10)
     parser.add_argument("--optuna-threshold-max", type=float, default=0.90)
-    parser.add_argument("--optuna-curve-smooth-radius-min", type=int, default=0)
-    parser.add_argument("--optuna-curve-smooth-radius-max", type=int, default=20)
-    parser.add_argument("--optuna-curve-min-coverage-min", type=float, default=0.05)
-    parser.add_argument("--optuna-curve-min-coverage-max", type=float, default=0.75)
     parser.add_argument("--optuna-trials-out", default=None)
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
@@ -391,9 +341,6 @@ def main() -> None:
         args.checkpoint,
         device=args.device,
         threshold=args.threshold,
-        rectify=args.rectify,
-        curve_smooth_radius=args.curve_smooth_radius,
-        curve_min_coverage=args.curve_min_coverage,
     )
     detector.print_summary()
     if args.optuna_trials > 0:
@@ -405,10 +352,6 @@ def main() -> None:
             failure_penalty=args.failure_penalty,
             threshold_min=args.optuna_threshold_min,
             threshold_max=args.optuna_threshold_max,
-            smooth_min=args.optuna_curve_smooth_radius_min,
-            smooth_max=args.optuna_curve_smooth_radius_max,
-            coverage_min=args.optuna_curve_min_coverage_min,
-            coverage_max=args.optuna_curve_min_coverage_max,
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,

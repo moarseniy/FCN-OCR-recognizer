@@ -457,7 +457,7 @@ python evaluate_segmentator.py \
 Для ручного JSON дополнительно считаются `cut_precision`, `cut_recall`,
 `cut_f1` и средняя ошибка совпавших линий по X. Предсказанные линии
 возвращаются в координаты исходника через карту геометрии preprocessing,
-включая baseline crop, deskew, curved rectification, padding и resize.
+включая baseline crop, deskew, padding и resize.
 Label Studio JSON по-прежнему поддерживается для старой оценки по длине.
 
 Оценка обеих baseline:
@@ -468,23 +468,21 @@ python evaluate_baselines.py \
   --images /path/to/images \
   --checkpoint checkpoints/baseline_detector/best_model.pth \
   --device cuda \
-  --rectify curved \
   --threshold 0.35 \
   --out output/baseline_metrics.csv
 ```
 
-Подбор threshold и параметров curved-линий:
+Подбор threshold:
 
 ```bash
 python evaluate_baselines.py \
   --json output/manual_markup.json \
   --checkpoint checkpoints/baseline_detector/best_model.pth \
   --device cuda \
-  --rectify curved \
   --optuna-trials 200 \
   --optuna-trials-out output/baseline_trials.tsv \
   --optuna-storage sqlite:///output/baseline_optuna.db \
-  --optuna-study-name baseline_curved_v1 \
+  --optuna-study-name baseline_lines_v1 \
   --out output/baseline_metrics.csv
 ```
 
@@ -700,14 +698,9 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 3. Если включен `--baseline-crop`, запускается детектор нижней и верхней
    текстовых линий. Если передан `--baseline-detector-checkpoint`, линии
    берутся из нейронного `baseline_heatmap`-детектора; иначе используется
-   эвристика по текстовым маскам. В режиме `--baseline-rectify lines` нижняя
-   линия используется для deskew, после поворота линии ищутся повторно, а
-   вертикальный crop строится строго по паре верх/низ без bbox-fallback. В
-   режиме `--baseline-rectify curved` neural heatmap читается как две кривые
-   top/bottom, из них строится сглаженная центральная кривая, а строка
-   выпрямляется через dewarp с постоянной медианной высотой, чтобы не
-   растягивать символы локальным шумом top/bottom; при неудаче curved-режим
-   откатывается к `lines`.
+   эвристика по текстовым маскам. Нижняя линия используется для deskew, после
+   поворота линии ищутся повторно, а вертикальный crop строится строго по паре
+   верх/низ без bbox-fallback.
 4. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
    справа долю текущей ширины, но не отражает символы: поля заполняются
    медианным фоном боковой полосы исходной геометрии. В debug это
@@ -762,9 +755,6 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 | `--baseline-line-pad-px` | Абсолютный запас в пикселях исходной картинки, добавляется к `--baseline-line-pad`. Полезно, если линии найдены слишком близко к буквам. |
 | `--baseline-detector-checkpoint` | Optional checkpoint нейронного top/bottom baseline-детектора. Если задан, `--baseline-crop` использует его вместо эвристики по маскам. |
 | `--baseline-detector-threshold` | Порог sigmoid heatmap для колонок верхней/нижней линии нейронного baseline-детектора. |
-| `--baseline-rectify` | `lines` оставляет старый режим двух прямых линий. `curved` использует neural heatmap как две кривые top/bottom и делает dewarp строки по ним. |
-| `--baseline-curve-smooth-radius` | Радиус сглаживания центральной кривой перед dewarp. Больше значение спокойнее, но может съедать резкие локальные изгибы. |
-| `--baseline-curve-min-coverage` | Минимальная доля X-колонок, где neural heatmap уверенно нашел каждую линию. Если coverage ниже, curved-режим откатывается к `lines`. |
 | `--baseline-top-pad` | Верхний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--baseline-bottom-pad` | Нижний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--no-baseline-deskew` | Отключает поворот по найденной baseline, но оставляет сам crop включенным. |

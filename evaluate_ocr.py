@@ -289,9 +289,6 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     if metrics.get("baseline_detector_checkpoint"):
         print(f"Baseline detector:          {metrics['baseline_detector_checkpoint']}")
         print(f"Baseline detector thr:      {metrics['baseline_detector_threshold']:.5f}")
-        print(f"Baseline rectify:           {metrics['baseline_rectify']}")
-        print(f"Baseline curve smooth:      {metrics['baseline_curve_smooth_radius']}")
-        print(f"Baseline curve coverage:    {metrics['baseline_curve_min_coverage']:.5f}")
     print(f"Decode with segmentator:    {metrics['decode_with_segmentator']}")
     if metrics.get("segmentator_checkpoint"):
         print(f"Segmentator checkpoint:     {metrics['segmentator_checkpoint']}")
@@ -329,9 +326,6 @@ def evaluate_prepared(
     baseline_line_pad_px: float = 0.0,
     baseline_detector_checkpoint: Path | None = None,
     baseline_detector_threshold: float = 0.35,
-    baseline_rectify: str = "lines",
-    baseline_curve_smooth_radius: int = 8,
-    baseline_curve_min_coverage: float = 0.25,
     segmentator_checkpoint: Path | None = None,
     decode_with_segmentator: bool = False,
     segmentator_cut_threshold: float | None = None,
@@ -375,9 +369,6 @@ def evaluate_prepared(
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-        baseline_curve_min_coverage=baseline_curve_min_coverage,
     )
 
     segmentator = None
@@ -399,9 +390,6 @@ def evaluate_prepared(
             baseline_line_pad_px=baseline_line_pad_px,
             baseline_detector_checkpoint=baseline_detector_checkpoint,
             baseline_detector_threshold=baseline_detector_threshold,
-            baseline_rectify=baseline_rectify,
-            baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-            baseline_curve_min_coverage=baseline_curve_min_coverage,
             cut_threshold=segmentator_cut_threshold,
             peak_min_distance=segmentator_peak_min_distance,
             cut_postprocess=segmentator_cut_postprocess,
@@ -445,9 +433,6 @@ def evaluate_prepared(
     metrics["baseline_line_pad_px"] = float(baseline_line_pad_px)
     metrics["baseline_detector_checkpoint"] = str(baseline_detector_checkpoint) if baseline_detector_checkpoint else ""
     metrics["baseline_detector_threshold"] = float(baseline_detector_threshold)
-    metrics["baseline_rectify"] = str(baseline_rectify)
-    metrics["baseline_curve_smooth_radius"] = int(baseline_curve_smooth_radius)
-    metrics["baseline_curve_min_coverage"] = float(baseline_curve_min_coverage)
     metrics["decode_with_segmentator"] = bool(decode_with_segmentator)
     metrics["segmentator_checkpoint"] = str(segmentator_checkpoint) if segmentator_checkpoint else ""
     metrics["segmentator_decode_top_k"] = int(segmentator_decode_top_k)
@@ -493,9 +478,6 @@ def _trial_params_snapshot(metrics: dict[str, Any]) -> dict[str, Any]:
         "baseline_detector_threshold",
         "baseline_line_pad",
         "baseline_line_pad_px",
-        "baseline_rectify",
-        "baseline_curve_smooth_radius",
-        "baseline_curve_min_coverage",
         "segmentator_cut_threshold",
         "segmentator_peak_min_distance",
         "segmentator_cut_postprocess",
@@ -603,9 +585,6 @@ def optimize_preprocess(
     baseline_line_pad_px: float = 0.0,
     baseline_detector_checkpoint: Path | None = None,
     baseline_detector_threshold: float = 0.35,
-    baseline_rectify: str = "lines",
-    baseline_curve_smooth_radius: int = 8,
-    baseline_curve_min_coverage: float = 0.25,
     segmentator_checkpoint: Path | None = None,
     decode_with_segmentator: bool = False,
     segmentator_cut_threshold: float | None = None,
@@ -632,10 +611,6 @@ def optimize_preprocess(
     baseline_line_pad_max: float | None = None,
     baseline_line_pad_px_min: float | None = None,
     baseline_line_pad_px_max: float | None = None,
-    baseline_curve_smooth_radius_min: int | None = None,
-    baseline_curve_smooth_radius_max: int | None = None,
-    baseline_curve_min_coverage_min: float | None = None,
-    baseline_curve_min_coverage_max: float | None = None,
     segmentator_cut_threshold_min: float | None = None,
     segmentator_cut_threshold_max: float | None = None,
     segmentator_peak_min_distance_min: int | None = None,
@@ -687,7 +662,6 @@ def optimize_preprocess(
             and bool(optuna_tune_baseline_line_pad_px)
         )
         tune_active_baseline_detector = bool(baseline_crop) and baseline_detector_checkpoint is not None
-        tune_active_baseline_curve = tune_active_baseline_detector and baseline_rectify == "curved"
         tune_active_segmentator = bool(decode_with_segmentator) and segmentator_checkpoint is not None
 
         scale_x = trial.suggest_float("scale_x", scale_x_min, scale_x_max)
@@ -725,28 +699,6 @@ def optimize_preprocess(
             )
             if tune_active_baseline_line_pad_px
             else baseline_line_pad_px
-        )
-        current_baseline_curve_smooth_radius = (
-            _suggest_int_or_fixed(
-                trial,
-                "baseline_curve_smooth_radius",
-                baseline_curve_smooth_radius,
-                baseline_curve_smooth_radius_min,
-                baseline_curve_smooth_radius_max,
-            )
-            if tune_active_baseline_curve
-            else baseline_curve_smooth_radius
-        )
-        current_baseline_curve_min_coverage = (
-            _suggest_float_or_fixed(
-                trial,
-                "baseline_curve_min_coverage",
-                baseline_curve_min_coverage,
-                baseline_curve_min_coverage_min,
-                baseline_curve_min_coverage_max,
-            )
-            if tune_active_baseline_curve
-            else baseline_curve_min_coverage
         )
         current_segmentator_cut_threshold = (
             _suggest_float_or_fixed(
@@ -881,9 +833,6 @@ def optimize_preprocess(
             baseline_line_pad_px=float(current_baseline_line_pad_px or 0.0),
             baseline_detector_checkpoint=baseline_detector_checkpoint,
             baseline_detector_threshold=float(current_baseline_detector_threshold or 0.35),
-            baseline_rectify=baseline_rectify,
-            baseline_curve_smooth_radius=int(current_baseline_curve_smooth_radius or 0),
-            baseline_curve_min_coverage=float(current_baseline_curve_min_coverage or 0.0),
             segmentator_checkpoint=segmentator_checkpoint,
             decode_with_segmentator=decode_with_segmentator,
             segmentator_cut_threshold=current_segmentator_cut_threshold,
@@ -947,13 +896,6 @@ def optimize_preprocess(
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=float(
             _best_or_fixed(best_params, "baseline_detector_threshold", baseline_detector_threshold)
-        ),
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=int(
-            _best_or_fixed(best_params, "baseline_curve_smooth_radius", baseline_curve_smooth_radius)
-        ),
-        baseline_curve_min_coverage=float(
-            _best_or_fixed(best_params, "baseline_curve_min_coverage", baseline_curve_min_coverage)
         ),
         segmentator_checkpoint=segmentator_checkpoint,
         decode_with_segmentator=decode_with_segmentator,
@@ -1048,9 +990,6 @@ def evaluate(
     baseline_line_pad_px: float = 0.0,
     baseline_detector_checkpoint: Path | None = None,
     baseline_detector_threshold: float = 0.35,
-    baseline_rectify: str = "lines",
-    baseline_curve_smooth_radius: int = 8,
-    baseline_curve_min_coverage: float = 0.25,
     segmentator_checkpoint: Path | None = None,
     decode_with_segmentator: bool = False,
     segmentator_cut_threshold: float | None = None,
@@ -1093,9 +1032,6 @@ def evaluate(
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        baseline_rectify=baseline_rectify,
-        baseline_curve_smooth_radius=baseline_curve_smooth_radius,
-        baseline_curve_min_coverage=baseline_curve_min_coverage,
         segmentator_checkpoint=segmentator_checkpoint,
         decode_with_segmentator=decode_with_segmentator,
         segmentator_cut_threshold=segmentator_cut_threshold,
@@ -1138,9 +1074,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-line-pad-px", type=float, default=0.0)
     parser.add_argument("--baseline-detector-checkpoint", default=None)
     parser.add_argument("--baseline-detector-threshold", type=float, default=0.35)
-    parser.add_argument("--baseline-rectify", choices=("lines", "curved"), default="lines")
-    parser.add_argument("--baseline-curve-smooth-radius", type=int, default=8)
-    parser.add_argument("--baseline-curve-min-coverage", type=float, default=0.25)
 
     parser.add_argument("--segmentator-checkpoint", default=None)
     parser.add_argument("--decode-with-segmentator", action="store_true")
@@ -1207,10 +1140,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-baseline-line-pad-max", type=float, default=None)
     parser.add_argument("--optuna-baseline-line-pad-px-min", type=float, default=None)
     parser.add_argument("--optuna-baseline-line-pad-px-max", type=float, default=None)
-    parser.add_argument("--optuna-baseline-curve-smooth-radius-min", type=int, default=None)
-    parser.add_argument("--optuna-baseline-curve-smooth-radius-max", type=int, default=None)
-    parser.add_argument("--optuna-baseline-curve-min-coverage-min", type=float, default=None)
-    parser.add_argument("--optuna-baseline-curve-min-coverage-max", type=float, default=None)
     parser.add_argument("--optuna-segmentator-cut-threshold-min", type=float, default=None)
     parser.add_argument("--optuna-segmentator-cut-threshold-max", type=float, default=None)
     parser.add_argument("--optuna-segmentator-peak-min-distance-min", type=int, default=None)
@@ -1246,9 +1175,6 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "baseline_line_pad_px": args.baseline_line_pad_px,
         "baseline_detector_checkpoint": Path(args.baseline_detector_checkpoint) if args.baseline_detector_checkpoint else None,
         "baseline_detector_threshold": args.baseline_detector_threshold,
-        "baseline_rectify": args.baseline_rectify,
-        "baseline_curve_smooth_radius": args.baseline_curve_smooth_radius,
-        "baseline_curve_min_coverage": args.baseline_curve_min_coverage,
         "segmentator_checkpoint": Path(args.segmentator_checkpoint) if args.segmentator_checkpoint else None,
         "decode_with_segmentator": args.decode_with_segmentator,
         "segmentator_cut_threshold": args.segmentator_cut_threshold,
@@ -1306,12 +1232,6 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 str(args.baseline_max_angle),
                 "--baseline-detector-threshold",
                 str(metrics["baseline_detector_threshold"]),
-                "--baseline-rectify",
-                str(metrics["baseline_rectify"]),
-                "--baseline-curve-smooth-radius",
-                str(metrics["baseline_curve_smooth_radius"]),
-                "--baseline-curve-min-coverage",
-                str(metrics["baseline_curve_min_coverage"]),
             ]
         )
         if args.no_baseline_deskew:
@@ -1405,10 +1325,6 @@ def main() -> None:
             baseline_line_pad_max=args.optuna_baseline_line_pad_max,
             baseline_line_pad_px_min=args.optuna_baseline_line_pad_px_min,
             baseline_line_pad_px_max=args.optuna_baseline_line_pad_px_max,
-            baseline_curve_smooth_radius_min=args.optuna_baseline_curve_smooth_radius_min,
-            baseline_curve_smooth_radius_max=args.optuna_baseline_curve_smooth_radius_max,
-            baseline_curve_min_coverage_min=args.optuna_baseline_curve_min_coverage_min,
-            baseline_curve_min_coverage_max=args.optuna_baseline_curve_min_coverage_max,
             segmentator_cut_threshold_min=args.optuna_segmentator_cut_threshold_min,
             segmentator_cut_threshold_max=args.optuna_segmentator_cut_threshold_max,
             segmentator_peak_min_distance_min=args.optuna_segmentator_peak_min_distance_min,
