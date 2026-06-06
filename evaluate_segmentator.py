@@ -9,10 +9,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 import torch
 
 from fcn_ocr import VerticalSegmentator
+from tool.evaluation import match_sorted_points
+from tool.markup import annotated_items, is_manual_markup, safe_image_path
 
 
 def get_gt_text(task: dict[str, Any]) -> str:
@@ -37,6 +40,9 @@ def build_rows_and_jobs(
     with json_path.open("r", encoding="utf-8") as file:
         tasks = json.load(file)
 
+    if is_manual_markup(tasks):
+        return build_manual_rows_and_jobs(tasks, images_dir, limit)
+
     if limit is not None:
         tasks = tasks[:limit]
 
@@ -57,6 +63,12 @@ def build_rows_and_jobs(
             "length_error": 0,
             "abs_length_error": 0,
             "cuts": "",
+            "gt_cuts": [],
+            "pred_cuts": [],
+            "matched_cuts": 0,
+            "false_positive_cuts": 0,
+            "false_negative_cuts": 0,
+            "cut_mae_px": 0.0,
             "error": "",
         }
         if not image_path.exists():
@@ -64,6 +76,48 @@ def build_rows_and_jobs(
         jobs.append((len(rows), image_path))
         rows.append(row)
 
+    return rows, jobs
+
+
+def build_manual_rows_and_jobs(
+    document: dict[str, Any],
+    images_dir: Path,
+    limit: int | None,
+) -> tuple[list[dict[str, Any]], list[tuple[int, Path]]]:
+    rows: list[dict[str, Any]] = []
+    jobs: list[tuple[int, Path]] = []
+    items = annotated_items(document, require_completed=True)
+    if limit is not None:
+        items = items[:limit]
+
+    for item in items:
+        cuts = sorted(float(value) for value in item.get("cuts", []))
+        if len(cuts) < 2:
+            continue
+        try:
+            image_path = safe_image_path(images_dir, str(item["image"]))
+        except FileNotFoundError:
+            continue
+        row = {
+            "task_id": "",
+            "image": str(item["image"]),
+            "gt": "",
+            "gt_len": max(0, len(cuts) - 1),
+            "pred_len": 0,
+            "cut_count": 0,
+            "length_error": 0,
+            "abs_length_error": 0,
+            "cuts": "",
+            "gt_cuts": cuts,
+            "pred_cuts": [],
+            "matched_cuts": 0,
+            "false_positive_cuts": 0,
+            "false_negative_cuts": 0,
+            "cut_mae_px": 0.0,
+            "error": "",
+        }
+        jobs.append((len(rows), image_path))
+        rows.append(row)
     return rows, jobs
 
 
@@ -120,12 +174,14 @@ def segment_batch(
 ) -> dict[int, dict[str, Any]]:
     tensors: list[torch.Tensor] = []
     output_lengths: list[int] = []
+    source_x_maps: list[np.ndarray] = []
     max_width = 0
 
     for _, path in batch_jobs:
         with Image.open(path) as image:
-            tensor = segmentator._preprocess_pil_3d(image)
+            tensor, source_x_map = segmentator.preprocess_pil_with_source_x(image)
         tensors.append(tensor)
+        source_x_maps.append(source_x_map)
         max_width = max(max_width, tensor.size(2))
         output_lengths.append(segmentator.output_width_for_input_width(tensor.size(2)))
 
@@ -151,22 +207,79 @@ def segment_batch(
         )
         cut_count = segment_count(result)
         pred_len = max(0, cut_count - 1) if result.raw_indices else 0
+        predicted_source_cuts = cut_positions_to_source(
+            result.cut_positions or [],
+            output_width=output_length,
+            source_x_map=source_x_maps[batch_index],
+        )
         predictions[row_index] = {
             "pred_len": pred_len,
             "cut_count": cut_count,
             "cuts": cuts_text(result),
+            "pred_cuts": predicted_source_cuts,
         }
 
     return predictions
 
 
-def compute_metrics(rows: list[dict[str, Any]], elapsed: float) -> dict[str, Any]:
+def cut_positions_to_source(
+    cut_positions: list[int],
+    output_width: int,
+    source_x_map: np.ndarray,
+) -> list[float]:
+    if output_width <= 0 or source_x_map.size == 0:
+        return []
+    input_width = int(source_x_map.shape[1])
+    column_source_x = np.full(input_width, np.nan, dtype=np.float64)
+    for column in range(input_width):
+        values = source_x_map[:, column]
+        valid = values[values >= 0.0]
+        if valid.size:
+            column_source_x[column] = float(np.median(valid))
+    valid_columns = np.flatnonzero(np.isfinite(column_source_x))
+    if valid_columns.size == 0:
+        return []
+    if valid_columns.size == 1:
+        column_source_x[:] = column_source_x[valid_columns[0]]
+    else:
+        missing = ~np.isfinite(column_source_x)
+        column_source_x[missing] = np.interp(
+            np.flatnonzero(missing),
+            valid_columns,
+            column_source_x[valid_columns],
+        )
+
+    mapped: list[float] = []
+    for position in cut_positions:
+        if output_width <= 1:
+            input_position = 0.0
+        else:
+            input_position = float(position) * float(input_width - 1) / float(output_width - 1)
+        left = int(np.floor(input_position))
+        right = min(input_width - 1, left + 1)
+        fraction = input_position - left
+        mapped.append(
+            float(column_source_x[left] * (1.0 - fraction) + column_source_x[right] * fraction)
+        )
+    return mapped
+
+
+def compute_metrics(
+    rows: list[dict[str, Any]],
+    elapsed: float,
+    cut_tolerance_px: float,
+) -> dict[str, Any]:
     total = len(rows)
     evaluated = sum(1 for row in rows if not row["error"])
     exact = 0
     total_abs_error = 0
     total_signed_error = 0
     total_gt_len = 0
+    expected_cuts = 0
+    predicted_cuts = 0
+    matched_cuts = 0
+    total_cut_error = 0.0
+    manual_samples = 0
 
     for row in rows:
         if row["error"]:
@@ -182,6 +295,32 @@ def compute_metrics(rows: list[dict[str, Any]], elapsed: float) -> dict[str, Any
         total_signed_error += row["length_error"]
         total_gt_len += row["gt_len"]
 
+        gt_cuts = [float(value) for value in row.get("gt_cuts", [])]
+        if gt_cuts and not row["error"]:
+            manual_samples += 1
+            pred_cuts = [float(value) for value in row.get("pred_cuts", [])]
+            matches = match_sorted_points(gt_cuts, pred_cuts, cut_tolerance_px)
+            row["matched_cuts"] = len(matches)
+            row["false_positive_cuts"] = len(pred_cuts) - len(matches)
+            row["false_negative_cuts"] = len(gt_cuts) - len(matches)
+            row["cut_mae_px"] = (
+                sum(match.error for match in matches) / len(matches)
+                if matches
+                else 0.0
+            )
+            expected_cuts += len(gt_cuts)
+            predicted_cuts += len(pred_cuts)
+            matched_cuts += len(matches)
+            total_cut_error += sum(match.error for match in matches)
+
+    cut_precision = matched_cuts / predicted_cuts if predicted_cuts else 0.0
+    cut_recall = matched_cuts / expected_cuts if expected_cuts else 0.0
+    cut_f1 = (
+        2.0 * cut_precision * cut_recall / (cut_precision + cut_recall)
+        if cut_precision + cut_recall > 0.0
+        else 0.0
+    )
+
     return {
         "total_samples": total,
         "evaluated_samples": evaluated,
@@ -191,6 +330,15 @@ def compute_metrics(rows: list[dict[str, Any]], elapsed: float) -> dict[str, Any
         "total_abs_length_error": total_abs_error,
         "average_signed_length_error": total_signed_error / evaluated if evaluated else 0.0,
         "normalized_length_error": total_abs_error / total_gt_len if total_gt_len else 0.0,
+        "manual_cut_samples": manual_samples,
+        "expected_cuts": expected_cuts,
+        "predicted_cuts": predicted_cuts,
+        "matched_cuts": matched_cuts,
+        "cut_precision": cut_precision,
+        "cut_recall": cut_recall,
+        "cut_f1": cut_f1,
+        "cut_mae_px": total_cut_error / matched_cuts if matched_cuts else 0.0,
+        "cut_tolerance_px": float(cut_tolerance_px),
         "elapsed": elapsed,
         "speed": evaluated / elapsed if elapsed > 0 else 0.0,
     }
@@ -211,6 +359,12 @@ def write_rows_csv(rows: list[dict[str, Any]], output_csv: Path) -> None:
                 "length_error",
                 "abs_length_error",
                 "cuts",
+                "gt_cuts",
+                "pred_cuts",
+                "matched_cuts",
+                "false_positive_cuts",
+                "false_negative_cuts",
+                "cut_mae_px",
                 "error",
             ],
         )
@@ -228,6 +382,13 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Total abs length error:     {metrics['total_abs_length_error']}")
     print(f"Avg signed length error:    {metrics['average_signed_length_error']:.4f}")
     print(f"Normalized length error:    {metrics['normalized_length_error']:.4f}")
+    if metrics["manual_cut_samples"]:
+        print(f"Manual cut samples:         {metrics['manual_cut_samples']}")
+        print(f"Cut precision:              {metrics['cut_precision']:.4f}")
+        print(f"Cut recall:                 {metrics['cut_recall']:.4f}")
+        print(f"Cut F1:                     {metrics['cut_f1']:.4f}")
+        print(f"Cut MAE:                    {metrics['cut_mae_px']:.3f}px")
+        print(f"Cut tolerance:              {metrics['cut_tolerance_px']:.2f}px")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
     print(f"segmentator_mode:           {metrics.get('segmentator_mode', 'cut_projection')}")
@@ -338,6 +499,7 @@ def evaluate_with_segmentator(
     batch_size: int,
     log_every: int,
     verbose: bool,
+    cut_tolerance_px: float,
 ) -> dict[str, Any]:
     rows = deepcopy(base_rows)
     started_at = time.perf_counter()
@@ -349,7 +511,7 @@ def evaluate_with_segmentator(
     for row_index, error in errors.items():
         rows[row_index]["error"] = error
 
-    metrics = compute_metrics(rows, elapsed)
+    metrics = compute_metrics(rows, elapsed, cut_tolerance_px=cut_tolerance_px)
     metrics["segmentator_mode"] = getattr(segmentator, "target_format", "cut_projection")
     metrics["cut_threshold"] = float(segmentator.cut_threshold)
     metrics["peak_min_distance"] = int(segmentator.peak_min_distance)
@@ -411,6 +573,7 @@ def evaluate_prepared(
     baseline_rectify: str,
     baseline_curve_smooth_radius: int,
     baseline_curve_min_coverage: float,
+    cut_tolerance_px: float,
 ) -> dict[str, Any]:
     segmentator = VerticalSegmentator(
         checkpoint_path,
@@ -465,6 +628,7 @@ def evaluate_prepared(
         batch_size=batch_size,
         log_every=log_every,
         verbose=verbose,
+        cut_tolerance_px=cut_tolerance_px,
     )
 
 
@@ -479,7 +643,8 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
                 "baseline_line_pad\tbaseline_line_pad_px\tbaseline_deskew\tbaseline_max_angle\t"
                 "baseline_detector_threshold\tbaseline_rectify\tbaseline_curve_smooth_radius\tbaseline_curve_min_coverage\t"
                 "metric\tlength_accuracy\taverage_abs_length_error\ttotal_abs_length_error\t"
-                "average_signed_length_error\tnormalized_length_error\tspeed\n"
+                "average_signed_length_error\tnormalized_length_error\tcut_precision\tcut_recall\t"
+                "cut_f1\tcut_mae_px\tspeed\n"
             )
         file.write(
             f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['peak_min_distance']}\t"
@@ -494,7 +659,9 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
             f"{metrics['baseline_curve_min_coverage']:.8f}\t{metrics[metric_name]:.8f}\t"
             f"{metrics['length_accuracy']:.8f}\t{metrics['average_abs_length_error']:.8f}\t"
             f"{metrics['total_abs_length_error']}\t{metrics['average_signed_length_error']:.8f}\t"
-            f"{metrics['normalized_length_error']:.8f}\t{metrics['speed']:.6f}\n"
+            f"{metrics['normalized_length_error']:.8f}\t{metrics['cut_precision']:.8f}\t"
+            f"{metrics['cut_recall']:.8f}\t{metrics['cut_f1']:.8f}\t"
+            f"{metrics['cut_mae_px']:.8f}\t{metrics['speed']:.6f}\n"
         )
 
 
@@ -557,6 +724,7 @@ def optimize(
     baseline_curve_min_coverage_max: float | None,
     study_name: str | None = None,
     storage: str | None = None,
+    cut_tolerance_px: float = 3.0,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -568,6 +736,13 @@ def optimize(
         raise ValueError("trials must be >= 1")
 
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
+    has_manual_cuts = any(bool(row.get("gt_cuts")) for row in base_rows)
+    if metric_name == "auto":
+        metric_name = "cut_f1" if has_manual_cuts else "average_abs_length_error"
+    if metric_name.startswith("cut_") and not has_manual_cuts:
+        raise ValueError(
+            f"--optuna-metric {metric_name} requires manual markup created by tool.annotation_server"
+        )
     segmentator = VerticalSegmentator(
         checkpoint_path,
         device=device,
@@ -589,7 +764,7 @@ def optimize(
         baseline_curve_smooth_radius=baseline_curve_smooth_radius,
         baseline_curve_min_coverage=baseline_curve_min_coverage,
     )
-    direction = "maximize" if metric_name == "length_accuracy" else "minimize"
+    direction = "maximize" if metric_name in {"length_accuracy", "cut_precision", "cut_recall", "cut_f1"} else "minimize"
     study = optuna.create_study(
         direction=direction,
         study_name=study_name,
@@ -712,6 +887,7 @@ def optimize(
             batch_size=batch_size,
             log_every=0,
             verbose=False,
+            cut_tolerance_px=cut_tolerance_px,
         )
         for key, value in metrics.items():
             if isinstance(value, (int, float)):
@@ -790,6 +966,7 @@ def optimize(
         batch_size=batch_size,
         log_every=log_every,
         verbose=True,
+        cut_tolerance_px=cut_tolerance_px,
     )
     final_metrics["optuna_trials"] = trials
     final_metrics["optuna_metric"] = metric_name
@@ -824,6 +1001,7 @@ def evaluate(
     baseline_rectify: str,
     baseline_curve_smooth_radius: int,
     baseline_curve_min_coverage: float,
+    cut_tolerance_px: float,
 ) -> dict[str, Any]:
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     return evaluate_prepared(
@@ -853,12 +1031,17 @@ def evaluate(
         baseline_rectify=baseline_rectify,
         baseline_curve_smooth_radius=baseline_curve_smooth_radius,
         baseline_curve_min_coverage=baseline_curve_min_coverage,
+        cut_tolerance_px=cut_tolerance_px,
     )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tune/evaluate vertical segmentator using Label Studio text lengths.")
-    parser.add_argument("--json", required=True, help="Path to Label Studio export JSON.")
+    parser = argparse.ArgumentParser(description="Tune/evaluate vertical cut segmentation.")
+    parser.add_argument(
+        "--json",
+        required=True,
+        help="Label Studio export JSON or manual markup JSON created by tool.annotation_server.",
+    )
     parser.add_argument("--images", required=True, help="Folder with images.")
     parser.add_argument("--checkpoint", required=True, help="Path to vertical cut segmentator checkpoint.")
     parser.add_argument(
@@ -871,6 +1054,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument(
+        "--cut-tolerance-px",
+        type=float,
+        default=3.0,
+        help="Maximum source-image X error for matching a predicted cut to manual markup.",
+    )
 
     parser.add_argument("--cut-threshold", type=float, default=None)
     parser.add_argument("--peak-min-distance", type=int, default=None)
@@ -894,12 +1083,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument(
         "--optuna-metric",
-        default="average_abs_length_error",
+        default="auto",
         choices=[
+            "auto",
             "length_accuracy",
             "average_abs_length_error",
             "total_abs_length_error",
             "normalized_length_error",
+            "cut_precision",
+            "cut_recall",
+            "cut_f1",
         ],
     )
     parser.add_argument("--optuna-cut-threshold-min", type=float, default=0.25)
@@ -1108,6 +1301,7 @@ def main() -> None:
             baseline_curve_min_coverage_max=args.optuna_baseline_curve_min_coverage_max,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
+            cut_tolerance_px=args.cut_tolerance_px,
         )
     else:
         metrics = evaluate(
@@ -1137,6 +1331,7 @@ def main() -> None:
             baseline_rectify=args.baseline_rectify,
             baseline_curve_smooth_radius=args.baseline_curve_smooth_radius,
             baseline_curve_min_coverage=args.baseline_curve_min_coverage,
+            cut_tolerance_px=args.cut_tolerance_px,
         )
     _print_inference_command(args, metrics)
 

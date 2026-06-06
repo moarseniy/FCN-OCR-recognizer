@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FCN OCR Markup</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">FCN OCR Markup</div>
+    <div class="navigation">
+      <button id="previous" class="icon-button" title="Previous image" aria-label="Previous image">←</button>
+      <div id="counter" class="counter">0 / 0</div>
+      <button id="next" class="icon-button" title="Next image" aria-label="Next image">→</button>
+    </div>
+    <div class="status-area">
+      <span id="saveStatus">Ready</span>
+      <label class="complete-toggle">
+        <input id="completed" type="checkbox">
+        <span>Complete</span>
+      </label>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="mode-switch" role="group" aria-label="Markup layer">
+        <button class="mode active" data-mode="cuts">Cuts</button>
+        <button class="mode" data-mode="top">Top</button>
+        <button class="mode" data-mode="bottom">Bottom</button>
+      </div>
+
+      <div class="tool-row">
+        <button id="undo" class="icon-button" title="Undo" aria-label="Undo">↶</button>
+        <button id="clearLayer" class="icon-button" title="Clear selected layer" aria-label="Clear selected layer">⌫</button>
+        <button id="save" class="icon-button" title="Save" aria-label="Save">✓</button>
+      </div>
+
+      <label class="zoom-control">
+        <span>Zoom</span>
+        <input id="zoom" type="range" min="1" max="16" value="6" step="0.5">
+        <output id="zoomValue">6×</output>
+      </label>
+
+      <div class="layer-stats">
+        <div><span>Cuts</span><strong id="cutsCount">0</strong></div>
+        <div><span>Top</span><strong id="topCount">0</strong></div>
+        <div><span>Bottom</span><strong id="bottomCount">0</strong></div>
+      </div>
+
+      <div class="progress">
+        <div class="progress-label">
+          <span>Completed</span>
+          <strong id="progressText">0 / 0</strong>
+        </div>
+        <div class="progress-track"><div id="progressBar"></div></div>
+      </div>
+
+      <select id="imageList" size="12" aria-label="Images"></select>
+    </aside>
+
+    <section class="stage">
+      <div id="imageName" class="image-name"></div>
+      <div id="canvasScroller" class="canvas-scroller">
+        <canvas id="canvas"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+

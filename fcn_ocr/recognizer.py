@@ -244,6 +244,46 @@ class TextRecognizer:
         tensor, debug = self._preprocess_pil_3d_with_debug(image, collect_debug=True)
         return tensor.unsqueeze(0), debug
 
+    def preprocess_pil_with_source_x(self, image: Image.Image) -> tuple[torch.Tensor, np.ndarray]:
+        """
+        Preprocess an image and retain the source-image X represented by every
+        final network-input pixel. This is used for exact geometric evaluation.
+        """
+        image = image.convert("RGB" if self.in_channels == 3 else "L")
+        source_x = np.broadcast_to(
+            np.arange(image.width, dtype=np.float32)[None, :],
+            (image.height, image.width),
+        ).copy()
+
+        if self.baseline_crop:
+            image, source_x = self._apply_baseline_crop_with_source_x(image, source_x)
+
+        before_x_pad_width = image.width
+        image = self._apply_x_pad(image)
+        if image.width != before_x_pad_width:
+            delta = (image.width - before_x_pad_width) // 2
+            source_x = np.pad(source_x, ((0, 0), (delta, delta)), mode="edge")
+
+        source_x = self._apply_y_pad_to_float_map(source_x)
+        image = self._apply_y_pad(image)
+
+        if image.height != self.image_height:
+            new_width = max(1, round(image.width * self.image_height / image.height))
+            image = image.resize((new_width, self.image_height), Image.Resampling.BICUBIC)
+            source_x = self._resize_float_map(source_x, image.size)
+
+        before_scale_width = image.width
+        image = self._apply_scale_x(image)
+        if image.width != before_scale_width:
+            source_x = self._resize_float_map(source_x, image.size)
+
+        array = np.asarray(image, dtype=np.float32) / 255.0
+        if self.in_channels == 1:
+            tensor = torch.from_numpy(array).unsqueeze(0)
+        else:
+            tensor = torch.from_numpy(array).permute(2, 0, 1)
+        return tensor.to(self.device), source_x
+
     def _preprocess_pil_3d(self, image: Image.Image) -> torch.Tensor:
         tensor, _ = self._preprocess_pil_3d_with_debug(image, collect_debug=False)
         return tensor
@@ -652,6 +692,119 @@ class TextRecognizer:
             metadata["baseline_rejected_confidence"] = float(detection["rejected_baseline_confidence"])
         metadata.update(curve_metadata)
         return cropped, PreprocessDebug(metadata=metadata, images=debug_images)
+
+    def _apply_baseline_crop_with_source_x(
+        self,
+        image: Image.Image,
+        source_x: np.ndarray,
+    ) -> tuple[Image.Image, np.ndarray]:
+        if self.baseline_rectify == "curved" and self.baseline_detector_model is not None:
+            curved_detection = self._detect_baseline_curves(image)
+            if curved_detection["ok"]:
+                rectified = self._rectify_baseline_curves(image, curved_detection)
+                curve_x = np.asarray(curved_detection["curve_x"], dtype=np.float32)
+                rectified_source_x = np.broadcast_to(
+                    curve_x[None, :],
+                    (rectified.height, curve_x.size),
+                ).copy()
+                return rectified, rectified_source_x
+
+        first = self._detect_baseline(image)
+        if not first["ok"]:
+            return image, source_x
+
+        working_image = image
+        working_source_x = source_x
+        detection = first
+        original_angle = float(first["angle_degrees"])
+        if self.baseline_deskew and abs(original_angle) >= 0.25:
+            rotated = image.rotate(
+                original_angle,
+                expand=True,
+                resample=Image.Resampling.BICUBIC,
+                fillcolor=self._background_fill_value(image),
+            )
+            rotated_source_x = np.asarray(
+                Image.fromarray(source_x, mode="F").rotate(
+                    original_angle,
+                    expand=True,
+                    resample=Image.Resampling.BILINEAR,
+                    fillcolor=-1.0,
+                ),
+                dtype=np.float32,
+            )
+            second = self._detect_baseline(rotated)
+            if second["ok"]:
+                working_image = rotated
+                working_source_x = rotated_source_x
+                detection = second
+            elif self.baseline_strict_lines:
+                return image, source_x
+
+        cropped = self._crop_with_fill(working_image, detection["crop_box"])
+        cropped_source_x = self._crop_float_map_with_fill(
+            working_source_x,
+            detection["crop_box"],
+            fill=-1.0,
+        )
+        return cropped, cropped_source_x
+
+    @staticmethod
+    def _resize_float_map(values: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        if values.shape == (size[1], size[0]):
+            return values.astype(np.float32, copy=False)
+        return np.asarray(
+            Image.fromarray(values.astype(np.float32), mode="F").resize(
+                size,
+                Image.Resampling.BILINEAR,
+            ),
+            dtype=np.float32,
+        )
+
+    def _apply_y_pad_to_float_map(self, values: np.ndarray) -> np.ndarray:
+        if self.y_pad == 0.0:
+            return values
+        delta = int(round(values.shape[0] * abs(self.y_pad)))
+        if delta <= 0:
+            return values
+        top = delta // 2
+        bottom = delta - top
+        if self.y_pad > 0.0:
+            return np.pad(
+                values,
+                ((top, bottom), (0, 0)),
+                mode="constant",
+                constant_values=-1.0,
+            )
+        if delta >= values.shape[0]:
+            delta = values.shape[0] - 1
+            top = delta // 2
+            bottom = delta - top
+        return values[top : values.shape[0] - bottom]
+
+    @staticmethod
+    def _crop_float_map_with_fill(
+        values: np.ndarray,
+        box: tuple[int, int, int, int],
+        fill: float,
+    ) -> np.ndarray:
+        left, top, right, bottom = box
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        output = np.full((height, width), float(fill), dtype=np.float32)
+        source_box = (
+            max(0, left),
+            max(0, top),
+            min(values.shape[1], right),
+            min(values.shape[0], bottom),
+        )
+        if source_box[2] <= source_box[0] or source_box[3] <= source_box[1]:
+            return output
+        paste_x = source_box[0] - left
+        paste_y = source_box[1] - top
+        source = values[source_box[1] : source_box[3], source_box[0] : source_box[2]]
+        output[paste_y : paste_y + source.shape[0], paste_x : paste_x + source.shape[1]] = source
+        return output
 
     def _detect_baseline(self, image: Image.Image) -> dict[str, Any]:
         if self.baseline_detector_model is not None:

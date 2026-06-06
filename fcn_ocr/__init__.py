@@ -1,4 +1,5 @@
 from .debug_report import save_debug_image
+from .baseline_detector import BaselineDetector
 from .recognizer import TextRecognizer, tensor_to_pil
 from .results import (
     ClassConfidence,
@@ -14,6 +15,7 @@ from .segmentator import VerticalSegmentator
 
 __all__ = [
     "ClassConfidence",
+    "BaselineDetector",
     "CutDecodedSymbol",
     "CutDecodingResult",
     "DecodedSymbol",

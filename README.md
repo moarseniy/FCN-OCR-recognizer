@@ -386,7 +386,7 @@ baseline_heatmap_positive_weight: 6.0
 `--segmentator-cut-candidate-threshold` и `--segmentator-cut-smooth-radius`.
 
 Подобрать параметры вертикального сегментатора без OCR, сравнивая число
-предсказанных межбуквенных промежутков с длиной строки из Label Studio:
+предсказанных ячеек с длиной строки из Label Studio:
 
 ```bash
 python evaluate_segmentator.py \
@@ -400,8 +400,93 @@ python evaluate_segmentator.py \
   --optuna-tune-baseline-params
 ```
 
-Оцениваемая длина считается как `число cut-точек + 1`, поэтому пробел в
-разметке считается обычным символом.
+При наличии внешних границ `|A|B|C|` оцениваемая длина считается как
+`число cut-точек - 1`, поэтому пробел в разметке считается обычным символом.
+
+### Ручная разметка cuts и baseline
+
+Для точной оценки вертикального сегментатора и детектора baseline есть
+браузерный инструмент:
+
+```bash
+python -m tool.annotation_server \
+  --images /path/to/images \
+  --output output/manual_markup.json \
+  --open-browser
+```
+
+Без `--open-browser` сервис печатает адрес, который можно открыть вручную.
+По умолчанию это `http://127.0.0.1:8765/`. Изображения обходятся в стабильном
+алфавитном порядке, включая вложенные папки.
+
+В интерфейсе есть три слоя:
+
+- `Cuts`: вертикальные границы ячеек. Нужно разметить обе крайние границы и
+  все границы между символами. Для `|A|B|C|` получится четыре линии и три
+  ячейки. Пробел также является отдельной ячейкой.
+- `Top`: верхняя baseline как полилиния минимум из двух точек.
+- `Bottom`: нижняя baseline как полилиния минимум из двух точек.
+
+Левый клик добавляет линию или точку, существующую точку baseline можно
+перетаскивать. Правый клик удаляет ближайший элемент активного слоя.
+Флаг `Complete` включает изображение в evaluation. Разметка автоматически
+сохраняется в JSON в координатах исходной картинки.
+
+Точная оценка cuts:
+
+```bash
+python evaluate_segmentator.py \
+  --json output/manual_markup.json \
+  --images /path/to/images \
+  --checkpoint checkpoints/cut_segmentator/best_model.pth \
+  --device cuda \
+  --cut-tolerance-px 3 \
+  --optuna-trials 200 \
+  --optuna-metric cut_f1 \
+  --optuna-cut-threshold-min 0.15 \
+  --optuna-cut-threshold-max 0.85 \
+  --optuna-peak-min-distance-min 1 \
+  --optuna-peak-min-distance-max 8 \
+  --out output/segmentator_manual.csv
+```
+
+Для ручного JSON дополнительно считаются `cut_precision`, `cut_recall`,
+`cut_f1` и средняя ошибка совпавших линий по X. Предсказанные линии
+возвращаются в координаты исходника через карту геометрии preprocessing,
+включая baseline crop, deskew, curved rectification, padding и resize.
+Label Studio JSON по-прежнему поддерживается для старой оценки по длине.
+
+Оценка обеих baseline:
+
+```bash
+python evaluate_baselines.py \
+  --json output/manual_markup.json \
+  --images /path/to/images \
+  --checkpoint checkpoints/baseline_detector/best_model.pth \
+  --device cuda \
+  --rectify curved \
+  --threshold 0.35 \
+  --out output/baseline_metrics.csv
+```
+
+Подбор threshold и параметров curved-линий:
+
+```bash
+python evaluate_baselines.py \
+  --json output/manual_markup.json \
+  --checkpoint checkpoints/baseline_detector/best_model.pth \
+  --device cuda \
+  --rectify curved \
+  --optuna-trials 200 \
+  --optuna-trials-out output/baseline_trials.tsv \
+  --optuna-storage sqlite:///output/baseline_optuna.db \
+  --optuna-study-name baseline_curved_v1 \
+  --out output/baseline_metrics.csv
+```
+
+`evaluate_baselines.py` считает MAE отдельно для верхней и нижней линии,
+общую ошибку в пикселях, ошибку относительно высоты строки, покрытие по X и
+штрафует неудачные детекции при Optuna-подборе.
 
 В training-конфиге задаются `chunks_dir`, optimizer, learning rate, batch size,
 workers, checkpoint path, preview-настройки и GPU-аугментации. Online-генерация
