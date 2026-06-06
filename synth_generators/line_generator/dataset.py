@@ -30,6 +30,7 @@ SUPPORTED_AUGMENTATIONS = (
     "motion_blur",
     "scale",
     "darkening",
+    "vertical_fade",
     "noise",
     "projective",
     "rotate",

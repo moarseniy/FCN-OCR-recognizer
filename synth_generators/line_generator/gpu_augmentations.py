@@ -176,6 +176,8 @@ class GpuTextAugmenter:
         if name in {"darkening", "brightness"}:
             default = 0.75 if name == "darkening" else 1.0
             return self._brightness(images, params, default, collect_metadata)
+        if name == "vertical_fade":
+            return self._vertical_fade(images, params, collect_metadata)
         if name in {"noise", "gaussian_noise"}:
             return self._noise(images, params, collect_metadata)
         if name == "projective":
@@ -855,6 +857,98 @@ class GpuTextAugmenter:
             return images, None
         logs = self._repeat_log(images, {"factor": factor}) if collect_metadata else None
         return images * factor, logs
+
+    def _vertical_fade(
+        self,
+        images: torch.Tensor,
+        params: dict[str, Any],
+        collect_metadata: bool,
+    ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
+        batch_size, _, height, width = images.shape
+        if batch_size == 0 or height <= 1 or width <= 0:
+            return images, None
+
+        side = str(params.get("side", "random")).lower()
+        if side not in {"top", "bottom", "random"}:
+            raise ValueError("vertical_fade side must be 'top', 'bottom', or 'random'")
+
+        extent = self._sample_tensor_range(
+            params,
+            "extent",
+            0.35,
+            batch_size,
+            images.device,
+            images.dtype,
+        ).clamp(min=1.0 / float(height), max=1.0)
+        strength = self._sample_tensor_range(
+            params,
+            "strength",
+            0.5,
+            batch_size,
+            images.device,
+            images.dtype,
+        ).clamp(0.0, 1.0)
+        gamma = self._sample_tensor_range(
+            params,
+            "gamma",
+            1.0,
+            batch_size,
+            images.device,
+            images.dtype,
+        ).clamp(min=1e-3)
+
+        if side == "random":
+            fade_from_top = torch.rand(batch_size, device=images.device) < 0.5
+        else:
+            fade_from_top = torch.full(
+                (batch_size,),
+                side == "top",
+                device=images.device,
+                dtype=torch.bool,
+            )
+
+        y = torch.linspace(0.0, 1.0, height, device=images.device, dtype=images.dtype)
+        top_profile = (1.0 - y.view(1, height) / extent.view(-1, 1)).clamp(0.0, 1.0)
+        bottom_profile = (
+            1.0 - (1.0 - y).view(1, height) / extent.view(-1, 1)
+        ).clamp(0.0, 1.0)
+        profile = torch.where(fade_from_top.view(-1, 1), top_profile, bottom_profile)
+        alpha = (
+            profile.pow(gamma.view(-1, 1))
+            * strength.view(-1, 1)
+        ).view(batch_size, 1, height, 1)
+
+        border = torch.cat(
+            (
+                images[:, :, 0, :],
+                images[:, :, -1, :],
+                images[:, :, :, 0],
+                images[:, :, :, -1],
+            ),
+            dim=-1,
+        )
+        background = border.median(dim=-1).values.view(batch_size, images.size(1), 1, 1)
+        output = images * (1.0 - alpha) + background * alpha
+
+        logs = None
+        if collect_metadata:
+            sides = ["top" if value else "bottom" for value in fade_from_top.detach().cpu().tolist()]
+            logs = [
+                {
+                    "side": sample_side,
+                    "extent": float(sample_extent),
+                    "strength": float(sample_strength),
+                    "gamma": float(sample_gamma),
+                    "background": "border_median",
+                }
+                for sample_side, sample_extent, sample_strength, sample_gamma in zip(
+                    sides,
+                    extent.detach().cpu().tolist(),
+                    strength.detach().cpu().tolist(),
+                    gamma.detach().cpu().tolist(),
+                )
+            ]
+        return output, logs
 
     def _contrast(
         self,

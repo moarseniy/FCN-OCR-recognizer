@@ -49,6 +49,7 @@ augmentation_probabilities:
   motion_blur: 0.20
   scale: 0.20
   darkening: 0.45
+  vertical_fade: 0.30
   noise: 0.75
   projective: 0.20
   rotate: 0.55
@@ -91,6 +92,14 @@ augmentations:
   darkening:
     factor_min: 0.40
     factor_max: 1.0
+  vertical_fade:
+    side: random
+    extent_min: 0.20
+    extent_max: 0.55
+    strength_min: 0.15
+    strength_max: 0.65
+    gamma_min: 0.7
+    gamma_max: 1.8
   noise:
     kind: gaussian
     std_min: 1.5

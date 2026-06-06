@@ -86,6 +86,7 @@ augmentation_probabilities:
   motion_blur: 0.08
   scale: 0.15
   darkening: 0.2
+  vertical_fade: 0.25
   noise: 0.75
   projective: 0.12
   rotate: 0.8
@@ -108,6 +109,14 @@ augmentations:
     y_pad_min: -0.25
     y_pad_max: 0.10
     fillcolor: 255
+  vertical_fade:
+    side: random
+    extent_min: 0.20
+    extent_max: 0.55
+    strength_min: 0.15
+    strength_max: 0.65
+    gamma_min: 0.7
+    gamma_max: 1.8
   rotate:
     max_degrees: 1.0
     fillcolor: 255
@@ -149,7 +158,7 @@ augmentations:
 Вероятность `0.0` выключает преобразование, `1.0` применяет всегда.
 
 Доступные OCR-аугментации: `cycle_shift`, `preprocess_geometry`,
-`strong_blur`, `motion_blur`, `scale`, `darkening`, `noise`, `projective`,
+`strong_blur`, `motion_blur`, `scale`, `darkening`, `vertical_fade`, `noise`, `projective`,
 `rotate`, `x_pad`, `crop_x`, `crop_y`, `rescale_quality`, `random_line`,
 `morphology`, `unsharp_mask`.
 `preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
@@ -160,6 +169,9 @@ augmentations:
 `rescale_quality` уменьшает картинку до доли `factor`, затем возвращает к
 исходному размеру, чтобы имитировать потерю разрешения/JPEG-подобную грубость
 без изменения геометрической разметки.
+`vertical_fade` плавно смешивает верхнюю или нижнюю часть изображения с
+медианным цветом его рамки. `extent` задаёт долю высоты эффекта, `strength`
+силу у края, `gamma` форму перехода; геометрическая разметка не меняется.
 `random_line` добавляет почти горизонтальную линию под небольшим углом.
 Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 
