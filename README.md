@@ -260,9 +260,14 @@ neighbor_line_gap_max: 5
 максимальной длиной текста. Настройки обучения и настройки аугментаций в
 offline-датасет не сохраняются. `output_dir`, `chunk_size`, `num_workers` и
 `overwrite` задаются в generation-конфиге. Датасет сохраняется в подпапку с
-именем generation-конфига, например `data/eng_001`. Если `num_workers > 0`,
-чанки генерируются параллельно. Offline-генерация сохраняет чистые строки без
-аугментаций.
+именем generation-конфига и временем запуска, например
+`data/eng_001_20260607_153045`. Если `num_workers > 0`, чанки генерируются
+параллельно. Offline-генерация сохраняет чистые строки без аугментаций.
+
+В training-конфиге и `render_text.py` можно оставить логический путь без
+timestamp, например `data/eng_001`: автоматически будет выбран самый свежий
+завершённый каталог `eng_001_*`, содержащий `metadata.yaml`. Чтобы зафиксировать
+конкретную версию данных, укажите её полное имя с timestamp.
 
 Посмотреть пример из чанка с теми же аугментациями, которые использует
 обучение:
@@ -422,6 +427,17 @@ python train_baselines_with_eval.py \
 Это намеренно: ручная выборка служит отдельной внешней проверкой и не меняет
 scheduler обучения.
 
+Основная manual-метрика после каждой evaluation печатается отдельной строкой в
+`stderr`, а полный лог обучения и evaluation остаётся в `stdout`. Поэтому
+следующий запуск пишет подробный лог в файл, оставляя в терминале только числа
+метрики:
+
+```bash
+python train_baselines_with_eval.py \
+  --config configs/eng_train_101_baselines_eval.yaml \
+  > output/baseline_training.log
+```
+
 Для уже обученного cuts-чекпоинта эти параметры можно переопределять прямо в
 `inference.py`: `--segmentator-cut-threshold`,
 `--segmentator-peak-min-distance`, `--segmentator-cut-postprocess`,
@@ -563,10 +579,17 @@ gpu_augmentations: false
 нормализуются уже там, поэтому CPU RAM и host-to-device transfer не раздуваются
 до `float32` раньше времени.
 
-Обучение пишет компактный лог по эпохам в консоль и TSV-файл:
+Каждый новый запуск добавляет к настроенному `checkpoint_dir` дату и время.
+Например, `checkpoint_dir: ../checkpoints/eng_101` создаст каталог
+`checkpoints/eng_101_20260607_153045`. При `resume: true` автоматически
+выбирается последний каталог с тем же базовым именем, содержащий
+`latest_checkpoint.pth`.
+
+Обучение пишет компактный лог по эпохам в `stdout` и TSV-файл внутри
+timestamp-каталога:
 
 ```text
-checkpoints/training_log.tsv
+checkpoints/eng_101_20260607_153045/training_log.tsv
 ```
 
 Разбиение на батчи настраивается явно:
@@ -946,3 +969,14 @@ python train_with_eval.py \
 После каждой эпохи сохраняется текущий чекпоинт, запускается `evaluate_ocr`,
 пишется per-epoch CSV и общий `eval_summary.tsv`. Для подбора `scale_x/y_pad`
 на каждой эпохе добавьте, например, `--optuna-trials 20`.
+
+Выбранная `--optuna-metric` печатается как одно число в `stderr`, весь
+остальной лог идёт в `stdout`. Например:
+
+```bash
+python train_with_eval.py \
+  --train-config configs/eng_train_101.yaml \
+  --eval-json path/to/export.json \
+  --eval-images path/to/images \
+  > output/ocr_training.log
+```

@@ -6,6 +6,7 @@ import json
 import math
 import shutil
 from pathlib import Path
+import sys
 from typing import Any, Literal
 
 import torch
@@ -14,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from evaluate_baselines import build_jobs, evaluate_detector, optimize
 from fcn_ocr import BaselineDetector
-from train import load_training_config, run_training
+from train import load_training_config, resolve_checkpoint_dir, run_training
 
 
 MINIMIZE_METRICS = {
@@ -207,7 +208,10 @@ def main() -> None:
             f"got {train_config.loss_mode!r}"
         )
 
-    checkpoint_dir = Path(train_config.checkpoint_dir)
+    checkpoint_dir = resolve_checkpoint_dir(
+        train_config.checkpoint_dir,
+        resume=train_config.resume,
+    )
     eval_dir = Path(config.output_dir) if config.output_dir else checkpoint_dir / "evaluate_baselines"
     eval_dir.mkdir(parents=True, exist_ok=True)
     summary_path = eval_dir / "eval_summary.tsv"
@@ -324,6 +328,7 @@ def main() -> None:
 
         append_summary(summary_path, metrics)
         print(f"Evaluation summary: {summary_path}")
+        print(f"{metric_value:.12g}", file=sys.stderr, flush=True)
 
         del detector
         if torch.cuda.is_available():
@@ -335,6 +340,7 @@ def main() -> None:
         checkpoint_every=1,
         banner="Starting baseline training with per-epoch manual evaluation...",
         completion_title="Baseline training with manual evaluation completed!",
+        checkpoint_dir_override=checkpoint_dir,
     )
 
     print(f"Evaluation summary:      {summary_path}")

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 from evaluate_ocr import evaluate, optimize_preprocess
-from train import load_training_config, run_training
+from train import load_training_config, resolve_checkpoint_dir, run_training
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,7 +144,10 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
 def main() -> None:
     cli_args = parse_args()
     train_config, _ = load_training_config(cli_args.train_config)
-    checkpoint_dir = Path(train_config.checkpoint_dir)
+    checkpoint_dir = resolve_checkpoint_dir(
+        train_config.checkpoint_dir,
+        resume=train_config.resume,
+    )
     eval_dir = Path(cli_args.eval_out_dir) if cli_args.eval_out_dir else checkpoint_dir / "evaluate_ocr"
     eval_dir.mkdir(parents=True, exist_ok=True)
     eval_summary_path = eval_dir / "eval_summary.tsv"
@@ -161,6 +165,11 @@ def main() -> None:
         )
         append_eval_summary(eval_summary_path, eval_metrics)
         print(f"Evaluation summary: {eval_summary_path}")
+        print(
+            f"{float(eval_metrics[cli_args.optuna_metric]):.12g}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     result = run_training(
         cli_args.train_config,
@@ -168,6 +177,7 @@ def main() -> None:
         checkpoint_every=1,
         banner="Starting training with per-epoch OCR evaluation...",
         completion_title="Training with evaluation completed!",
+        checkpoint_dir_override=checkpoint_dir,
     )
     print(f"Evaluation summary: {eval_summary_path}")
     result["eval_summary_path"] = eval_summary_path

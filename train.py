@@ -1,7 +1,16 @@
 # train.py
-from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset, load_chunk_metadata
+from synth_generators.line_generator.chunk_dataset import (
+    CHUNK_METADATA_FILENAME,
+    ChunkedLineDataset,
+    load_chunk_metadata,
+)
 from synth_generators.line_generator.dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
 from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
+from synth_generators.line_generator.run_directories import (
+    is_timestamped_directory,
+    latest_timestamped_directory,
+    timestamped_directory,
+)
 import argparse
 from collections import Counter
 import math
@@ -1151,7 +1160,9 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
             "Online generation during training is not supported anymore."
         )
 
-    metadata = load_chunk_metadata(config.chunks_dir)
+    chunks_dir = resolve_chunks_dir(config.chunks_dir)
+    config.chunks_dir = str(chunks_dir)
+    metadata = load_chunk_metadata(chunks_dir)
     dataset_config = dataset_config_from_training_config(config, metadata)
     if target_format == "dense_symbols" and not metadata.get("dense_targets", False):
         raise ValueError(
@@ -1169,14 +1180,14 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
             "baseline_targets are absent. Regenerate the dataset with save_baseline_targets: true."
         )
     dataset = ChunkedLineDataset(
-        config.chunks_dir,
+        chunks_dir,
         cache_size=config.chunk_cache_size,
         config=dataset_config,
         target_format=target_format,
     )
-    print(f"Dataset source: chunks ({config.chunks_dir})")
+    print(f"Dataset source: chunks ({chunks_dir})")
     if metadata:
-        print(f"Dataset metadata: {Path(config.chunks_dir) / 'metadata.yaml'}")
+        print(f"Dataset metadata: {chunks_dir / CHUNK_METADATA_FILENAME}")
     else:
         print("Dataset metadata: not found; using training config/defaults")
     return dataset, dataset_config
@@ -1299,12 +1310,49 @@ def validate_and_log_alphabet(dataset, alphabet: str, max_text_length: int, chec
 EpochCallback = Callable[[dict[str, Any]], None]
 
 
+def resolve_checkpoint_dir(
+    configured_dir: str | Path,
+    resume: bool = False,
+) -> Path:
+    base_dir = Path(configured_dir)
+    if not resume:
+        return timestamped_directory(base_dir)
+
+    if is_timestamped_directory(base_dir):
+        return base_dir
+
+    latest_dir = latest_timestamped_directory(
+        base_dir,
+        required_file="latest_checkpoint.pth",
+    )
+    if latest_dir is not None:
+        return latest_dir
+    if (base_dir / "latest_checkpoint.pth").is_file():
+        return base_dir
+    return timestamped_directory(base_dir)
+
+
+def resolve_chunks_dir(configured_dir: str | Path) -> Path:
+    base_dir = Path(configured_dir)
+    if is_timestamped_directory(base_dir):
+        return base_dir
+
+    latest_dir = latest_timestamped_directory(
+        base_dir,
+        required_file=CHUNK_METADATA_FILENAME,
+    )
+    if latest_dir is not None:
+        return latest_dir
+    return base_dir
+
+
 def run_training(
     config_path: str | Path,
     after_epoch: EpochCallback | None = None,
     checkpoint_every: int | None = 5,
     banner: str = "Starting training...",
     completion_title: str = "Training completed!",
+    checkpoint_dir_override: str | Path | None = None,
 ) -> dict[str, Any]:
     args, _ = load_training_config(config_path)
     print("START!")
@@ -1312,8 +1360,13 @@ def run_training(
     config_data = effective_training_config_data(args, dataset_config)
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
-    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir = (
+        Path(checkpoint_dir_override)
+        if checkpoint_dir_override is not None
+        else resolve_checkpoint_dir(args.checkpoint_dir, resume=args.resume)
+    )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Checkpoint directory: {checkpoint_dir}")
     log_path = checkpoint_dir / "training_log.tsv"
     validate_and_log_alphabet(dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir)
 

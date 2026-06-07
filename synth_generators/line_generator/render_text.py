@@ -16,10 +16,12 @@ try:
     from .chunk_dataset import load_chunk_metadata
     from .dataset import SingleLineDataset, SingleLineDatasetConfig
     from .gpu_augmentations import GpuTextAugmenter
+    from .run_directories import is_timestamped_directory, latest_timestamped_directory
 except ImportError:
     from chunk_dataset import load_chunk_metadata
     from dataset import SingleLineDataset, SingleLineDatasetConfig
     from gpu_augmentations import GpuTextAugmenter
+    from run_directories import is_timestamped_directory, latest_timestamped_directory
 
 
 def tensor_to_image(sample_tensor: torch.Tensor) -> Image.Image:
@@ -80,6 +82,13 @@ def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLine
     if config.alphabet is None:
         config = config.model_copy(update={"alphabet": config.sample_alphabet})
     return config
+
+
+def resolve_chunks_dir(chunks_dir: Path) -> Path:
+    if is_timestamped_directory(chunks_dir):
+        return chunks_dir
+    latest_dir = latest_timestamped_directory(chunks_dir, required_file="metadata.yaml")
+    return latest_dir or chunks_dir
 
 
 def resolve_device(device_name: str) -> torch.device:
@@ -400,7 +409,7 @@ def main() -> None:
         parser.error("Pass exactly one of --text or --chunks-dir.")
 
     config_path = Path(args.config)
-    chunks_dir = Path(args.chunks_dir) if args.chunks_dir else None
+    chunks_dir = resolve_chunks_dir(Path(args.chunks_dir)) if args.chunks_dir else None
     config = load_config(config_path, chunks_dir)
     dataset = None if chunks_dir else SingleLineDataset(config)
     rng = random.Random(args.seed)

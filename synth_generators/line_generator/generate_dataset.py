@@ -12,6 +12,7 @@ import yaml
 
 from .dataset import GeneratedLineSample, SingleLineDataset, SingleLineDatasetConfig
 from .chunk_dataset import CHUNK_METADATA_FILENAME
+from .run_directories import timestamped_directory
 
 
 def image_to_uint8(image: torch.Tensor) -> torch.Tensor:
@@ -267,12 +268,14 @@ def main() -> None:
     if generation_config.output_dir is None:
         raise ValueError("Generation config must contain output_dir")
 
-    output_dir = resolve_output_dir(config_path, generation_config.output_dir)
+    base_output_dir = resolve_output_dir(config_path, generation_config.output_dir)
+    output_dir = timestamped_directory(base_output_dir)
     if output_dir.exists():
         if not generation_config.overwrite:
             raise FileExistsError(f"Output dir already exists: {output_dir}. Set overwrite: true to replace it.")
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Dataset output: {output_dir}")
 
     dataset = SingleLineDataset(generation_config)
 
