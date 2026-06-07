@@ -391,6 +391,37 @@ baseline_heatmap_positive_weight: 6.0
 Соответствующий generation-конфиг:
 `synth_generators/line_generator/configs/eng_101_baselines.yaml`.
 
+Обучение baseline-детектора с оценкой на ручной разметке после каждой эпохи:
+
+```bash
+python train_baselines_with_eval.py \
+  --config configs/eng_train_101_baselines_eval.yaml
+```
+
+В `configs/eng_train_101_baselines_eval.yaml` задаются:
+
+- `train_config`: обычный training-конфиг с `loss_mode: baseline_heatmap`;
+- `markup_json`: разметка из `tool.annotation_server`;
+- `images_dir`: опциональная замена папки изображений из JSON;
+- `threshold`: фиксированный порог детектора для сравнения эпох;
+- `evaluate_every`: период оценки в эпохах;
+- `best_metric`: метрика выбора лучшей модели;
+- `optuna_trials`: опциональный подбор threshold на каждой оцениваемой эпохе.
+
+Рекомендуемый обычный режим использует фиксированный `threshold` и
+`optuna_trials: 0`: так изменение метрик отражает обучение модели, а не
+изменение постобработки. Скрипт сохраняет:
+
+- per-epoch CSV в `output_dir`;
+- общий `eval_summary.tsv`;
+- информацию о лучшем результате в `best_manual_baselines.json`;
+- лучший по ручной метрике checkpoint как
+  `best_manual_baselines_model.pth` в training checkpoint directory.
+
+`best_model.pth` при этом по-прежнему выбирается по synthetic validation loss.
+Это намеренно: ручная выборка служит отдельной внешней проверкой и не меняет
+scheduler обучения.
+
 Для уже обученного cuts-чекпоинта эти параметры можно переопределять прямо в
 `inference.py`: `--segmentator-cut-threshold`,
 `--segmentator-peak-min-distance`, `--segmentator-cut-postprocess`,
