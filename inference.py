@@ -11,6 +11,9 @@ from fcn_ocr import (
     ClassConfidence,
     CutDecodingResult,
     DecodedSymbol,
+    InferenceConfig,
+    OCRPipeline,
+    OCRPipelineResult,
     RecognitionResult,
     TextRecognizer,
     VerticalSegmentationResult,
@@ -25,6 +28,9 @@ __all__ = [
     "ClassConfidence",
     "CutDecodingResult",
     "DecodedSymbol",
+    "InferenceConfig",
+    "OCRPipeline",
+    "OCRPipelineResult",
     "RecognitionResult",
     "TextRecognizer",
     "VerticalSegmentationResult",
@@ -36,97 +42,26 @@ __all__ = [
 ]
 
 
-def load_dataset_config(
-    config_path: str | Path,
-) -> SingleLineDatasetConfig:
+def load_dataset_config(config_path: str | Path) -> SingleLineDatasetConfig:
     path = Path(config_path)
     if not path.exists():
         raise FileNotFoundError(f"Dataset config not found: {path}")
-    with path.open("r") as file:
+    with path.open("r", encoding="utf-8") as file:
         return SingleLineDatasetConfig.model_validate_with_paths(yaml.safe_load(file), path)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run FCN OCR inference.")
-    parser.add_argument("--checkpoint", required=True, help="Path to checkpoint file.")
+    parser = argparse.ArgumentParser(description="Run configured FCN OCR inference.")
     parser.add_argument(
-        "--segmentator-checkpoint",
-        default=None,
-        help="Optional vertical cut segmentator checkpoint. If --debug-image is set, its cut map is rendered too.",
-    )
-    parser.add_argument(
-        "--segmentator-cut-threshold",
-        type=float,
-        default=None,
-        help="Override segmentator cut probability threshold from checkpoint config.",
-    )
-    parser.add_argument(
-        "--segmentator-peak-min-distance",
-        type=int,
-        default=None,
-        help="Override minimum distance between neighboring cut peaks in output timesteps.",
-    )
-    parser.add_argument(
-        "--segmentator-cut-postprocess",
-        choices=("peaks", "widths"),
-        default=None,
-        help="Cut-projection postprocessing: raw local peaks or width-constrained cuts.",
-    )
-    parser.add_argument(
-        "--segmentator-cut-min-width",
-        type=int,
-        default=None,
-        help="Minimum distance between cut-projection cuts in output timesteps.",
-    )
-    parser.add_argument(
-        "--segmentator-cut-max-width",
-        type=int,
-        default=None,
-        help="Maximum allowed distance between neighboring cuts; 0 disables cut insertion.",
-    )
-    parser.add_argument(
-        "--segmentator-cut-candidate-threshold",
-        type=float,
-        default=None,
-        help="Lower threshold for candidate cut peaks used by width-constrained postprocessing.",
-    )
-    parser.add_argument(
-        "--segmentator-cut-smooth-radius",
-        type=int,
-        default=None,
-        help="Triangular smoothing radius for cut projection scores before peak selection.",
-    )
-    parser.add_argument(
-        "--decode-with-segmentator",
-        action="store_true",
-        help="Also decode a legacy OCR checkpoint by averaging OCR probabilities inside segmentator cut intervals.",
-    )
-    parser.add_argument(
-        "--segmentator-decode-top-k",
-        type=int,
-        default=8,
-        help="Number of OCR class candidates to keep per legacy+cuts interval in --debug-image.",
-    )
-    parser.add_argument(
-        "--segmentator-decode-center-fraction",
-        type=float,
-        default=0.6,
-        help=(
-            "Fraction of the central OCR timesteps inside each legacy+cuts interval used for class scoring. "
-            "1.0 restores the old full-interval averaging."
-        ),
-    )
-    parser.add_argument(
-        "--segmentator-decode-min-score-width",
-        type=int,
-        default=1,
-        help="Minimum number of OCR timesteps kept for central legacy+cuts class scoring.",
+        "--config",
+        required=True,
+        help="Inference YAML with checkpoints, shared baseline settings, and separate OCR/segmentator preprocessing.",
     )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
-        "--config",
+        "--generation-config",
         default=None,
-        help="Dataset config for --sample-index mode.",
+        help="Generation config used only with --sample-index.",
     )
     parser.add_argument(
         "--sample-index",
@@ -138,257 +73,136 @@ def parse_args() -> argparse.Namespace:
         default="temp.png",
         help="Where to save the generated sample image in --sample-index mode.",
     )
-    parser.add_argument("--device", default=None, help="Device to use: cuda or cpu.")
-    parser.add_argument(
-        "--scale-x",
-        type=float,
-        default=0.0,
-        help="Normalized horizontal inference scale. 0.2 stretches width by 20%%, -0.2 squeezes by 20%%.",
-    )
-    parser.add_argument(
-        "--y-pad",
-        type=float,
-        default=0.0,
-        help="Normalized vertical inference padding/crop before resize. 0.2 pads, -0.2 crops.",
-    )
-    parser.add_argument(
-        "--x-pad",
-        type=float,
-        default=0.0,
-        help=(
-            "Normalized symmetric horizontal inference padding before resize/scale. "
-            "0.05 adds 5%% width on each side before resize/scale, filled by side background median."
-        ),
-    )
-    parser.add_argument(
-        "--baseline-crop",
-        action="store_true",
-        help="Detect a text baseline, deskew/crop vertically by it, then apply y-pad and resize.",
-    )
-    parser.add_argument(
-        "--no-baseline-deskew",
-        action="store_true",
-        help="Disable baseline-based deskew while keeping baseline crop enabled.",
-    )
-    parser.add_argument(
-        "--baseline-max-angle",
-        type=float,
-        default=12.0,
-        help="Reject strict baseline crop if the detected baseline angle is larger than this many degrees.",
-    )
-    parser.add_argument(
-        "--no-baseline-strict-lines",
-        action="store_true",
-        help="Use the older bbox-assisted baseline crop instead of strict top/bottom line crop.",
-    )
-    parser.add_argument(
-        "--baseline-line-pad",
-        type=float,
-        default=0.08,
-        help="Symmetric top/bottom crop margin as a fraction of detected line height. Use 0 to disable it.",
-    )
-    parser.add_argument(
-        "--baseline-line-pad-px",
-        type=float,
-        default=0.0,
-        help="Extra absolute symmetric crop margin in source pixels, added on top of --baseline-line-pad.",
-    )
-    parser.add_argument(
-        "--baseline-detector-checkpoint",
-        default=None,
-        help="Optional neural top/bottom baseline detector checkpoint used by --baseline-crop instead of the heuristic.",
-    )
-    parser.add_argument(
-        "--baseline-detector-threshold",
-        type=float,
-        default=0.35,
-        help="Minimum sigmoid probability for top/bottom baseline heatmap columns.",
-    )
-    parser.add_argument("--show-raw", action="store_true", help="Print raw timestep predictions.")
+    parser.add_argument("--show-raw", action="store_true", help="Print raw OCR timestep predictions.")
     parser.add_argument(
         "--debug-image",
         default=None,
         help="Optional path to save an annotated inference debug image.",
     )
-    parser.add_argument(
-        "--debug-top-k",
-        type=int,
-        default=8,
-        help="Number of class-confidence candidates to show per decoded symbol in --debug-image.",
-    )
     return parser.parse_args()
+
+
+def _load_source_image(
+    args: argparse.Namespace,
+    pipeline: OCRPipeline,
+) -> tuple[Image.Image, str, str | None]:
+    if args.image:
+        with Image.open(args.image) as image_file:
+            return image_file.convert("RGB"), str(args.image), None
+
+    if args.generation_config is None:
+        raise ValueError("--image or --generation-config is required")
+    sample_index = args.sample_index if args.sample_index is not None else 0
+    dataset_config = load_dataset_config(args.generation_config)
+    recognizer = pipeline.recognizer
+    dataset_config = dataset_config.model_copy(
+        update={
+            "alphabet": recognizer.alphabet,
+            "sample_alphabet": recognizer.alphabet,
+            "channels": recognizer.in_channels,
+            "image_height": recognizer.image_height,
+        }
+    )
+    dataset = SingleLineDataset(dataset_config)
+    rng = random.Random((dataset_config.seed or 0) + sample_index)
+    sample = dataset.generate_sample(rng)
+    source_image = tensor_to_pil(sample.image).convert("RGB")
+    source_image.save(args.save_sample)
+    print(f"Synthetic sample index: {sample_index}")
+    print(f"Saved sample image: {args.save_sample}")
+    print(f"Expected text: '{sample.text}'")
+    return source_image, f"synthetic sample index {sample_index}", sample.text
+
+
+def _debug_metadata(
+    config_path: Path,
+    pipeline: OCRPipeline,
+    result: OCRPipelineResult,
+    source: str,
+    expected_text: str | None,
+) -> dict:
+    config = pipeline.config
+    metadata = {
+        "source": source,
+        "inference_config": str(config_path),
+        "checkpoint": str(config.ocr.checkpoint),
+        "device": str(pipeline.recognizer.device),
+        "scale_x": config.ocr.preprocessing.scale_x,
+        "y_pad": config.ocr.preprocessing.y_pad,
+        "x_pad": config.ocr.preprocessing.x_pad,
+        "debug_top_k": config.debug.top_k,
+        "expected_text": expected_text,
+        "baseline_shared": True,
+        "ocr_preprocessing": config.ocr.preprocessing.model_dump(),
+        "segmentator_preprocessing": config.segmentator.preprocessing.model_dump(),
+    }
+    metadata.update(result.ocr_preprocess_debug.metadata)
+    if config.segmentator.checkpoint is not None:
+        metadata["segmentator_checkpoint"] = str(config.segmentator.checkpoint)
+    if result.cut_decoding is not None:
+        metadata.update(
+            {
+                "legacy_cuts_text": result.cut_decoding.text,
+                "legacy_cuts_symbols": len(result.cut_decoding.symbols),
+                "legacy_cuts_raw_cuts": len(result.cut_decoding.cuts),
+                "legacy_cuts_decode_center_fraction": config.decode.center_fraction,
+                "legacy_cuts_decode_min_score_width": config.decode.min_score_width,
+            }
+        )
+    return metadata
 
 
 def main() -> None:
     args = parse_args()
-
-    checkpoint_path = Path(args.checkpoint)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-    recognizer = TextRecognizer(
-        checkpoint_path,
-        args.device,
-        verbose=True,
-        scale_x=args.scale_x,
-        y_pad=args.y_pad,
-        x_pad=args.x_pad,
-        baseline_crop=args.baseline_crop,
-        baseline_deskew=not args.no_baseline_deskew,
-        baseline_max_angle=args.baseline_max_angle,
-        baseline_strict_lines=not args.no_baseline_strict_lines,
-        baseline_line_pad=args.baseline_line_pad,
-        baseline_line_pad_px=args.baseline_line_pad_px,
-        baseline_detector_checkpoint=args.baseline_detector_checkpoint,
-        baseline_detector_threshold=args.baseline_detector_threshold,
-    )
-    segmentator = None
-    segmentator_checkpoint_path = None
-    if args.segmentator_checkpoint:
-        segmentator_checkpoint_path = Path(args.segmentator_checkpoint)
-        if not segmentator_checkpoint_path.exists():
-            raise FileNotFoundError(f"Segmentator checkpoint not found: {segmentator_checkpoint_path}")
-        segmentator = VerticalSegmentator(
-            segmentator_checkpoint_path,
-            args.device,
-            verbose=True,
-            scale_x=args.scale_x,
-            y_pad=args.y_pad,
-            x_pad=args.x_pad,
-            baseline_crop=args.baseline_crop,
-            baseline_deskew=not args.no_baseline_deskew,
-            baseline_max_angle=args.baseline_max_angle,
-            baseline_strict_lines=not args.no_baseline_strict_lines,
-            baseline_line_pad=args.baseline_line_pad,
-            baseline_line_pad_px=args.baseline_line_pad_px,
-            baseline_detector_checkpoint=args.baseline_detector_checkpoint,
-            baseline_detector_threshold=args.baseline_detector_threshold,
-            cut_threshold=args.segmentator_cut_threshold,
-            peak_min_distance=args.segmentator_peak_min_distance,
-            cut_postprocess=args.segmentator_cut_postprocess,
-            cut_min_width=args.segmentator_cut_min_width,
-            cut_max_width=args.segmentator_cut_max_width,
-            cut_candidate_threshold=args.segmentator_cut_candidate_threshold,
-            cut_smooth_radius=args.segmentator_cut_smooth_radius,
-        )
-    if args.decode_with_segmentator and segmentator is None:
-        raise ValueError("--decode-with-segmentator requires --segmentator-checkpoint")
-
-    segmentation_result = None
-    segmentator_input_image = None
-    cut_decoding_result = None
+    config_path = Path(args.config).expanduser().resolve()
+    pipeline = OCRPipeline(config_path, verbose=True)
+    source_image, source_label, expected_text = _load_source_image(args, pipeline)
+    result = pipeline.recognize_pil(source_image, collect_debug=bool(args.debug_image))
 
     if args.image:
-        with Image.open(args.image) as image_file:
-            source_image = image_file.convert("RGB")
-        if args.debug_image:
-            input_tensor, preprocess_debug = recognizer.preprocess_image_debug(args.image)
-        else:
-            input_tensor = recognizer.preprocess_image(args.image)
-            preprocess_debug = None
-        network_input_image = tensor_to_pil(input_tensor)
-        result, ocr_logits = recognizer.recognize_tensor_debug_with_logits(input_tensor, top_k=args.debug_top_k)
         print(f"Image: {args.image}")
-        debug_metadata = {
-            "source": str(args.image),
-            "checkpoint": str(checkpoint_path),
-            "device": str(recognizer.device),
-            "scale_x": args.scale_x,
-            "y_pad": args.y_pad,
-            "x_pad": args.x_pad,
-            "debug_top_k": args.debug_top_k,
-        }
-        if preprocess_debug is not None:
-            debug_metadata.update(preprocess_debug.metadata)
-    else:
-        if args.config is None:
-            raise ValueError("--config is required when using --sample-index mode")
-        sample_index = args.sample_index if args.sample_index is not None else 0
-        dataset_config = load_dataset_config(args.config)
-        dataset_config = dataset_config.model_copy(
-            update={
-                "alphabet": recognizer.alphabet,
-                "sample_alphabet": recognizer.alphabet,
-                "channels": recognizer.in_channels,
-                "image_height": recognizer.image_height,
-            }
-        )
-        dataset = SingleLineDataset(dataset_config)
-
-        rng = random.Random((dataset_config.seed or 0) + sample_index)
-        sample = dataset.generate_sample(rng)
-        source_image = tensor_to_pil(sample.image)
-        source_image.save(args.save_sample)
-
-        if args.debug_image:
-            input_tensor, preprocess_debug = recognizer.preprocess_pil_debug(source_image)
-        else:
-            input_tensor = recognizer.preprocess_pil(source_image)
-            preprocess_debug = None
-        network_input_image = tensor_to_pil(input_tensor)
-        result, ocr_logits = recognizer.recognize_tensor_debug_with_logits(input_tensor, top_k=args.debug_top_k)
-        print(f"Synthetic sample index: {sample_index}")
-        print(f"Saved sample image: {args.save_sample}")
-        print(f"Expected text: '{sample.text}'")
-        debug_metadata = {
-            "source": f"synthetic sample index {sample_index}",
-            "checkpoint": str(checkpoint_path),
-            "device": str(recognizer.device),
-            "scale_x": args.scale_x,
-            "y_pad": args.y_pad,
-            "x_pad": args.x_pad,
-            "expected_text": sample.text,
-            "debug_top_k": args.debug_top_k,
-        }
-        if preprocess_debug is not None:
-            debug_metadata.update(preprocess_debug.metadata)
-
-    if segmentator is not None:
-        segmentator_input_tensor = segmentator.preprocess_pil(source_image)
-        segmentator_input_image = tensor_to_pil(segmentator_input_tensor)
-        segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
-        debug_metadata["segmentator_checkpoint"] = str(segmentator_checkpoint_path)
+    if result.segmentation is not None:
         print(
             "Segmentator: "
-            f"{len(segmentation_result.cut_positions or [])} cuts, "
-            f"{len(segmentation_result.raw_indices)} timesteps"
+            f"{len(result.segmentation.cut_positions or [])} cuts, "
+            f"{len(result.segmentation.raw_indices)} timesteps"
         )
-        if args.decode_with_segmentator:
-            cut_decoding_result = recognizer.decode_legacy_with_cuts(
-                ocr_logits,
-                segmentation_result,
-                input_width=int(input_tensor.shape[-1]),
-                top_k=args.segmentator_decode_top_k,
-                center_fraction=args.segmentator_decode_center_fraction,
-                min_score_width=args.segmentator_decode_min_score_width,
-            )
-            debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
-            debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
-            debug_metadata["legacy_cuts_raw_cuts"] = len(cut_decoding_result.cuts)
-            debug_metadata["legacy_cuts_decode_center_fraction"] = args.segmentator_decode_center_fraction
-            debug_metadata["legacy_cuts_decode_min_score_width"] = args.segmentator_decode_min_score_width
-            print(f"Recognized text (legacy+cuts): '{cut_decoding_result.text}'")
-
-    print(f"Recognized text: '{result.text}'")
+    if result.cut_decoding is not None:
+        print(f"Recognized text (legacy+cuts): '{result.cut_decoding.text}'")
+    print(f"Recognized text (raw OCR): '{result.recognition.text}'")
 
     if args.debug_image:
+        metadata = _debug_metadata(
+            config_path,
+            pipeline,
+            result,
+            source_label,
+            expected_text,
+        )
         save_debug_image(
             source_image,
-            result,
+            result.recognition,
             args.debug_image,
-            debug_metadata,
-            network_input_image=network_input_image,
-            preprocess_images=preprocess_debug.images if preprocess_debug is not None else None,
-            segmentation_result=segmentation_result,
-            segmentator_input_image=segmentator_input_image,
-            cut_decoding_result=cut_decoding_result,
+            metadata,
+            network_input_image=tensor_to_pil(result.ocr_input),
+            preprocess_images=result.ocr_preprocess_debug.images,
+            segmentation_result=result.segmentation,
+            segmentator_input_image=(
+                tensor_to_pil(result.segmentator_input)
+                if result.segmentator_input is not None
+                else None
+            ),
+            cut_decoding_result=result.cut_decoding,
         )
         print(f"Saved debug image: {args.debug_image}")
 
     if args.show_raw:
-        print(f"Raw indices: {result.raw_indices}")
-        print(f"Raw chars: {result.raw_chars}")
-        print(f"Raw confidences: {[round(confidence, 6) for confidence in result.raw_confidences]}")
+        print(f"Raw indices: {result.recognition.raw_indices}")
+        print(f"Raw chars: {result.recognition.raw_chars}")
+        print(
+            "Raw confidences: "
+            f"{[round(confidence, 6) for confidence in result.recognition.raw_confidences]}"
+        )
 
 
 if __name__ == "__main__":

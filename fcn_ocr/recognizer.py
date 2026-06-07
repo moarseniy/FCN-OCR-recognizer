@@ -217,7 +217,59 @@ class TextRecognizer:
         tensor, debug = self._preprocess_pil_3d_with_debug(image, collect_debug=True)
         return tensor.unsqueeze(0), debug
 
+    def prepare_baseline_image(
+        self,
+        image: Image.Image,
+        collect_debug: bool = False,
+    ) -> tuple[Image.Image, PreprocessDebug]:
+        source = image.convert("RGB")
+        if not self.baseline_crop:
+            return source, PreprocessDebug(
+                metadata={
+                    "baseline_crop": False,
+                    "baseline_status": "disabled",
+                },
+                images=[],
+            )
+        prepared, debug = self._apply_baseline_crop(source, collect_debug=collect_debug)
+        return prepared, PreprocessDebug(
+            metadata={"baseline_crop": True, **debug.metadata},
+            images=debug.images,
+        )
+
+    def preprocess_pil_after_baseline(self, image: Image.Image) -> torch.Tensor:
+        tensor, _ = self._preprocess_pil_3d_with_debug(
+            image,
+            collect_debug=False,
+            apply_baseline=False,
+        )
+        return tensor.unsqueeze(0)
+
+    def preprocess_pil_after_baseline_debug(
+        self,
+        image: Image.Image,
+    ) -> tuple[torch.Tensor, PreprocessDebug]:
+        tensor, debug = self._preprocess_pil_3d_with_debug(
+            image,
+            collect_debug=True,
+            apply_baseline=False,
+        )
+        return tensor.unsqueeze(0), debug
+
     def preprocess_pil_with_source_x(self, image: Image.Image) -> tuple[torch.Tensor, np.ndarray]:
+        return self._preprocess_pil_with_source_x(image, apply_baseline=True)
+
+    def preprocess_pil_after_baseline_with_source_x(
+        self,
+        image: Image.Image,
+    ) -> tuple[torch.Tensor, np.ndarray]:
+        return self._preprocess_pil_with_source_x(image, apply_baseline=False)
+
+    def _preprocess_pil_with_source_x(
+        self,
+        image: Image.Image,
+        apply_baseline: bool,
+    ) -> tuple[torch.Tensor, np.ndarray]:
         """
         Preprocess an image and retain the source-image X represented by every
         final network-input pixel. This is used for exact geometric evaluation.
@@ -228,7 +280,7 @@ class TextRecognizer:
             (image.height, image.width),
         ).copy()
 
-        if self.baseline_crop:
+        if apply_baseline and self.baseline_crop:
             image, source_x = self._apply_baseline_crop_with_source_x(image, source_x)
 
         before_x_pad_width = image.width
@@ -265,9 +317,11 @@ class TextRecognizer:
         self,
         image: Image.Image,
         collect_debug: bool,
+        apply_baseline: bool = True,
     ) -> tuple[torch.Tensor, PreprocessDebug]:
+        baseline_enabled = bool(apply_baseline and self.baseline_crop)
         debug_metadata: dict[str, Any] = {
-            "baseline_crop": self.baseline_crop,
+            "baseline_crop": baseline_enabled,
             "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_line_pad": self.baseline_line_pad,
             "baseline_line_pad_px": self.baseline_line_pad_px,
@@ -285,7 +339,7 @@ class TextRecognizer:
             image,
         )
 
-        if self.baseline_crop:
+        if baseline_enabled:
             image, baseline_debug = self._apply_baseline_crop(image, collect_debug=collect_debug)
             debug_metadata.update(baseline_debug.metadata)
             debug_images.extend(baseline_debug.images)
@@ -2069,13 +2123,62 @@ class TextRecognizer:
     def _segmentation_cut_positions(segmentation_result: VerticalSegmentationResult) -> list[int]:
         return [int(position) for position in segmentation_result.cut_positions or []]
 
-    def _map_input_boundary_to_ocr(self, boundary: int, input_width: int, ocr_width: int) -> int:
+    def _map_input_boundary_to_ocr(self, boundary: float, input_width: int, ocr_width: int) -> int:
         if input_width <= 0 or ocr_width <= 0:
             return 0
         left = min(max(0, self.legacy_crop_left), max(0, input_width - 1))
         right = max(left + 1, input_width - max(0, self.legacy_crop_right))
         mapped = int(round((float(boundary) - float(left)) * float(ocr_width) / float(right - left)))
         return max(0, min(ocr_width, mapped))
+
+    @staticmethod
+    def _source_x_profile(source_x: np.ndarray) -> np.ndarray:
+        if source_x.ndim != 2 or source_x.shape[1] == 0:
+            raise ValueError("source_x map must have shape (H, W) with W > 0")
+        profile = np.full(source_x.shape[1], np.nan, dtype=np.float64)
+        for column in range(source_x.shape[1]):
+            values = source_x[:, column]
+            valid = values[values >= 0.0]
+            if valid.size:
+                profile[column] = float(np.median(valid))
+        return profile
+
+    @classmethod
+    def _source_x_for_timestep(
+        cls,
+        position: int,
+        output_width: int,
+        source_x: np.ndarray,
+    ) -> float | None:
+        if output_width <= 0:
+            return None
+        profile = cls._source_x_profile(source_x)
+        input_position = (float(position) + 0.5) * float(profile.size) / float(output_width) - 0.5
+        column = max(0, min(profile.size - 1, int(round(input_position))))
+        value = profile[column]
+        return float(value) if np.isfinite(value) else None
+
+    @classmethod
+    def _input_x_for_source_x(
+        cls,
+        source_position: float,
+        source_x: np.ndarray,
+        edge: str | None = None,
+    ) -> float | None:
+        profile = cls._source_x_profile(source_x)
+        valid_indices = np.flatnonzero(np.isfinite(profile))
+        if valid_indices.size == 0:
+            return None
+        distances = np.abs(profile[valid_indices] - float(source_position))
+        best_distance = float(distances.min())
+        best = valid_indices[np.isclose(distances, best_distance, rtol=0.0, atol=1e-6)]
+        if edge == "left":
+            column = int(best.min())
+        elif edge == "right":
+            column = int(best.max())
+        else:
+            column = int(round(float(np.mean(best))))
+        return float(column) + 0.5
 
     @staticmethod
     def _central_decode_span(
@@ -2111,6 +2214,8 @@ class TextRecognizer:
         top_k: int = 8,
         center_fraction: float = 0.6,
         min_score_width: int = 1,
+        ocr_source_x: np.ndarray | None = None,
+        segmentator_source_x: np.ndarray | None = None,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -2145,8 +2250,30 @@ class TextRecognizer:
         })
         # Cut lines are explicit cell boundaries: only consecutive pairs are decoded.
         boundaries = []
-        for position in raw_cuts:
-            if segmentator_width > 0:
+        use_coordinate_maps = ocr_source_x is not None and segmentator_source_x is not None
+        for cut_index, position in enumerate(raw_cuts):
+            input_position: float
+            if use_coordinate_maps:
+                source_position = self._source_x_for_timestep(
+                    position,
+                    segmentator_width,
+                    segmentator_source_x,
+                )
+                edge = "left" if cut_index == 0 else "right" if cut_index == len(raw_cuts) - 1 else None
+                mapped_input = (
+                    self._input_x_for_source_x(source_position, ocr_source_x, edge=edge)
+                    if source_position is not None
+                    else None
+                )
+                if mapped_input is not None:
+                    input_position = mapped_input
+                else:
+                    input_position = (
+                        (float(position) + 0.5) * float(input_width) / float(segmentator_width)
+                        if segmentator_width > 0
+                        else 0.0
+                    )
+            elif segmentator_width > 0:
                 input_position = int(round((float(position) + 0.5) * float(input_width) / float(segmentator_width)))
             else:
                 input_position = 0
@@ -2165,8 +2292,32 @@ class TextRecognizer:
                     min_width=min_score_width,
                 )
             else:
-                source_center = (float(source_start) + float(source_end) + 1.0) * 0.5
-                input_center = int(round(source_center * float(input_width) / max(1.0, float(segmentator_width))))
+                input_center: float
+                if use_coordinate_maps:
+                    left_source = self._source_x_for_timestep(
+                        source_start,
+                        segmentator_width,
+                        segmentator_source_x,
+                    )
+                    right_source = self._source_x_for_timestep(
+                        source_end,
+                        segmentator_width,
+                        segmentator_source_x,
+                    )
+                    mapped_center = None
+                    if left_source is not None and right_source is not None:
+                        mapped_center = self._input_x_for_source_x(
+                            (left_source + right_source) * 0.5,
+                            ocr_source_x,
+                        )
+                    if mapped_center is not None:
+                        input_center = mapped_center
+                    else:
+                        source_center = (float(source_start) + float(source_end) + 1.0) * 0.5
+                        input_center = source_center * float(input_width) / max(1.0, float(segmentator_width))
+                else:
+                    source_center = (float(source_start) + float(source_end) + 1.0) * 0.5
+                    input_center = source_center * float(input_width) / max(1.0, float(segmentator_width))
                 score_start = self._map_input_boundary_to_ocr(input_center, input_width, ocr_width)
                 score_start = max(0, min(ocr_width - 1, score_start))
                 score_end = score_start + 1

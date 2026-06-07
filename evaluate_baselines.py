@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from fcn_ocr import BaselineDetector
+from fcn_ocr import BaselineDetector, InferenceConfig
 from tool.evaluation import interpolate_polyline, polyline_x_bounds
 from tool.markup import annotated_items, load_document, safe_image_path
 
@@ -289,22 +289,34 @@ def optimize(
 
 
 def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], image_path: Path | None) -> None:
+    config = InferenceConfig.model_validate(
+        {
+            "device": args.device,
+            "baseline": {
+                "enabled": True,
+                "detector_checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
+                "detector_threshold": metrics["threshold"],
+            },
+            "ocr": {
+                "checkpoint": args.inference_ocr_checkpoint or "<OCR_CHECKPOINT>",
+            },
+            "decode": {"enabled": False},
+        }
+    )
+    config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
+    config.save(config_path)
     command = [
         "python",
         "inference.py",
-        "--checkpoint",
-        args.inference_ocr_checkpoint or "<OCR_CHECKPOINT>",
+        "--config",
+        str(config_path),
         "--image",
         str(image_path) if image_path is not None else "<IMAGE_PATH>",
-        "--baseline-crop",
-        "--baseline-detector-checkpoint",
-        str(args.checkpoint),
-        "--baseline-detector-threshold",
-        str(metrics["threshold"]),
     ]
-    if args.device:
-        command.extend(["--device", str(args.device)])
+    print(f"Inference config saved to:  {config_path}")
     print("\n=== Inference command ===")
+    if args.inference_ocr_checkpoint is None:
+        print(f"Set ocr.checkpoint in {config_path} before running:")
     print(shlex.join(command))
 
 

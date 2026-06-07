@@ -695,75 +695,76 @@ resume: true
 
 ```bash
 python inference.py \
-  --checkpoint checkpoints/best_model.pth \
+  --config configs/inference/eng_101.yaml \
+  --generation-config synth_generators/line_generator/configs/eng_101.yaml \
   --sample-index 0 \
-  --config synth_generators/line_generator/configs/eng_001.yaml
+  --save-sample output/synthetic.png
 ```
 
-Сохранить читаемую debug-картинку с исходным изображением, изображением после
-inference-preprocessing, итоговым ответом, строками decoded-символов в порядке
-ответа и top-k парами `символ confidence`:
+Обычный запуск и debug-картинка:
 
 ```bash
 python inference.py \
-  --checkpoint checkpoints/best_model.pth \
-  --segmentator-checkpoint checkpoints/cut_segmentator/best_model.pth \
+  --config configs/inference/eng_101.yaml \
   --image path/to/line.png \
-  --decode-with-segmentator \
-  --scale-x 0.0 \
-  --y-pad 0.0 \
-  --x-pad 0.0 \
-  --baseline-crop \
-  --baseline-detector-checkpoint checkpoints/baseline_detector/best_model.pth \
-  --debug-image output/inference_debug.png \
-  --debug-top-k 8
-```
-
-`--segmentator-checkpoint` опционален. Если он передан вместе с
-`--debug-image`, в debug-картинку дополнительно попадет дорожка вертикального
-сегментатора: cut-точки рисуются как четкие вертикальные красные линии поверх
-входа сегментатора. В текущей разметке пробел считается таким же символом,
-поэтому разрезы ставятся по границам между соседними символами, включая
-границы вокруг пробела.
-
-Для legacy OCR можно дополнительно включить декодирование через вертикальный
-сегментатор: `--decode-with-segmentator`. Тогда обычный ответ OCR останется в
-логе и debug-отчете как `result`, а рядом появится `legacy+cuts`: каждый символ
-берется как top-класс по средним вероятностям OCR внутри интервала между
-соседними cut-точками. Первая cut-линия всегда считается левой границей
-текста, последняя — правой. Области до первой и после последней линии не
-участвуют в OCR, а каждая пара соседних линий дает ровно одну ячейку и один
-символ: `|A|B|C|`.
-
-Порог и постобработку сегментатора можно хранить в train-конфиге/checkpoint и
-при необходимости переопределить на инференсе:
-
-```bash
-python inference.py \
-  --checkpoint checkpoints/best_model.pth \
-  --segmentator-checkpoint checkpoints/cut_segmentator/best_model.pth \
-  --image path/to/line.png \
-  --segmentator-cut-threshold 0.6 \
-  --segmentator-peak-min-distance 2 \
-  --segmentator-cut-min-width 2 \
   --debug-image output/inference_debug.png
 ```
+
+Все checkpoint-ы и параметры preprocessing находятся в inference-конфиге.
+Пример: `configs/inference/eng_101.yaml`.
+
+```yaml
+device: cuda
+
+baseline:
+  enabled: true
+  detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
+  detector_threshold: 0.35
+  deskew: true
+  max_angle: 12.0
+  strict_lines: true
+  line_pad: 0.08
+  line_pad_px: 0.0
+
+ocr:
+  checkpoint: ../../checkpoints/eng_101/best_model.pth
+  preprocessing:
+    scale_x: 0.0
+    y_pad: 0.4
+    x_pad: 0.03
+
+segmentator:
+  checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
+  preprocessing:
+    scale_x: 0.0
+    y_pad: 0.0
+    x_pad: 0.03
+  cut_threshold: null
+  peak_min_distance: null
+  cut_postprocess: null
+  cut_min_width: null
+  cut_max_width: null
+  cut_candidate_threshold: null
+  cut_smooth_radius: null
+
+decode:
+  enabled: true
+  top_k: 8
+  center_fraction: 0.6
+  min_score_width: 1
+```
+
+`null` у параметра сегментатора означает: использовать значение из его
+training-конфига, сохраненного в checkpoint.
 
 Python API для использования из других скриптов:
 
 ```python
-from fcn_ocr import TextRecognizer
+from fcn_ocr import OCRPipeline
 
-recognizer = TextRecognizer(
-    "checkpoints/best_model.pth",
-    device="cuda",
-    scale_x=0.0,
-    y_pad=0.0,
-    x_pad=0.0,
-    baseline_crop=True,
-)
-
-for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
+pipeline = OCRPipeline("configs/inference/eng_101.yaml")
+for path in ["line_1.png", "line_2.png"]:
+    result = pipeline.recognize_path(path)
     print(path, result.text)
 ```
 
@@ -777,31 +778,29 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
    загружает `model_state_dict` и переводится в `eval`.
 2. Входная картинка приводится к `RGB` или `L` в зависимости от `channels`.
    В `--debug-image` этот шаг подписан как `preprocess 00 input converted`.
-3. Если включен `--baseline-crop`, запускается детектор нижней и верхней
-   текстовых линий. Если передан `--baseline-detector-checkpoint`, линии
-   берутся из нейронного `baseline_heatmap`-детектора; иначе используется
-   эвристика по текстовым маскам. Нижняя линия используется для deskew, после
-   поворота линии ищутся повторно, а вертикальный crop строится строго по паре
-   верх/низ без bbox-fallback.
-4. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
+3. Если `baseline.enabled: true`, один раз запускается общий поиск верхней и
+   нижней текстовых линий. После deskew линии могут уточняться на повернутой
+   картинке, затем строится единый baseline crop для обеих моделей.
+4. Полученный общий crop независимо обрабатывается профилями
+   `ocr.preprocessing` и `segmentator.preprocessing`.
+5. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
    справа долю текущей ширины, но не отражает символы: поля заполняются
    медианным фоном боковой полосы исходной геометрии. В debug это
    `preprocess 02 x-pad border median`.
-5. `y_pad` добавляет или обрезает высоту. Положительное значение добавляет
+6. `y_pad` добавляет или обрезает высоту. Положительное значение добавляет
    поля сверху/снизу, заполненные медианным цветом рамки текущей картинки;
    отрицательное значение симметрично режет высоту.
-6. Картинка приводится к высоте `image_height` из checkpoint с сохранением
+7. Каждая картинка приводится к `image_height` соответствующего checkpoint с сохранением
    пропорций по ширине.
-7. `scale_x` применяется последним из геометрических inference-параметров:
+8. `scale_x` применяется последним из геометрических inference-параметров:
    `0.2` растягивает ширину на 20%, `-0.2` сжимает на 20%.
-8. Получившаяся картинка нормализуется в tensor `[0, 1]` формата
-   `1 x C x H x W` и подается в FCN. Сеть возвращает logits `B x C x T`.
-9. Обычный OCR decode берет `argmax` по классам на каждом timestep, схлопывает
+9. Получившиеся картинки нормализуются и отдельно подаются в OCR и сегментатор.
+10. Cut-координаты сегментатора переводятся через карты исходных X-координат
+    в систему OCR. Поэтому разные `x_pad` и `scale_x` не смещают ячейки.
+11. OCR FCN возвращает logits `B x C x T`.
+12. Обычный OCR decode берет `argmax` по классам на каждом timestep, схлопывает
    подряд идущие одинаковые классы и переводит индексы в символы alphabet.
-10. Если передан `--segmentator-checkpoint`, отдельно запускается вертикальный
-    сегментатор на той же исходной картинке и с теми же inference-параметрами.
-    Его результат рисуется отдельной дорожкой в debug-отчете.
-11. Если включен `--decode-with-segmentator`, OCR logits декодируются через
+13. Если `decode.enabled: true`, OCR logits декодируются через
     интервалы между cut-точками сегментатора: для каждого интервала берется средняя
     вероятность OCR-классов, а top-класс становится символом. Первая и последняя
     cut-линии являются границами текста; внешние области не декодируются.
@@ -811,7 +810,7 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 - `scale_x`: нормированное растяжение/сжатие ширины после resize по высоте.
 - `y_pad`: нормированный вертикальный padding/crop до resize по высоте.
 - `x_pad`: нормированный горизонтальный padding до `y_pad`/resize/`scale_x`.
-- `baseline_crop`: включает поиск нижней и верхней текстовых линий, deskew и
+- `baseline.enabled`: включает общий поиск нижней и верхней текстовых линий, deskew и
   вертикальный crop.
 
 ### Inference Parameter Reference
@@ -820,25 +819,28 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 
 | Параметр | Что делает |
 | --- | --- |
-| `--scale-x` | Растягивает или сжимает ширину после resize по высоте. `0.2` значит шире на 20%, `-0.2` значит уже на 20%. |
-| `--y-pad` | Добавляет или обрезает высоту до resize по высоте. `0.2` добавляет поля сверху/снизу, `-0.2` симметрично режет высоту. |
-| `--x-pad` | Добавляет горизонтальные поля до `y_pad`, resize и `scale_x`. Поля заполняются медианным фоном боковой полосы, символы не отражаются. |
+| `ocr.preprocessing.scale_x` | Горизонтальный scale только для OCR. |
+| `ocr.preprocessing.y_pad` | Вертикальный padding/crop только для OCR. |
+| `ocr.preprocessing.x_pad` | Горизонтальный padding только для OCR. |
+| `segmentator.preprocessing.scale_x` | Горизонтальный scale только для сегментатора. |
+| `segmentator.preprocessing.y_pad` | Вертикальный padding/crop только для сегментатора. |
+| `segmentator.preprocessing.x_pad` | Горизонтальный padding только для сегментатора. |
 | `--show-raw` | Печатает raw timestep-классы обычного OCR decode. Полезно, чтобы увидеть, где сеть держит один класс несколько timestep-ов подряд. |
 | `--debug-image` | Сохраняет подробную картинку с исходным изображением, preprocessing-шагами, входом сети, результатом OCR, top-k кандидатами и сегментатором. |
-| `--debug-top-k` | Сколько top-кандидатов по confidence выводить для каждого decoded-символа или cut-интервала. |
+| `debug.top_k` | Сколько top-кандидатов по confidence выводить для каждого decoded-символа. |
 
 #### Baseline Crop
 
 | Параметр | Что делает |
 | --- | --- |
-| `--baseline-crop` | Включает поиск нижней и верхней текстовых линий, optional deskew и вертикальный crop вокруг строки. |
-| `--no-baseline-strict-lines` | Разрешает мягкий crop через bbox/fallback, если строгую пару линий построить нельзя. |
-| `--baseline-line-pad` | Симметричный запас crop сверху и снизу как доля высоты строки. `0.08` оставляет примерно 8% высоты с каждой стороны, `0` отключает относительный запас. Используется и в строгом, и в мягком режиме. |
-| `--baseline-line-pad-px` | Абсолютный запас в пикселях исходной картинки, добавляется к `--baseline-line-pad`. Полезно, если линии найдены слишком близко к буквам. |
-| `--baseline-detector-checkpoint` | Optional checkpoint нейронного top/bottom baseline-детектора. Если задан, `--baseline-crop` использует его вместо эвристики по маскам. |
-| `--baseline-detector-threshold` | Порог sigmoid heatmap для колонок верхней/нижней линии нейронного baseline-детектора. |
-| `--no-baseline-deskew` | Отключает поворот по найденной baseline, но оставляет сам crop включенным. |
-| `--baseline-max-angle` | Максимальный допустимый угол baseline. В строгом режиме слишком большой угол отключает baseline crop; в мягком режиме используется fallback. |
+| `baseline.enabled` | Включает общий поиск линий, deskew и crop до раздельного preprocessing. |
+| `baseline.strict_lines` | Требует надежную пару верхней/нижней линий; `false` разрешает bbox/fallback. |
+| `baseline.line_pad` | Симметричный запас crop как доля высоты строки. |
+| `baseline.line_pad_px` | Дополнительный абсолютный запас в исходных пикселях. |
+| `baseline.detector_checkpoint` | Checkpoint нейронного top/bottom baseline-детектора; `null` включает эвристику. |
+| `baseline.detector_threshold` | Порог sigmoid heatmap нейронного baseline-детектора. |
+| `baseline.deskew` | Включает или отключает поворот по найденным линиям. |
+| `baseline.max_angle` | Максимальный допустимый угол baseline. |
 
 #### Cut Projection Segmentator
 
@@ -847,35 +849,33 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 
 | Параметр | Что делает |
 | --- | --- |
-| `--segmentator-checkpoint` | Checkpoint вертикального сегментатора. Без него сегментатор не запускается. |
-| `--segmentator-decode-center-fraction` | Для `--decode-with-segmentator`: доля центральных OCR timestep-ов внутри каждого cut-интервала, по которым выбирается класс. `1.0` возвращает старое среднее по всему интервалу. |
-| `--segmentator-decode-min-score-width` | Минимальное число OCR timestep-ов, которое оставляется для выбора класса внутри cut-интервала. |
-| `--segmentator-cut-threshold` | Порог для основных cut peak-ов. Если score выше порога, peak становится cut-точкой. |
-| `--segmentator-peak-min-distance` | Минимальная дистанция между raw peak-ами при первичном выборе пиков. |
-| `--segmentator-cut-postprocess` | Постобработка cut-пиков: `peaks` оставляет найденные пики, `widths` дополнительно контролирует ширины интервалов. |
-| `--segmentator-cut-min-width` | Минимальная ширина символного интервала между соседними cut-точками после postprocess. Если cut-линии слишком близко, более слабая удаляется. |
-| `--segmentator-cut-max-width` | Максимальная допустимая ширина интервала. Если интервал шире, postprocess пытается вставить недостающий cut из кандидатов. `0` отключает вставку. |
-| `--segmentator-cut-candidate-threshold` | Нижний порог candidate peak-ов, из которых можно вставлять недостающие cut-точки при `widths`. |
-| `--segmentator-cut-smooth-radius` | Радиус треугольного сглаживания cut-score перед поиском peak-ов. |
+| `segmentator.checkpoint` | Checkpoint вертикального сегментатора. |
+| `segmentator.cut_threshold` | Порог основных cut peak-ов. |
+| `segmentator.peak_min_distance` | Минимальная дистанция между raw peak-ами. |
+| `segmentator.cut_postprocess` | `peaks` оставляет пики, `widths` контролирует ширины интервалов. |
+| `segmentator.cut_min_width` | Минимальная ширина интервала между cut-точками. |
+| `segmentator.cut_max_width` | Максимальная ширина; широкий внутренний интервал может получить дополнительный cut. |
+| `segmentator.cut_candidate_threshold` | Нижний порог кандидатов для вставки недостающего cut. |
+| `segmentator.cut_smooth_radius` | Радиус сглаживания cut-score перед поиском peak-ов. |
 
-Важно: `--segmentator-peak-min-distance` и `--segmentator-cut-min-width`
+Важно: `segmentator.peak_min_distance` и `segmentator.cut_min_width`
 похожи, но отвечают за разные места пайплайна. Первый ограничивает
 дистанцию между raw peak-ами при выборе пиков. Второй ограничивает ширину
 готовых символных интервалов после postprocess `widths`. Если
-`--segmentator-cut-min-width` не передан явно, используется значение
+`segmentator.cut_min_width: null`, используется значение
 `segmentator_cut_min_width` из checkpoint-конфига, а если его нет —
 `segmentator_peak_min_distance`.
 
 #### Legacy OCR + Segmentator Decode
 
-Эти параметры используются только если включен `--decode-with-segmentator`.
+Эти параметры используются только если `decode.enabled: true`.
 
 | Параметр | Что делает |
 | --- | --- |
-| `--decode-with-segmentator` | Декодирует OCR по интервалам между cut-точками сегментатора. Первая/последняя линии задают границы текста, каждый внутренний интервал дает ровно один символ. |
-| `--segmentator-decode-top-k` | Сколько OCR class-кандидатов показывать для каждого интервала `legacy+cuts`. |
-| `--segmentator-decode-center-fraction` | Центральная доля каждой ячейки, по которой усредняются OCR-вероятности. |
-| `--segmentator-decode-min-score-width` | Минимальное число OCR timestep-ов в центральной области оценки. |
+| `decode.enabled` | Включает декодирование OCR по cut-ячейкам. |
+| `decode.top_k` | Сколько OCR class-кандидатов хранить для каждой ячейки. |
+| `decode.center_fraction` | Центральная доля ячейки для усреднения OCR-вероятностей. |
+| `decode.min_score_width` | Минимальное число OCR timestep-ов в области оценки. |
 
 ### Baseline Detector
 
@@ -957,6 +957,11 @@ python evaluate_ocr.py \
   --baseline-crop \
   --optuna-trials-out output/optuna_trials.tsv
 ```
+
+После evaluation рядом с CSV сохраняется готовый inference-конфиг, например
+`output/ocr_metrics.inference.yaml`, и в терминал выводится короткая команда
+запуска с ним. `evaluate_segmentator.py` и `evaluate_baselines.py` делают так
+же.
 
 Если Optuna не установлена:
 

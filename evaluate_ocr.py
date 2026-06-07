@@ -11,7 +11,7 @@ from typing import Any
 
 from PIL import Image
 
-from fcn_ocr import TextRecognizer, VerticalSegmentator
+from fcn_ocr import InferenceConfig, TextRecognizer, VerticalSegmentator
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -118,9 +118,14 @@ def recognize_images_with_segmentator(
             with Image.open(path) as image_file:
                 source_image = image_file.convert("RGB")
 
-            input_tensor = recognizer.preprocess_pil(source_image)
+            baseline_image, _ = recognizer.prepare_baseline_image(source_image)
+            input_tensor, ocr_source_x = recognizer.preprocess_pil_after_baseline_with_source_x(
+                baseline_image
+            )
             ocr_logits, _ = recognizer.logits_from_tensor(input_tensor)
-            segmentator_input_tensor = segmentator.preprocess_pil(source_image)
+            segmentator_input_tensor, segmentator_source_x = (
+                segmentator.preprocess_pil_after_baseline_with_source_x(baseline_image)
+            )
             segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
 
             cut_decoding_result = recognizer.decode_legacy_with_cuts(
@@ -130,6 +135,8 @@ def recognize_images_with_segmentator(
                 top_k=segmentator_decode_top_k,
                 center_fraction=segmentator_decode_center_fraction,
                 min_score_width=segmentator_decode_min_score_width,
+                ocr_source_x=ocr_source_x,
+                segmentator_source_x=segmentator_source_x,
             )
             predictions[row_index] = cut_decoding_result.text.strip()
             errors[row_index] = ""
@@ -350,14 +357,8 @@ def evaluate_prepared(
             scale_x=scale_x,
             y_pad=y_pad,
             x_pad=x_pad,
-            baseline_crop=baseline_crop,
-            baseline_deskew=baseline_deskew,
-            baseline_max_angle=baseline_max_angle,
-            baseline_strict_lines=baseline_strict_lines,
-            baseline_line_pad=baseline_line_pad,
-            baseline_line_pad_px=baseline_line_pad_px,
-            baseline_detector_checkpoint=baseline_detector_checkpoint,
-            baseline_detector_threshold=baseline_detector_threshold,
+            baseline_crop=False,
+            baseline_detector_checkpoint=None,
             cut_threshold=segmentator_cut_threshold,
             peak_min_distance=segmentator_peak_min_distance,
             cut_postprocess=segmentator_cut_postprocess,
@@ -1056,79 +1057,72 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) -> None:
     _, jobs = build_rows_and_jobs(Path(args.json), Path(args.images), args.limit)
     image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
+    has_segmentator = bool(metrics.get("segmentator_checkpoint"))
+    inference_config = InferenceConfig.model_validate(
+        {
+            "device": args.device,
+            "baseline": {
+                "enabled": metrics["baseline_crop"],
+                "detector_checkpoint": (
+                    str(Path(metrics["baseline_detector_checkpoint"]).expanduser().resolve())
+                    if metrics.get("baseline_detector_checkpoint")
+                    else None
+                ),
+                "detector_threshold": metrics["baseline_detector_threshold"],
+                "deskew": not args.no_baseline_deskew,
+                "max_angle": args.baseline_max_angle,
+                "strict_lines": not args.no_baseline_strict_lines,
+                "line_pad": metrics["baseline_line_pad"],
+                "line_pad_px": metrics["baseline_line_pad_px"],
+            },
+            "ocr": {
+                "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
+                "preprocessing": {
+                    "scale_x": metrics["scale_x"],
+                    "y_pad": metrics["y_pad"],
+                    "x_pad": metrics["x_pad"],
+                },
+            },
+            "segmentator": {
+                "checkpoint": (
+                    str(Path(metrics["segmentator_checkpoint"]).expanduser().resolve())
+                    if metrics.get("segmentator_checkpoint")
+                    else None
+                ),
+                "preprocessing": {
+                    "scale_x": metrics["scale_x"],
+                    "y_pad": metrics["y_pad"],
+                    "x_pad": metrics["x_pad"],
+                },
+                "cut_threshold": metrics["segmentator_cut_threshold"] if has_segmentator else None,
+                "peak_min_distance": metrics["segmentator_peak_min_distance"] if has_segmentator else None,
+                "cut_postprocess": metrics["segmentator_cut_postprocess"] if has_segmentator else None,
+                "cut_min_width": metrics["segmentator_cut_min_width"] if has_segmentator else None,
+                "cut_max_width": metrics["segmentator_cut_max_width"] if has_segmentator else None,
+                "cut_candidate_threshold": (
+                    metrics["segmentator_cut_candidate_threshold"] if has_segmentator else None
+                ),
+                "cut_smooth_radius": metrics["segmentator_cut_smooth_radius"] if has_segmentator else None,
+            },
+            "decode": {
+                "enabled": bool(metrics["decode_with_segmentator"]),
+                "top_k": metrics["segmentator_decode_top_k"],
+                "center_fraction": metrics["segmentator_decode_center_fraction"],
+                "min_score_width": metrics["segmentator_decode_min_score_width"],
+            },
+        }
+    )
+    config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
+    inference_config.save(config_path)
     command = [
         "python",
         "inference.py",
-        "--checkpoint",
-        str(args.checkpoint),
+        "--config",
+        str(config_path),
         "--image",
         image_path,
-        "--scale-x",
-        str(metrics["scale_x"]),
-        "--y-pad",
-        str(metrics["y_pad"]),
-        "--x-pad",
-        str(metrics["x_pad"]),
     ]
-    if args.device:
-        command.extend(["--device", str(args.device)])
-
-    if metrics["baseline_crop"]:
-        command.append("--baseline-crop")
-        command.extend(
-            [
-                "--baseline-line-pad",
-                str(metrics["baseline_line_pad"]),
-                "--baseline-line-pad-px",
-                str(metrics["baseline_line_pad_px"]),
-                "--baseline-max-angle",
-                str(args.baseline_max_angle),
-                "--baseline-detector-threshold",
-                str(metrics["baseline_detector_threshold"]),
-            ]
-        )
-        if args.no_baseline_deskew:
-            command.append("--no-baseline-deskew")
-        if args.no_baseline_strict_lines:
-            command.append("--no-baseline-strict-lines")
-        if metrics.get("baseline_detector_checkpoint"):
-            command.extend(
-                [
-                    "--baseline-detector-checkpoint",
-                    str(metrics["baseline_detector_checkpoint"]),
-                ]
-            )
-
-    if metrics.get("segmentator_checkpoint"):
-        command.extend(
-            [
-                "--segmentator-checkpoint",
-                str(metrics["segmentator_checkpoint"]),
-                "--segmentator-cut-threshold",
-                str(metrics["segmentator_cut_threshold"]),
-                "--segmentator-peak-min-distance",
-                str(metrics["segmentator_peak_min_distance"]),
-                "--segmentator-cut-postprocess",
-                str(metrics["segmentator_cut_postprocess"]),
-                "--segmentator-cut-min-width",
-                str(metrics["segmentator_cut_min_width"]),
-                "--segmentator-cut-max-width",
-                str(metrics["segmentator_cut_max_width"]),
-                "--segmentator-cut-candidate-threshold",
-                str(metrics["segmentator_cut_candidate_threshold"]),
-                "--segmentator-cut-smooth-radius",
-                str(metrics["segmentator_cut_smooth_radius"]),
-                "--segmentator-decode-top-k",
-                str(metrics["segmentator_decode_top_k"]),
-                "--segmentator-decode-center-fraction",
-                str(metrics["segmentator_decode_center_fraction"]),
-                "--segmentator-decode-min-score-width",
-                str(metrics["segmentator_decode_min_score_width"]),
-            ]
-        )
-        if metrics["decode_with_segmentator"]:
-            command.append("--decode-with-segmentator")
-
+    print(f"Inference config saved to:  {config_path}")
     print("\n=== Inference command ===")
     print(shlex.join(command))
 

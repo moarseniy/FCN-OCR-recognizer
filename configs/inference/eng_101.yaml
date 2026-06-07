@@ -1,0 +1,42 @@
+# Paths are resolved relative to this file.
+device: cuda
+
+baseline:
+  enabled: true
+  detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
+  detector_threshold: 0.35
+  deskew: true
+  max_angle: 12.0
+  strict_lines: true
+  line_pad: 0.08
+  line_pad_px: 0.0
+
+ocr:
+  checkpoint: ../../checkpoints/eng_101/best_model.pth
+  preprocessing:
+    scale_x: 0.0
+    y_pad: 0.4
+    x_pad: 0.03
+
+segmentator:
+  checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
+  preprocessing:
+    scale_x: 0.0
+    y_pad: 0.0
+    x_pad: 0.03
+  cut_threshold: null
+  peak_min_distance: null
+  cut_postprocess: null
+  cut_min_width: null
+  cut_max_width: null
+  cut_candidate_threshold: null
+  cut_smooth_radius: null
+
+decode:
+  enabled: true
+  top_k: 8
+  center_fraction: 0.6
+  min_score_width: 1
+
+debug:
+  top_k: 8
