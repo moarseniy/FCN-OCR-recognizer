@@ -317,8 +317,6 @@ def evaluate_prepared(
     log_every: int,
     verbose: bool,
     baseline_crop: bool = False,
-    baseline_top_pad: float = 0.12,
-    baseline_bottom_pad: float = 0.18,
     baseline_deskew: bool = True,
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
@@ -360,8 +358,6 @@ def evaluate_prepared(
         y_pad=y_pad,
         x_pad=x_pad,
         baseline_crop=baseline_crop,
-        baseline_top_pad=baseline_top_pad,
-        baseline_bottom_pad=baseline_bottom_pad,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
@@ -381,8 +377,6 @@ def evaluate_prepared(
             y_pad=y_pad,
             x_pad=x_pad,
             baseline_crop=baseline_crop,
-            baseline_top_pad=baseline_top_pad,
-            baseline_bottom_pad=baseline_bottom_pad,
             baseline_deskew=baseline_deskew,
             baseline_max_angle=baseline_max_angle,
             baseline_strict_lines=baseline_strict_lines,
@@ -576,8 +570,6 @@ def optimize_preprocess(
     optuna_tune_baseline_line_pad: bool = False,
     optuna_tune_baseline_line_pad_px: bool = False,
     baseline_crop: bool = False,
-    baseline_top_pad: float = 0.12,
-    baseline_bottom_pad: float = 0.18,
     baseline_deskew: bool = True,
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
@@ -651,14 +643,13 @@ def optimize_preprocess(
     )
 
     def objective(trial) -> float:
-        tune_active_baseline_line_pad = bool(baseline_crop) and bool(baseline_strict_lines) and (
+        tune_active_baseline_line_pad = bool(baseline_crop) and (
             bool(optuna_tune_baseline_line_pad)
             or baseline_line_pad_min is not None
             or baseline_line_pad_max is not None
         )
         tune_active_baseline_line_pad_px = (
             bool(baseline_crop)
-            and bool(baseline_strict_lines)
             and bool(optuna_tune_baseline_line_pad_px)
         )
         tune_active_baseline_detector = bool(baseline_crop) and baseline_detector_checkpoint is not None
@@ -824,8 +815,6 @@ def optimize_preprocess(
             log_every=0,
             verbose=False,
             baseline_crop=baseline_crop,
-            baseline_top_pad=baseline_top_pad,
-            baseline_bottom_pad=baseline_bottom_pad,
             baseline_deskew=baseline_deskew,
             baseline_max_angle=baseline_max_angle,
             baseline_strict_lines=baseline_strict_lines,
@@ -886,8 +875,6 @@ def optimize_preprocess(
         log_every=log_every,
         verbose=True,
         baseline_crop=baseline_crop,
-        baseline_top_pad=baseline_top_pad,
-        baseline_bottom_pad=baseline_bottom_pad,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
@@ -981,8 +968,6 @@ def evaluate(
     log_every: int,
     verbose: bool = True,
     baseline_crop: bool = False,
-    baseline_top_pad: float = 0.12,
-    baseline_bottom_pad: float = 0.18,
     baseline_deskew: bool = True,
     baseline_max_angle: float = 12.0,
     baseline_strict_lines: bool = True,
@@ -1023,8 +1008,6 @@ def evaluate(
         log_every=log_every,
         verbose=verbose,
         baseline_crop=baseline_crop,
-        baseline_top_pad=baseline_top_pad,
-        baseline_bottom_pad=baseline_bottom_pad,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
         baseline_strict_lines=baseline_strict_lines,
@@ -1065,8 +1048,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--x-pad", type=float, default=0.0, help="Normalized symmetric horizontal inference padding.")
 
     parser.add_argument("--baseline-crop", action="store_true", help="Use baseline detection/crop before y-pad and resize.")
-    parser.add_argument("--baseline-top-pad", type=float, default=0.12)
-    parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
     parser.add_argument("--no-baseline-deskew", action="store_true")
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--no-baseline-strict-lines", action="store_true")
@@ -1127,12 +1108,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--optuna-tune-baseline-line-pad",
         action="store_true",
-        help="Explicitly tune strict-lines baseline_line_pad when its min/max range is provided.",
+        help="Explicitly tune baseline_line_pad when its min/max range is provided.",
     )
     parser.add_argument(
         "--optuna-tune-baseline-line-pad-px",
         action="store_true",
-        help="Explicitly tune absolute strict-lines baseline_line_pad_px.",
+        help="Explicitly tune absolute baseline_line_pad_px.",
     )
     parser.add_argument("--optuna-baseline-detector-threshold-min", type=float, default=None)
     parser.add_argument("--optuna-baseline-detector-threshold-max", type=float, default=None)
@@ -1166,8 +1147,6 @@ def parse_args() -> argparse.Namespace:
 def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "baseline_crop": args.baseline_crop,
-        "baseline_top_pad": args.baseline_top_pad,
-        "baseline_bottom_pad": args.baseline_bottom_pad,
         "baseline_deskew": not args.no_baseline_deskew,
         "baseline_max_angle": args.baseline_max_angle,
         "baseline_strict_lines": not args.no_baseline_strict_lines,
@@ -1220,10 +1199,6 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
         command.append("--baseline-crop")
         command.extend(
             [
-                "--baseline-top-pad",
-                str(args.baseline_top_pad),
-                "--baseline-bottom-pad",
-                str(args.baseline_bottom_pad),
                 "--baseline-line-pad",
                 str(metrics["baseline_line_pad"]),
                 "--baseline-line-pad-px",

@@ -205,18 +205,6 @@ def parse_args() -> argparse.Namespace:
         help="Detect a text baseline, deskew/crop vertically by it, then apply y-pad and resize.",
     )
     parser.add_argument(
-        "--baseline-top-pad",
-        type=float,
-        default=0.12,
-        help="Extra top margin for the older bbox-assisted baseline crop. Strict line crop uses --baseline-line-pad.",
-    )
-    parser.add_argument(
-        "--baseline-bottom-pad",
-        type=float,
-        default=0.18,
-        help="Extra bottom margin for the older bbox-assisted baseline crop. Strict line crop uses --baseline-line-pad.",
-    )
-    parser.add_argument(
         "--no-baseline-deskew",
         action="store_true",
         help="Disable baseline-based deskew while keeping baseline crop enabled.",
@@ -236,13 +224,13 @@ def parse_args() -> argparse.Namespace:
         "--baseline-line-pad",
         type=float,
         default=0.08,
-        help="Extra strict top/bottom line crop margin as a fraction of detected line height. Use 0 for exact line crop.",
+        help="Symmetric top/bottom crop margin as a fraction of detected line height. Use 0 to disable it.",
     )
     parser.add_argument(
         "--baseline-line-pad-px",
         type=float,
         default=0.0,
-        help="Extra absolute strict top/bottom line crop margin in source pixels, added on top of --baseline-line-pad.",
+        help="Extra absolute symmetric crop margin in source pixels, added on top of --baseline-line-pad.",
     )
     parser.add_argument(
         "--baseline-detector-checkpoint",
@@ -285,8 +273,6 @@ def main() -> None:
         y_pad=args.y_pad,
         x_pad=args.x_pad,
         baseline_crop=args.baseline_crop,
-        baseline_top_pad=args.baseline_top_pad,
-        baseline_bottom_pad=args.baseline_bottom_pad,
         baseline_deskew=not args.no_baseline_deskew,
         baseline_max_angle=args.baseline_max_angle,
         baseline_strict_lines=not args.no_baseline_strict_lines,
@@ -309,8 +295,6 @@ def main() -> None:
             y_pad=args.y_pad,
             x_pad=args.x_pad,
             baseline_crop=args.baseline_crop,
-            baseline_top_pad=args.baseline_top_pad,
-            baseline_bottom_pad=args.baseline_bottom_pad,
             baseline_deskew=not args.no_baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_strict_lines=not args.no_baseline_strict_lines,

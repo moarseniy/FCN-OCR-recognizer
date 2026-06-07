@@ -26,8 +26,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--y-pad", type=float, default=0.0)
     parser.add_argument("--x-pad", type=float, default=0.0)
     parser.add_argument("--baseline-crop", action="store_true")
-    parser.add_argument("--baseline-top-pad", type=float, default=0.12)
-    parser.add_argument("--baseline-bottom-pad", type=float, default=0.18)
     parser.add_argument("--no-baseline-deskew", action="store_true")
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--no-baseline-strict-lines", action="store_true")
@@ -104,8 +102,6 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             study_name=cli_args.optuna_study_name,
             storage=cli_args.optuna_storage,
             baseline_crop=cli_args.baseline_crop,
-            baseline_top_pad=cli_args.baseline_top_pad,
-            baseline_bottom_pad=cli_args.baseline_bottom_pad,
             baseline_deskew=not cli_args.no_baseline_deskew,
             baseline_max_angle=cli_args.baseline_max_angle,
             baseline_strict_lines=not cli_args.no_baseline_strict_lines,
@@ -126,8 +122,6 @@ def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: i
             limit=cli_args.eval_limit,
             log_every=cli_args.eval_log_every,
             baseline_crop=cli_args.baseline_crop,
-            baseline_top_pad=cli_args.baseline_top_pad,
-            baseline_bottom_pad=cli_args.baseline_bottom_pad,
             baseline_deskew=not cli_args.no_baseline_deskew,
             baseline_max_angle=cli_args.baseline_max_angle,
             baseline_strict_lines=not cli_args.no_baseline_strict_lines,

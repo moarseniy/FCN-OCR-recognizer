@@ -49,8 +49,6 @@ class TextRecognizer:
         y_pad: float = 0.0,
         x_pad: float = 0.0,
         baseline_crop: bool = False,
-        baseline_top_pad: float = 0.12,
-        baseline_bottom_pad: float = 0.18,
         baseline_deskew: bool = True,
         baseline_max_angle: float = 12.0,
         baseline_strict_lines: bool = True,
@@ -65,10 +63,6 @@ class TextRecognizer:
             raise ValueError("y_pad must be > -0.95")
         if x_pad < 0.0:
             raise ValueError("x_pad must be >= 0")
-        if baseline_top_pad < 0.0:
-            raise ValueError("baseline_top_pad must be >= 0")
-        if baseline_bottom_pad < 0.0:
-            raise ValueError("baseline_bottom_pad must be >= 0")
         if baseline_line_pad < 0.0:
             raise ValueError("baseline_line_pad must be >= 0")
         if baseline_line_pad_px < 0.0:
@@ -85,8 +79,6 @@ class TextRecognizer:
         self.y_pad = float(y_pad)
         self.x_pad = float(x_pad)
         self.baseline_crop = bool(baseline_crop)
-        self.baseline_top_pad = float(baseline_top_pad)
-        self.baseline_bottom_pad = float(baseline_bottom_pad)
         self.baseline_deskew = bool(baseline_deskew)
         self.baseline_max_angle = float(baseline_max_angle)
         self.baseline_strict_lines = bool(baseline_strict_lines)
@@ -203,9 +195,7 @@ class TextRecognizer:
         print(f"Baseline crop:      {self.baseline_crop}")
         if self.baseline_crop:
             print(
-                f"  top_pad={self.baseline_top_pad:.3f}, "
-                f"bottom_pad={self.baseline_bottom_pad:.3f}, "
-                f"deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
+                f"  deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
                 f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}, "
                 f"line_pad_px={self.baseline_line_pad_px:.1f}"
             )
@@ -1778,10 +1768,9 @@ class TextRecognizer:
         if above_baseline < text_height * 0.35:
             above_baseline = max(4.0, text_height * 0.85)
 
-        top_margin = max(1.0, above_baseline * self.baseline_top_pad)
-        bottom_margin = max(1.0, above_baseline * self.baseline_bottom_pad)
-        top = int(math.floor(min(text_top, float(baseline_ys.min()) - above_baseline) - top_margin))
-        bottom = int(math.ceil(max(text_bottom + 1.0, float(baseline_ys.max())) + bottom_margin))
+        margin = max(0.0, above_baseline * self.baseline_line_pad + self.baseline_line_pad_px)
+        top = int(math.floor(min(text_top, float(baseline_ys.min()) - above_baseline) - margin))
+        bottom = int(math.ceil(max(text_bottom + 1.0, float(baseline_ys.max())) + margin))
         if bottom <= top:
             bottom = top + max(4, int(round(text_height)))
 
@@ -1829,10 +1818,9 @@ class TextRecognizer:
                 return None
             return (0, top, image_width, bottom), max(1, int(round(bottom - top)))
 
-        top_margin = max(1.0, text_height * self.baseline_top_pad)
-        bottom_margin = max(1.0, text_height * self.baseline_bottom_pad)
-        top = int(math.floor(min(text_top, float(top_ys.min())) - top_margin))
-        bottom = int(math.ceil(max(text_bottom + 1.0, float(bottom_ys.max()) + 1.0) + bottom_margin))
+        margin = max(0.0, text_height * self.baseline_line_pad + self.baseline_line_pad_px)
+        top = int(math.floor(min(text_top, float(top_ys.min())) - margin))
+        bottom = int(math.ceil(max(text_bottom + 1.0, float(bottom_ys.max()) + 1.0) + margin))
         if bottom <= top:
             bottom = top + max(4, int(round(text_height)))
         return (0, top, image_width, bottom), int(round(text_height))

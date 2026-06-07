@@ -832,13 +832,11 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
 | Параметр | Что делает |
 | --- | --- |
 | `--baseline-crop` | Включает поиск нижней и верхней текстовых линий, optional deskew и вертикальный crop вокруг строки. |
-| `--no-baseline-strict-lines` | Возвращает старый мягкий crop через bbox/fallback. По умолчанию crop строгий: обе линии обязательны. |
-| `--baseline-line-pad` | Запас для строгого crop сверху и снизу как доля высоты строки. `0.08` оставляет примерно 8% высоты с каждой стороны, `0` отключает относительный запас. |
+| `--no-baseline-strict-lines` | Разрешает мягкий crop через bbox/fallback, если строгую пару линий построить нельзя. |
+| `--baseline-line-pad` | Симметричный запас crop сверху и снизу как доля высоты строки. `0.08` оставляет примерно 8% высоты с каждой стороны, `0` отключает относительный запас. Используется и в строгом, и в мягком режиме. |
 | `--baseline-line-pad-px` | Абсолютный запас в пикселях исходной картинки, добавляется к `--baseline-line-pad`. Полезно, если линии найдены слишком близко к буквам. |
 | `--baseline-detector-checkpoint` | Optional checkpoint нейронного top/bottom baseline-детектора. Если задан, `--baseline-crop` использует его вместо эвристики по маскам. |
 | `--baseline-detector-threshold` | Порог sigmoid heatmap для колонок верхней/нижней линии нейронного baseline-детектора. |
-| `--baseline-top-pad` | Верхний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
-| `--baseline-bottom-pad` | Нижний запас для старого мягкого baseline crop. В строгом режиме используйте `--baseline-line-pad`. |
 | `--no-baseline-deskew` | Отключает поворот по найденной baseline, но оставляет сам crop включенным. |
 | `--baseline-max-angle` | Максимальный допустимый угол baseline. В строгом режиме слишком большой угол отключает baseline crop; в мягком режиме используется fallback. |
 
@@ -918,7 +916,7 @@ for path, result in recognizer.recognize_paths(["line_1.png", "line_2.png"]):
    foreground)`, а `baseline_line_pad_px` добавляет гарантированный пиксельный
    запас. Если после поворота пару линий найти не удалось, baseline crop не
    применяется. В мягком режиме остается прежний crop по линиям плюс bbox и
-   `baseline_top_pad`/`baseline_bottom_pad`.
+   тот же симметричный запас `baseline_line_pad` + `baseline_line_pad_px`.
 
 В `--debug-image` для baseline показываются overlay с нижней красной и верхней
 синей линиями, inlier-точки,
