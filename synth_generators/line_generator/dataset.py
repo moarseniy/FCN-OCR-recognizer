@@ -108,7 +108,7 @@ class SingleLineDatasetConfig(BaseModel):
     save_cut_projection_targets: bool = False
     save_baseline_targets: bool = False
     cut_projection_peak_radius: int = Field(default=1, ge=0)
-    cut_projection_include_margins: bool = False
+    cut_projection_include_margins: bool = True
     baseline_target_radius: int = Field(default=1, ge=0)
 
     @model_validator(mode="before")

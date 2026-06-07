@@ -122,45 +122,6 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Minimum number of OCR timesteps kept for central legacy+cuts class scoring.",
     )
-    parser.add_argument(
-        "--no-segmentator-edge-trim",
-        action="store_true",
-        help="Disable foreground-based trimming of empty edge intervals in legacy+cuts decoding.",
-    )
-    parser.add_argument(
-        "--segmentator-edge-min-ink-ratio",
-        type=float,
-        default=0.035,
-        help="Minimum foreground-column ratio for keeping leading/trailing legacy+cuts intervals.",
-    )
-    parser.add_argument(
-        "--segmentator-edge-min-pixel-density",
-        type=float,
-        default=0.003,
-        help="Minimum foreground pixel density for keeping leading/trailing legacy+cuts intervals.",
-    )
-    parser.add_argument(
-        "--segmentator-edge-min-width",
-        type=int,
-        default=2,
-        help="Merge leading/trailing legacy+cuts intervals narrower than this many OCR timesteps into their neighbor.",
-    )
-    parser.add_argument(
-        "--segmentator-boundary-cuts",
-        choices=("auto", "off", "on"),
-        default="auto",
-        help=(
-            "How legacy+cuts treats first/last segmentator cuts. "
-            "'auto' promotes symmetric edge cuts like |A|B|C| to text bounds; "
-            "'on' always uses first/last cuts as bounds; 'off' keeps the old behavior."
-        ),
-    )
-    parser.add_argument(
-        "--segmentator-boundary-cut-max-edge-ratio",
-        type=float,
-        default=0.45,
-        help="Auto boundary-cut promotion threshold relative to a typical character interval width.",
-    )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
         "--config",
@@ -393,37 +354,17 @@ def main() -> None:
             f"{len(segmentation_result.raw_indices)} timesteps"
         )
         if args.decode_with_segmentator:
-            text_bounds = recognizer.text_x_bounds_from_tensor(input_tensor)
-            if text_bounds["ok"]:
-                debug_metadata["text_x_bounds"] = (int(text_bounds["left"]), int(text_bounds["right"]))
-                debug_metadata["text_x_bounds_confidence"] = float(text_bounds["confidence"])
-                text_x_bounds = (int(text_bounds["left"]), int(text_bounds["right"]))
-            else:
-                debug_metadata["text_x_bounds_status"] = text_bounds["status"]
-                text_x_bounds = None
             cut_decoding_result = recognizer.decode_legacy_with_cuts(
                 ocr_logits,
                 segmentation_result,
                 input_width=int(input_tensor.shape[-1]),
                 top_k=args.segmentator_decode_top_k,
-                text_x_bounds=text_x_bounds,
-                input_tensor=input_tensor,
-                trim_empty_edges=not args.no_segmentator_edge_trim,
-                edge_min_ink_ratio=args.segmentator_edge_min_ink_ratio,
-                edge_min_pixel_density=args.segmentator_edge_min_pixel_density,
-                edge_min_width=args.segmentator_edge_min_width,
-                boundary_cuts=args.segmentator_boundary_cuts,
-                boundary_cut_max_edge_ratio=args.segmentator_boundary_cut_max_edge_ratio,
                 center_fraction=args.segmentator_decode_center_fraction,
                 min_score_width=args.segmentator_decode_min_score_width,
             )
             debug_metadata["legacy_cuts_text"] = cut_decoding_result.text
             debug_metadata["legacy_cuts_symbols"] = len(cut_decoding_result.symbols)
             debug_metadata["legacy_cuts_raw_cuts"] = len(cut_decoding_result.cuts)
-            debug_metadata["legacy_cuts_edge_trim"] = not args.no_segmentator_edge_trim
-            debug_metadata["legacy_cuts_edge_min_width"] = args.segmentator_edge_min_width
-            debug_metadata["legacy_cuts_boundary_cuts"] = args.segmentator_boundary_cuts
-            debug_metadata["legacy_cuts_boundary_cut_max_edge_ratio"] = args.segmentator_boundary_cut_max_edge_ratio
             debug_metadata["legacy_cuts_decode_center_fraction"] = args.segmentator_decode_center_fraction
             debug_metadata["legacy_cuts_decode_min_score_width"] = args.segmentator_decode_min_score_width
             print(f"Recognized text (legacy+cuts): '{cut_decoding_result.text}'")

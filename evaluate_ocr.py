@@ -105,12 +105,6 @@ def recognize_images_with_segmentator(
     jobs: list[tuple[int, Path]],
     log_every: int,
     segmentator_decode_top_k: int,
-    segmentator_edge_trim: bool,
-    segmentator_edge_min_ink_ratio: float,
-    segmentator_edge_min_pixel_density: float,
-    segmentator_edge_min_width: int,
-    segmentator_boundary_cuts: str,
-    segmentator_boundary_cut_max_edge_ratio: float,
     segmentator_decode_center_fraction: float,
     segmentator_decode_min_score_width: int,
 ) -> tuple[dict[int, str], dict[int, str]]:
@@ -129,25 +123,11 @@ def recognize_images_with_segmentator(
             segmentator_input_tensor = segmentator.preprocess_pil(source_image)
             segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
 
-            text_bounds_info = recognizer.text_x_bounds_from_tensor(input_tensor)
-            if text_bounds_info["ok"]:
-                text_x_bounds = (int(text_bounds_info["left"]), int(text_bounds_info["right"]))
-            else:
-                text_x_bounds = None
-
             cut_decoding_result = recognizer.decode_legacy_with_cuts(
                 ocr_logits,
                 segmentation_result,
                 input_width=int(input_tensor.shape[-1]),
                 top_k=segmentator_decode_top_k,
-                text_x_bounds=text_x_bounds,
-                input_tensor=input_tensor,
-                trim_empty_edges=segmentator_edge_trim,
-                edge_min_ink_ratio=segmentator_edge_min_ink_ratio,
-                edge_min_pixel_density=segmentator_edge_min_pixel_density,
-                edge_min_width=segmentator_edge_min_width,
-                boundary_cuts=segmentator_boundary_cuts,
-                boundary_cut_max_edge_ratio=segmentator_boundary_cut_max_edge_ratio,
                 center_fraction=segmentator_decode_center_fraction,
                 min_score_width=segmentator_decode_min_score_width,
             )
@@ -334,12 +314,6 @@ def evaluate_prepared(
     segmentator_cut_candidate_threshold: float | None = None,
     segmentator_cut_smooth_radius: int | None = None,
     segmentator_decode_top_k: int = 8,
-    segmentator_edge_trim: bool = True,
-    segmentator_edge_min_ink_ratio: float = 0.035,
-    segmentator_edge_min_pixel_density: float = 0.003,
-    segmentator_edge_min_width: int = 2,
-    segmentator_boundary_cuts: str = "auto",
-    segmentator_boundary_cut_max_edge_ratio: float = 0.45,
     segmentator_decode_center_fraction: float = 0.6,
     segmentator_decode_min_score_width: int = 1,
 ) -> dict[str, Any]:
@@ -398,12 +372,6 @@ def evaluate_prepared(
             jobs,
             log_every=log_every,
             segmentator_decode_top_k=segmentator_decode_top_k,
-            segmentator_edge_trim=segmentator_edge_trim,
-            segmentator_edge_min_ink_ratio=segmentator_edge_min_ink_ratio,
-            segmentator_edge_min_pixel_density=segmentator_edge_min_pixel_density,
-            segmentator_edge_min_width=segmentator_edge_min_width,
-            segmentator_boundary_cuts=segmentator_boundary_cuts,
-            segmentator_boundary_cut_max_edge_ratio=segmentator_boundary_cut_max_edge_ratio,
             segmentator_decode_center_fraction=segmentator_decode_center_fraction,
             segmentator_decode_min_score_width=segmentator_decode_min_score_width,
         )
@@ -430,12 +398,6 @@ def evaluate_prepared(
     metrics["decode_with_segmentator"] = bool(decode_with_segmentator)
     metrics["segmentator_checkpoint"] = str(segmentator_checkpoint) if segmentator_checkpoint else ""
     metrics["segmentator_decode_top_k"] = int(segmentator_decode_top_k)
-    metrics["segmentator_edge_trim"] = bool(segmentator_edge_trim)
-    metrics["segmentator_edge_min_ink_ratio"] = float(segmentator_edge_min_ink_ratio)
-    metrics["segmentator_edge_min_pixel_density"] = float(segmentator_edge_min_pixel_density)
-    metrics["segmentator_edge_min_width"] = int(segmentator_edge_min_width)
-    metrics["segmentator_boundary_cuts"] = str(segmentator_boundary_cuts)
-    metrics["segmentator_boundary_cut_max_edge_ratio"] = float(segmentator_boundary_cut_max_edge_ratio)
     metrics["segmentator_decode_center_fraction"] = float(segmentator_decode_center_fraction)
     metrics["segmentator_decode_min_score_width"] = int(segmentator_decode_min_score_width)
     if segmentator is not None:
@@ -479,11 +441,8 @@ def _trial_params_snapshot(metrics: dict[str, Any]) -> dict[str, Any]:
         "segmentator_cut_max_width",
         "segmentator_cut_candidate_threshold",
         "segmentator_cut_smooth_radius",
-        "segmentator_boundary_cuts",
-        "segmentator_boundary_cut_max_edge_ratio",
         "segmentator_decode_center_fraction",
         "segmentator_decode_min_score_width",
-        "segmentator_edge_min_width",
     ]
     return {name: metrics[name] for name in names if name in metrics}
 
@@ -587,12 +546,6 @@ def optimize_preprocess(
     segmentator_cut_candidate_threshold: float | None = None,
     segmentator_cut_smooth_radius: int | None = None,
     segmentator_decode_top_k: int = 8,
-    segmentator_edge_trim: bool = True,
-    segmentator_edge_min_ink_ratio: float = 0.035,
-    segmentator_edge_min_pixel_density: float = 0.003,
-    segmentator_edge_min_width: int = 2,
-    segmentator_boundary_cuts: str = "auto",
-    segmentator_boundary_cut_max_edge_ratio: float = 0.45,
     segmentator_decode_center_fraction: float = 0.6,
     segmentator_decode_min_score_width: int = 1,
     x_pad_min: float | None = None,
@@ -615,14 +568,10 @@ def optimize_preprocess(
     segmentator_cut_candidate_threshold_max: float | None = None,
     segmentator_cut_smooth_radius_min: int | None = None,
     segmentator_cut_smooth_radius_max: int | None = None,
-    segmentator_boundary_cut_max_edge_ratio_min: float | None = None,
-    segmentator_boundary_cut_max_edge_ratio_max: float | None = None,
     segmentator_decode_center_fraction_min: float | None = None,
     segmentator_decode_center_fraction_max: float | None = None,
     segmentator_decode_min_score_width_min: int | None = None,
     segmentator_decode_min_score_width_max: int | None = None,
-    segmentator_edge_min_width_min: int | None = None,
-    segmentator_edge_min_width_max: int | None = None,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -757,17 +706,6 @@ def optimize_preprocess(
             if tune_active_segmentator
             else segmentator_cut_smooth_radius
         )
-        current_segmentator_boundary_cut_max_edge_ratio = (
-            _suggest_float_or_fixed(
-                trial,
-                "segmentator_boundary_cut_max_edge_ratio",
-                segmentator_boundary_cut_max_edge_ratio,
-                segmentator_boundary_cut_max_edge_ratio_min,
-                segmentator_boundary_cut_max_edge_ratio_max,
-            )
-            if tune_active_segmentator
-            else segmentator_boundary_cut_max_edge_ratio
-        )
         current_segmentator_decode_center_fraction = (
             _suggest_float_or_fixed(
                 trial,
@@ -790,18 +728,6 @@ def optimize_preprocess(
             if tune_active_segmentator
             else segmentator_decode_min_score_width
         )
-        current_segmentator_edge_min_width = (
-            _suggest_int_or_fixed(
-                trial,
-                "segmentator_edge_min_width",
-                segmentator_edge_min_width,
-                segmentator_edge_min_width_min,
-                segmentator_edge_min_width_max,
-            )
-            if tune_active_segmentator
-            else segmentator_edge_min_width
-        )
-
         metrics = evaluate_prepared(
             base_rows,
             jobs,
@@ -832,12 +758,6 @@ def optimize_preprocess(
             segmentator_cut_candidate_threshold=current_segmentator_cut_candidate_threshold,
             segmentator_cut_smooth_radius=current_segmentator_cut_smooth_radius,
             segmentator_decode_top_k=segmentator_decode_top_k,
-            segmentator_edge_trim=segmentator_edge_trim,
-            segmentator_edge_min_ink_ratio=segmentator_edge_min_ink_ratio,
-            segmentator_edge_min_pixel_density=segmentator_edge_min_pixel_density,
-            segmentator_edge_min_width=int(current_segmentator_edge_min_width or 1),
-            segmentator_boundary_cuts=segmentator_boundary_cuts,
-            segmentator_boundary_cut_max_edge_ratio=float(current_segmentator_boundary_cut_max_edge_ratio or 0.0),
             segmentator_decode_center_fraction=float(current_segmentator_decode_center_fraction or 1.0),
             segmentator_decode_min_score_width=int(current_segmentator_decode_min_score_width or 1),
         )
@@ -918,20 +838,6 @@ def optimize_preprocess(
             segmentator_cut_smooth_radius,
         ),
         segmentator_decode_top_k=segmentator_decode_top_k,
-        segmentator_edge_trim=segmentator_edge_trim,
-        segmentator_edge_min_ink_ratio=segmentator_edge_min_ink_ratio,
-        segmentator_edge_min_pixel_density=segmentator_edge_min_pixel_density,
-        segmentator_edge_min_width=int(
-            _best_or_fixed(best_params, "segmentator_edge_min_width", segmentator_edge_min_width)
-        ),
-        segmentator_boundary_cuts=segmentator_boundary_cuts,
-        segmentator_boundary_cut_max_edge_ratio=float(
-            _best_or_fixed(
-                best_params,
-                "segmentator_boundary_cut_max_edge_ratio",
-                segmentator_boundary_cut_max_edge_ratio,
-            )
-        ),
         segmentator_decode_center_fraction=float(
             _best_or_fixed(
                 best_params,
@@ -985,12 +891,6 @@ def evaluate(
     segmentator_cut_candidate_threshold: float | None = None,
     segmentator_cut_smooth_radius: int | None = None,
     segmentator_decode_top_k: int = 8,
-    segmentator_edge_trim: bool = True,
-    segmentator_edge_min_ink_ratio: float = 0.035,
-    segmentator_edge_min_pixel_density: float = 0.003,
-    segmentator_edge_min_width: int = 2,
-    segmentator_boundary_cuts: str = "auto",
-    segmentator_boundary_cut_max_edge_ratio: float = 0.45,
     segmentator_decode_center_fraction: float = 0.6,
     segmentator_decode_min_score_width: int = 1,
 ) -> dict[str, Any]:
@@ -1025,12 +925,6 @@ def evaluate(
         segmentator_cut_candidate_threshold=segmentator_cut_candidate_threshold,
         segmentator_cut_smooth_radius=segmentator_cut_smooth_radius,
         segmentator_decode_top_k=segmentator_decode_top_k,
-        segmentator_edge_trim=segmentator_edge_trim,
-        segmentator_edge_min_ink_ratio=segmentator_edge_min_ink_ratio,
-        segmentator_edge_min_pixel_density=segmentator_edge_min_pixel_density,
-        segmentator_edge_min_width=segmentator_edge_min_width,
-        segmentator_boundary_cuts=segmentator_boundary_cuts,
-        segmentator_boundary_cut_max_edge_ratio=segmentator_boundary_cut_max_edge_ratio,
         segmentator_decode_center_fraction=segmentator_decode_center_fraction,
         segmentator_decode_min_score_width=segmentator_decode_min_score_width,
     )
@@ -1068,12 +962,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--segmentator-decode-top-k", type=int, default=8)
     parser.add_argument("--segmentator-decode-center-fraction", type=float, default=0.6)
     parser.add_argument("--segmentator-decode-min-score-width", type=int, default=1)
-    parser.add_argument("--no-segmentator-edge-trim", action="store_true")
-    parser.add_argument("--segmentator-edge-min-ink-ratio", type=float, default=0.035)
-    parser.add_argument("--segmentator-edge-min-pixel-density", type=float, default=0.003)
-    parser.add_argument("--segmentator-edge-min-width", type=int, default=2)
-    parser.add_argument("--segmentator-boundary-cuts", choices=("auto", "off", "on"), default="auto")
-    parser.add_argument("--segmentator-boundary-cut-max-edge-ratio", type=float, default=0.45)
 
     parser.add_argument("--batch-size", type=int, default=32, help="Direct OCR inference batch size.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
@@ -1133,14 +1021,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-segmentator-cut-candidate-threshold-max", type=float, default=None)
     parser.add_argument("--optuna-segmentator-cut-smooth-radius-min", type=int, default=None)
     parser.add_argument("--optuna-segmentator-cut-smooth-radius-max", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-boundary-cut-max-edge-ratio-min", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-boundary-cut-max-edge-ratio-max", type=float, default=None)
     parser.add_argument("--optuna-segmentator-decode-center-fraction-min", type=float, default=None)
     parser.add_argument("--optuna-segmentator-decode-center-fraction-max", type=float, default=None)
     parser.add_argument("--optuna-segmentator-decode-min-score-width-min", type=int, default=None)
     parser.add_argument("--optuna-segmentator-decode-min-score-width-max", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-edge-min-width-min", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-edge-min-width-max", type=int, default=None)
     return parser.parse_args()
 
 
@@ -1164,12 +1048,6 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "segmentator_cut_candidate_threshold": args.segmentator_cut_candidate_threshold,
         "segmentator_cut_smooth_radius": args.segmentator_cut_smooth_radius,
         "segmentator_decode_top_k": args.segmentator_decode_top_k,
-        "segmentator_edge_trim": not args.no_segmentator_edge_trim,
-        "segmentator_edge_min_ink_ratio": args.segmentator_edge_min_ink_ratio,
-        "segmentator_edge_min_pixel_density": args.segmentator_edge_min_pixel_density,
-        "segmentator_edge_min_width": args.segmentator_edge_min_width,
-        "segmentator_boundary_cuts": args.segmentator_boundary_cuts,
-        "segmentator_boundary_cut_max_edge_ratio": args.segmentator_boundary_cut_max_edge_ratio,
         "segmentator_decode_center_fraction": args.segmentator_decode_center_fraction,
         "segmentator_decode_min_score_width": args.segmentator_decode_min_score_width,
     }
@@ -1246,22 +1124,10 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 str(metrics["segmentator_decode_center_fraction"]),
                 "--segmentator-decode-min-score-width",
                 str(metrics["segmentator_decode_min_score_width"]),
-                "--segmentator-edge-min-ink-ratio",
-                str(metrics["segmentator_edge_min_ink_ratio"]),
-                "--segmentator-edge-min-pixel-density",
-                str(metrics["segmentator_edge_min_pixel_density"]),
-                "--segmentator-edge-min-width",
-                str(metrics["segmentator_edge_min_width"]),
-                "--segmentator-boundary-cuts",
-                str(metrics["segmentator_boundary_cuts"]),
-                "--segmentator-boundary-cut-max-edge-ratio",
-                str(metrics["segmentator_boundary_cut_max_edge_ratio"]),
             ]
         )
         if metrics["decode_with_segmentator"]:
             command.append("--decode-with-segmentator")
-        if not metrics["segmentator_edge_trim"]:
-            command.append("--no-segmentator-edge-trim")
 
     print("\n=== Inference command ===")
     print(shlex.join(command))
@@ -1312,14 +1178,10 @@ def main() -> None:
             segmentator_cut_candidate_threshold_max=args.optuna_segmentator_cut_candidate_threshold_max,
             segmentator_cut_smooth_radius_min=args.optuna_segmentator_cut_smooth_radius_min,
             segmentator_cut_smooth_radius_max=args.optuna_segmentator_cut_smooth_radius_max,
-            segmentator_boundary_cut_max_edge_ratio_min=args.optuna_segmentator_boundary_cut_max_edge_ratio_min,
-            segmentator_boundary_cut_max_edge_ratio_max=args.optuna_segmentator_boundary_cut_max_edge_ratio_max,
             segmentator_decode_center_fraction_min=args.optuna_segmentator_decode_center_fraction_min,
             segmentator_decode_center_fraction_max=args.optuna_segmentator_decode_center_fraction_max,
             segmentator_decode_min_score_width_min=args.optuna_segmentator_decode_min_score_width_min,
             segmentator_decode_min_score_width_max=args.optuna_segmentator_decode_min_score_width_max,
-            segmentator_edge_min_width_min=args.optuna_segmentator_edge_min_width_min,
-            segmentator_edge_min_width_max=args.optuna_segmentator_edge_min_width_max,
             **common_kwargs,
         )
     else:

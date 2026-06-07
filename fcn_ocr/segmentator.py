@@ -299,13 +299,13 @@ class VerticalSegmentator(TextRecognizer):
     ) -> list[int]:
         output = sorted(set(cuts))
         candidate_set = set(candidates)
-        width = len(scores)
+        if len(output) < 2:
+            return output
 
         while True:
-            boundaries = [0, *output, width - 1]
             widest_interval: tuple[int, int] | None = None
             widest_distance = 0
-            for left, right in zip(boundaries, boundaries[1:]):
+            for left, right in zip(output, output[1:]):
                 distance = right - left
                 if distance > max_width and distance > widest_distance:
                     widest_interval = (left, right)

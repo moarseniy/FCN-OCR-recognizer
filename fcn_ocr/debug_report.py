@@ -301,12 +301,6 @@ def save_debug_image(
         info_lines.append(f"x_pad: {float(metadata['x_pad']):.4f}")
     if "x_pad_mode" in metadata:
         info_lines.append(f"x_pad mode: {metadata['x_pad_mode']}")
-    if metadata.get("text_x_bounds") is not None:
-        info_lines.append(f"text x bounds: {metadata['text_x_bounds']}")
-    if metadata.get("text_x_bounds_confidence") is not None:
-        info_lines.append(f"text x bounds confidence: {float(metadata['text_x_bounds_confidence']):.3f}")
-    if metadata.get("text_x_bounds_status") is not None:
-        info_lines.append(f"text x bounds status: {metadata['text_x_bounds_status']}")
     if "baseline_crop" in metadata:
         info_lines.append(f"baseline crop: {metadata['baseline_crop']}")
     if "baseline_strict_lines" in metadata:
@@ -401,17 +395,6 @@ def save_debug_image(
         info_lines.append(f"legacy+cuts raw cuts: {len(cut_decoding_result.cuts)}")
         info_lines.append(f"legacy+cuts OCR timesteps: {cut_decoding_result.ocr_width}")
         info_lines.append(f"legacy+cuts segmentator timesteps: {cut_decoding_result.segmentator_width}")
-        if "legacy_cuts_edge_trim" in metadata:
-            info_lines.append(f"legacy+cuts edge trim: {metadata['legacy_cuts_edge_trim']}")
-        if "legacy_cuts_edge_min_width" in metadata:
-            info_lines.append(f"legacy+cuts edge min width: {metadata['legacy_cuts_edge_min_width']}")
-        if "legacy_cuts_boundary_cuts" in metadata:
-            info_lines.append(f"legacy+cuts boundary cuts: {metadata['legacy_cuts_boundary_cuts']}")
-        if "legacy_cuts_boundary_cut_max_edge_ratio" in metadata:
-            info_lines.append(
-                "legacy+cuts boundary cut ratio: "
-                f"{float(metadata['legacy_cuts_boundary_cut_max_edge_ratio']):.3f}"
-            )
         if "legacy_cuts_decode_center_fraction" in metadata:
             info_lines.append(
                 "legacy+cuts score center fraction: "

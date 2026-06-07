@@ -2069,20 +2069,6 @@ class TextRecognizer:
     def _segmentation_cut_positions(segmentation_result: VerticalSegmentationResult) -> list[int]:
         return [int(position) for position in segmentation_result.cut_positions or []]
 
-    @staticmethod
-    def _map_cut_to_boundary(cut_position: int, source_width: int, target_width: int) -> int:
-        if source_width <= 0 or target_width <= 1:
-            return 0
-        boundary = int(round((float(cut_position) + 0.5) * float(target_width) / float(source_width)))
-        return max(1, min(target_width - 1, boundary))
-
-    @staticmethod
-    def _map_boundary_to_source(boundary: int, source_width: int, target_width: int) -> int:
-        if source_width <= 0 or target_width <= 0:
-            return 0
-        mapped = int(round(float(boundary) * float(source_width) / float(target_width)))
-        return max(0, min(source_width, mapped))
-
     def _map_input_boundary_to_ocr(self, boundary: int, input_width: int, ocr_width: int) -> int:
         if input_width <= 0 or ocr_width <= 0:
             return 0
@@ -2090,203 +2076,6 @@ class TextRecognizer:
         right = max(left + 1, input_width - max(0, self.legacy_crop_right))
         mapped = int(round((float(boundary) - float(left)) * float(ocr_width) / float(right - left)))
         return max(0, min(ocr_width, mapped))
-
-    def _map_ocr_boundary_to_input(self, boundary: int, input_width: int, ocr_width: int) -> int:
-        if input_width <= 0 or ocr_width <= 0:
-            return 0
-        left = min(max(0, self.legacy_crop_left), max(0, input_width - 1))
-        right = max(left + 1, input_width - max(0, self.legacy_crop_right))
-        mapped = int(round(float(left) + float(boundary) * float(right - left) / float(ocr_width)))
-        return max(0, min(input_width, mapped))
-
-    def text_x_bounds_from_tensor(self, image_tensor: torch.Tensor) -> dict[str, Any]:
-        mask = self._foreground_mask_from_tensor(image_tensor)
-        height, width = mask.shape
-        if width <= 0:
-            return {"ok": False, "status": "empty_width", "left": 0, "right": 0, "confidence": 0.0}
-
-        column_counts = np.count_nonzero(mask, axis=0)
-        min_column_pixels = max(1, int(round(height * 0.025)))
-        active = column_counts >= min_column_pixels
-        active = self._close_boolean_holes(active, max_hole=max(1, int(round(width * 0.01))))
-        runs = self._boolean_runs(active)
-        runs = [
-            (start, end) for start, end in runs
-            if end - start >= max(2, int(round(width * 0.015)))
-        ]
-        if not runs:
-            return {
-                "ok": False,
-                "status": "no_foreground_columns",
-                "left": 0,
-                "right": width,
-                "confidence": 0.0,
-            }
-
-        left = min(start for start, _ in runs)
-        right = max(end for _, end in runs)
-        foreground_columns_ratio = float(np.count_nonzero(active[left:right])) / max(1.0, float(right - left))
-        foreground_pixels = int(np.count_nonzero(mask[:, left:right]))
-        confidence = min(
-            1.0,
-            foreground_columns_ratio * 0.75
-            + min(1.0, foreground_pixels / max(1.0, height * (right - left) * 0.12)) * 0.25,
-        )
-        if right - left < max(2, int(round(width * 0.02))):
-            return {
-                "ok": False,
-                "status": "too_narrow_foreground",
-                "left": left,
-                "right": right,
-                "confidence": confidence,
-            }
-        return {
-            "ok": True,
-            "status": "ok",
-            "left": left,
-            "right": right,
-            "confidence": confidence,
-            "foreground_columns_ratio": foreground_columns_ratio,
-            "foreground_pixels": foreground_pixels,
-        }
-
-    def _foreground_mask_from_tensor(self, image_tensor: torch.Tensor) -> np.ndarray:
-        image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
-        if image.dim() == 4:
-            image = image[0]
-        if image.dim() != 3:
-            raise ValueError(f"Expected image tensor with shape (C,H,W) or (1,C,H,W), got {tuple(image_tensor.shape)}")
-
-        if image.size(0) == 1:
-            gray = image[0].numpy()
-        else:
-            gray = image.mean(dim=0).numpy()
-        gray_u8 = (gray * 255.0).astype(np.uint8)
-        height, width = gray_u8.shape
-        if width <= 0:
-            return np.zeros((height, 0), dtype=np.uint8)
-
-        border = np.concatenate((gray_u8[0, :], gray_u8[-1, :], gray_u8[:, 0], gray_u8[:, -1]))
-        background_is_bright = float(np.median(border)) >= 128.0
-        if cv2 is not None:
-            threshold_type = cv2.THRESH_BINARY_INV if background_is_bright else cv2.THRESH_BINARY
-            _, mask = cv2.threshold(gray_u8, 0, 255, threshold_type | cv2.THRESH_OTSU)
-        else:
-            threshold = float(np.mean(border))
-            mask = gray_u8 < threshold if background_is_bright else gray_u8 > threshold
-            mask = (mask.astype(np.uint8) * 255)
-        return mask.astype(np.uint8)
-
-    @staticmethod
-    def _close_boolean_holes(values: np.ndarray, max_hole: int) -> np.ndarray:
-        output = values.astype(bool).copy()
-        if max_hole <= 0 or output.size == 0:
-            return output
-
-        runs = TextRecognizer._boolean_runs(output)
-        for (_, prev_end), (next_start, _) in zip(runs, runs[1:]):
-            if next_start - prev_end <= max_hole:
-                output[prev_end:next_start] = True
-        return output
-
-    @staticmethod
-    def _boolean_runs(values: np.ndarray) -> list[tuple[int, int]]:
-        runs: list[tuple[int, int]] = []
-        start: int | None = None
-        for index, value in enumerate(values.astype(bool).tolist()):
-            if value and start is None:
-                start = index
-            elif not value and start is not None:
-                runs.append((start, index))
-                start = None
-        if start is not None:
-            runs.append((start, int(values.size)))
-        return runs
-
-    def _edge_interval_has_foreground(
-        self,
-        mask: np.ndarray,
-        start: int,
-        end: int,
-        input_width: int,
-        ocr_width: int,
-        min_ink_ratio: float,
-        min_pixel_density: float,
-    ) -> bool:
-        left = self._map_ocr_boundary_to_input(start, input_width, ocr_width)
-        right = self._map_ocr_boundary_to_input(end, input_width, ocr_width)
-        if right <= left:
-            return False
-
-        region = mask[:, left:right]
-        if region.size == 0:
-            return False
-        min_column_pixels = max(1, int(round(region.shape[0] * 0.025)))
-        ink_columns = np.count_nonzero(np.count_nonzero(region, axis=0) >= min_column_pixels)
-        ink_ratio = float(ink_columns) / max(1.0, float(region.shape[1]))
-        pixel_density = float(np.count_nonzero(region)) / float(region.size)
-        return ink_ratio >= min_ink_ratio or pixel_density >= min_pixel_density
-
-    @staticmethod
-    def _typical_cut_width(cuts: list[int], left_boundary: int, right_boundary: int) -> float:
-        widths = [
-            right - left
-            for left, right in zip(cuts, cuts[1:])
-            if right > left
-        ]
-        if not widths and right_boundary > left_boundary:
-            widths = [right_boundary - left_boundary]
-        if not widths:
-            return 0.0
-        return float(np.median(np.asarray(widths, dtype=np.float32)))
-
-    @classmethod
-    def _promote_edge_cuts_to_bounds(
-        cls,
-        mapped_cuts: list[int],
-        left_boundary: int,
-        right_boundary: int,
-        mode: str,
-        max_edge_ratio: float,
-        min_edge_width: int,
-    ) -> tuple[int, int, list[int]]:
-        mode = mode.lower()
-        if mode not in {"off", "auto", "on"}:
-            raise ValueError("boundary_cuts mode must be 'off', 'auto', or 'on'")
-
-        cuts = [
-            cut for cut in sorted(set(mapped_cuts))
-            if left_boundary < cut < right_boundary
-        ]
-        if len(cuts) < 2 or mode == "off":
-            return left_boundary, right_boundary, cuts
-
-        if mode == "on":
-            return cuts[0], cuts[-1], cuts[1:-1]
-
-        typical_width = cls._typical_cut_width(cuts, left_boundary, right_boundary)
-        if typical_width <= 0.0:
-            return left_boundary, right_boundary, cuts
-        if max_edge_ratio < 0.0:
-            raise ValueError("boundary_cut_max_edge_ratio must be non-negative")
-
-        threshold = max(float(min_edge_width), typical_width * float(max_edge_ratio))
-        left_edge_width = cuts[0] - left_boundary
-        right_edge_width = right_boundary - cuts[-1]
-
-        # In auto mode we promote both edges only when both outer intervals look
-        # much smaller than a normal character interval. This catches outputs
-        # like |A|B|C| without deleting a real narrow first/last glyph by itself.
-        if left_edge_width <= threshold and right_edge_width <= threshold:
-            left_boundary = cuts[0]
-            right_boundary = cuts[-1]
-            cuts = cuts[1:-1]
-
-        cuts = [
-            cut for cut in cuts
-            if left_boundary < cut < right_boundary
-        ]
-        return left_boundary, right_boundary, cuts
 
     @staticmethod
     def _central_decode_span(
@@ -2320,14 +2109,6 @@ class TextRecognizer:
         segmentation_result: VerticalSegmentationResult,
         input_width: int | None = None,
         top_k: int = 8,
-        text_x_bounds: tuple[int, int] | None = None,
-        input_tensor: torch.Tensor | None = None,
-        trim_empty_edges: bool = True,
-        edge_min_ink_ratio: float = 0.035,
-        edge_min_pixel_density: float = 0.003,
-        edge_min_width: int = 2,
-        boundary_cuts: str = "auto",
-        boundary_cut_max_edge_ratio: float = 0.45,
         center_fraction: float = 0.6,
         min_score_width: int = 1,
     ) -> CutDecodingResult:
@@ -2358,91 +2139,47 @@ class TextRecognizer:
                 segmentator_width=segmentator_width,
             )
 
-        raw_cuts = [
+        raw_cuts = sorted({
             position for position in self._segmentation_cut_positions(segmentation_result)
             if 0 <= position < max(0, segmentator_width)
-        ]
-        mapped_cuts = []
+        })
+        # Cut lines are explicit cell boundaries: only consecutive pairs are decoded.
+        boundaries = []
         for position in raw_cuts:
             if segmentator_width > 0:
                 input_position = int(round((float(position) + 0.5) * float(input_width) / float(segmentator_width)))
             else:
                 input_position = 0
-            mapped_cuts.append(self._map_input_boundary_to_ocr(input_position, input_width, ocr_width))
-        left_boundary = 0
-        right_boundary = ocr_width
-        if text_x_bounds is not None:
-            text_left, text_right = text_x_bounds
-            left_boundary = self._map_input_boundary_to_ocr(int(text_left), input_width, ocr_width)
-            right_boundary = self._map_input_boundary_to_ocr(int(text_right), input_width, ocr_width)
-            if right_boundary <= left_boundary:
-                left_boundary = 0
-                right_boundary = ocr_width
-
-        left_boundary, right_boundary, mapped_cuts = self._promote_edge_cuts_to_bounds(
-            mapped_cuts,
-            left_boundary,
-            right_boundary,
-            mode=boundary_cuts,
-            max_edge_ratio=boundary_cut_max_edge_ratio,
-            min_edge_width=edge_min_width,
-        )
-        boundaries = [left_boundary, *sorted(set(mapped_cuts)), right_boundary]
-        intervals = [
-            (start, end) for start, end in zip(boundaries, boundaries[1:])
-            if end > start
-        ]
-        if trim_empty_edges and input_tensor is not None and intervals:
-            mask = self._foreground_mask_from_tensor(input_tensor)
-            while intervals and not self._edge_interval_has_foreground(
-                mask,
-                intervals[0][0],
-                intervals[0][1],
-                input_width,
-                ocr_width,
-                edge_min_ink_ratio,
-                edge_min_pixel_density,
-            ):
-                intervals.pop(0)
-            while intervals and not self._edge_interval_has_foreground(
-                mask,
-                intervals[-1][0],
-                intervals[-1][1],
-                input_width,
-                ocr_width,
-                edge_min_ink_ratio,
-                edge_min_pixel_density,
-            ):
-                intervals.pop()
-            if intervals:
-                boundaries = [intervals[0][0], *[end for _, end in intervals]]
-            else:
-                boundaries = []
-        intervals = self._merge_narrow_edge_intervals(intervals, min_width=edge_min_width)
-        if intervals:
-            boundaries = [intervals[0][0], *[end for _, end in intervals]]
-        else:
-            boundaries = []
+            boundaries.append(self._map_input_boundary_to_ocr(input_position, input_width, ocr_width))
+        intervals = list(zip(boundaries, boundaries[1:]))
+        source_intervals = list(zip(raw_cuts, raw_cuts[1:]))
         top_k = max(1, min(int(top_k), probs.size(0)))
 
         symbols: list[CutDecodedSymbol] = []
-        for start, end in intervals:
-            if end <= start:
-                continue
-            score_start, score_end = self._central_decode_span(
-                start,
-                end,
-                center_fraction=center_fraction,
-                min_width=min_score_width,
-            )
+        for (start, end), (source_start, source_end) in zip(intervals, source_intervals):
+            if end > start:
+                score_start, score_end = self._central_decode_span(
+                    start,
+                    end,
+                    center_fraction=center_fraction,
+                    min_width=min_score_width,
+                )
+            else:
+                source_center = (float(source_start) + float(source_end) + 1.0) * 0.5
+                input_center = int(round(source_center * float(input_width) / max(1.0, float(segmentator_width))))
+                score_start = self._map_input_boundary_to_ocr(input_center, input_width, ocr_width)
+                score_start = max(0, min(ocr_width - 1, score_start))
+                score_end = score_start + 1
             if score_end <= score_start:
-                score_start, score_end = start, end
+                continue
             scores = probs[:, score_start:score_end].mean(dim=1)
             top_confidences, top_indices = scores.topk(top_k)
             class_index = int(top_indices[0].detach().cpu().item())
             char = self.idx_to_char.get(class_index)
             if char is None:
-                continue
+                raise ValueError(
+                    f"OCR class index {class_index} is not present in the checkpoint alphabet"
+                )
 
             candidates: list[ClassConfidence] = []
             for rank in range(top_k):
@@ -2462,8 +2199,8 @@ class TextRecognizer:
                     class_index=class_index,
                     start=int(start),
                     end=int(end),
-                    source_start=self._map_boundary_to_source(start, segmentator_width, ocr_width),
-                    source_end=self._map_boundary_to_source(end, segmentator_width, ocr_width),
+                    source_start=int(source_start),
+                    source_end=int(source_end),
                     candidates=candidates,
                     score_start=int(score_start),
                     score_end=int(score_end),
@@ -2479,23 +2216,6 @@ class TextRecognizer:
             ocr_width=ocr_width,
             segmentator_width=segmentator_width,
         )
-
-    @staticmethod
-    def _merge_narrow_edge_intervals(
-        intervals: list[tuple[int, int]],
-        min_width: int,
-    ) -> list[tuple[int, int]]:
-        if min_width <= 1 or len(intervals) <= 1:
-            return intervals
-
-        output = list(intervals)
-        while len(output) > 1 and output[0][1] - output[0][0] < min_width:
-            output[1] = (output[0][0], output[1][1])
-            output.pop(0)
-        while len(output) > 1 and output[-1][1] - output[-1][0] < min_width:
-            output[-2] = (output[-2][0], output[-1][1])
-            output.pop()
-        return output
 
     @torch.no_grad()
     def logits_from_tensor(self, image_tensor: torch.Tensor) -> tuple[torch.Tensor, tuple[int, ...]]:
