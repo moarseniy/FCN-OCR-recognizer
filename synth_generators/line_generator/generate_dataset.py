@@ -11,7 +11,7 @@ import torch
 import yaml
 
 from .dataset import GeneratedLineSample, SingleLineDataset, SingleLineDatasetConfig
-from .chunk_dataset import CHUNK_METADATA_FILENAME
+from .chunk_dataset import CHUNK_METADATA_FILENAME, GENERATION_CONFIG_FILENAME
 from .run_directories import timestamped_directory
 
 
@@ -260,7 +260,7 @@ def resolve_output_dir(config_path: Path, configured_output_dir: str) -> Path:
 
 def main() -> None:
     args = parse_args()
-    config_path = Path(args.config)
+    config_path = Path(args.config).expanduser().resolve()
 
     with config_path.open("r") as file:
         config_data = yaml.safe_load(file)
@@ -276,6 +276,9 @@ def main() -> None:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Dataset output: {output_dir}")
+    generation_config_snapshot = output_dir / GENERATION_CONFIG_FILENAME
+    shutil.copy2(config_path, generation_config_snapshot)
+    print(f"Generation config saved to {generation_config_snapshot}")
 
     dataset = SingleLineDataset(generation_config)
 

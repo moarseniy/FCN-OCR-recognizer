@@ -15,6 +15,7 @@ except ImportError:
 
 
 CHUNK_METADATA_FILENAME = "metadata.yaml"
+GENERATION_CONFIG_FILENAME = "generation_config.yaml"
 
 
 def load_chunk_metadata(root_dir: str | Path) -> dict:

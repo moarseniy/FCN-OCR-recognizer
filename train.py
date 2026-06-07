@@ -1,6 +1,7 @@
 # train.py
 from synth_generators.line_generator.chunk_dataset import (
     CHUNK_METADATA_FILENAME,
+    GENERATION_CONFIG_FILENAME,
     ChunkedLineDataset,
     load_chunk_metadata,
 )
@@ -41,6 +42,7 @@ SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS = ("peaks", "widths")
+TRAINING_CONFIG_FILENAME = "training_config.yaml"
 
 
 class TrainingConfig(BaseModel):
@@ -1346,6 +1348,40 @@ def resolve_chunks_dir(configured_dir: str | Path) -> Path:
     return base_dir
 
 
+def save_experiment_config_snapshots(
+    training_config_path: str | Path,
+    chunks_dir: str | Path | None,
+    checkpoint_dir: str | Path,
+) -> tuple[Path, Path | None]:
+    checkpoint_dir = Path(checkpoint_dir)
+    training_config_path = Path(training_config_path).expanduser().resolve()
+
+    training_snapshot = checkpoint_dir / TRAINING_CONFIG_FILENAME
+    if training_config_path != training_snapshot.resolve():
+        shutil.copy2(training_config_path, training_snapshot)
+    print(f"Training config saved to {training_snapshot}")
+
+    if chunks_dir is None:
+        print("Warning: generation config snapshot cannot be saved because chunks_dir is not set")
+        return training_snapshot, None
+
+    chunks_dir = Path(chunks_dir)
+    generation_source = chunks_dir / GENERATION_CONFIG_FILENAME
+    generation_snapshot: Path | None = None
+    if generation_source.is_file():
+        generation_snapshot = checkpoint_dir / GENERATION_CONFIG_FILENAME
+        if generation_source.resolve() != generation_snapshot.resolve():
+            shutil.copy2(generation_source, generation_snapshot)
+        print(f"Generation config saved to {generation_snapshot}")
+    else:
+        print(
+            "Warning: generation config snapshot is missing in dataset directory: "
+            f"{generation_source}"
+        )
+
+    return training_snapshot, generation_snapshot
+
+
 def run_training(
     config_path: str | Path,
     after_epoch: EpochCallback | None = None,
@@ -1354,11 +1390,9 @@ def run_training(
     completion_title: str = "Training completed!",
     checkpoint_dir_override: str | Path | None = None,
 ) -> dict[str, Any]:
+    config_path = Path(config_path).expanduser().resolve()
     args, _ = load_training_config(config_path)
     print("START!")
-    dataset, dataset_config = load_dataset_from_config(args)
-    config_data = effective_training_config_data(args, dataset_config)
-    print(f"Dataset ready! Total samples: {len(dataset)}")
 
     checkpoint_dir = (
         Path(checkpoint_dir_override)
@@ -1367,6 +1401,19 @@ def run_training(
     )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     print(f"Checkpoint directory: {checkpoint_dir}")
+
+    if args.chunks_dir is not None:
+        args.chunks_dir = str(resolve_chunks_dir(args.chunks_dir))
+    training_config_snapshot, generation_config_snapshot = save_experiment_config_snapshots(
+        config_path,
+        args.chunks_dir,
+        checkpoint_dir,
+    )
+
+    dataset, dataset_config = load_dataset_from_config(args)
+    config_data = effective_training_config_data(args, dataset_config)
+    print(f"Dataset ready! Total samples: {len(dataset)}")
+
     log_path = checkpoint_dir / "training_log.tsv"
     validate_and_log_alphabet(dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir)
 
@@ -1771,6 +1818,8 @@ def run_training(
         "best_train_loss": best_train_loss,
         "training_log_path": log_path,
         "checkpoint_dir": checkpoint_dir,
+        "training_config_snapshot": training_config_snapshot,
+        "generation_config_snapshot": generation_config_snapshot,
     }
 
 
