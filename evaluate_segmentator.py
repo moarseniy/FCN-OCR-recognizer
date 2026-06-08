@@ -649,6 +649,8 @@ def optimize(
     y_pad_min: float,
     y_pad_max: float,
     x_pad: float,
+    x_pad_min: float | None,
+    x_pad_max: float | None,
     tune_baseline_crop: bool,
     tune_baseline_params: bool,
     tune_baseline_line_pad: bool,
@@ -684,6 +686,13 @@ def optimize(
 
     if trials < 1:
         raise ValueError("trials must be >= 1")
+    if (x_pad_min is None) != (x_pad_max is None):
+        raise ValueError("x_pad tuning requires both --optuna-x-pad-min and --optuna-x-pad-max")
+    if x_pad_min is not None and x_pad_max is not None:
+        if x_pad_min < 0.0 or x_pad_max < 0.0:
+            raise ValueError("x_pad tuning bounds must be >= 0")
+        if x_pad_min > x_pad_max:
+            raise ValueError("--optuna-x-pad-min must be <= --optuna-x-pad-max")
 
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     has_manual_cuts = any(bool(row.get("gt_cuts")) for row in base_rows)
@@ -767,13 +776,18 @@ def optimize(
             if bool(trial_baseline_crop) and tune_baseline_deskew
             else baseline_deskew
         )
+        trial_x_pad = (
+            trial.suggest_float("x_pad", x_pad_min, x_pad_max)
+            if x_pad_min is not None and x_pad_max is not None
+            else x_pad
+        )
         configure_segmentator(
             segmentator,
             cut_threshold=trial.suggest_float("cut_threshold", cut_threshold_min, cut_threshold_max),
             peak_min_distance=trial.suggest_int("peak_min_distance", peak_min_distance_min, peak_min_distance_max),
             scale_x=trial.suggest_float("scale_x", scale_x_min, scale_x_max),
             y_pad=trial.suggest_float("y_pad", y_pad_min, y_pad_max),
-            x_pad=x_pad,
+            x_pad=trial_x_pad,
             baseline_crop=bool(trial_baseline_crop),
             baseline_strict_lines=baseline_strict_lines,
             baseline_line_pad=trial_baseline_line_pad,
@@ -805,7 +819,8 @@ def optimize(
         f"cut_threshold=[{cut_threshold_min}, {cut_threshold_max}], "
         f"peak_min_distance=[{peak_min_distance_min}, {peak_min_distance_max}], "
         f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
-        f"x_pad={x_pad}, baseline_detector={baseline_detector_checkpoint}, "
+        f"x_pad={x_pad if x_pad_min is None else f'[{x_pad_min}, {x_pad_max}]'}, "
+        f"baseline_detector={baseline_detector_checkpoint}, "
         f"tune_baseline_crop={tune_baseline_crop}, "
         f"tune_baseline_params={tune_baseline_params}, "
         f"tune_line_pad={tune_baseline_line_pad}, "
@@ -836,6 +851,8 @@ def optimize(
         best_params["baseline_max_angle"] = baseline_max_angle
     if "baseline_detector_threshold" not in best_params:
         best_params["baseline_detector_threshold"] = baseline_detector_threshold
+    if "x_pad" not in best_params:
+        best_params["x_pad"] = x_pad
     print(f"Best params: {best_params}, {metric_name}={study.best_value:.8f}")
 
     configure_segmentator(
@@ -844,7 +861,7 @@ def optimize(
         peak_min_distance=int(best_params["peak_min_distance"]),
         scale_x=float(best_params["scale_x"]),
         y_pad=float(best_params["y_pad"]),
-        x_pad=x_pad,
+        x_pad=float(best_params["x_pad"]),
         baseline_crop=bool(best_params["baseline_crop"]),
         baseline_strict_lines=bool(best_params["baseline_strict_lines"]),
         baseline_line_pad=float(best_params["baseline_line_pad"]),
@@ -987,6 +1004,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
     parser.add_argument("--optuna-y-pad-min", type=float, default=-0.25)
     parser.add_argument("--optuna-y-pad-max", type=float, default=0.25)
+    parser.add_argument(
+        "--optuna-x-pad-min",
+        type=float,
+        default=None,
+        help="Minimum x_pad to tune; requires --optuna-x-pad-max.",
+    )
+    parser.add_argument(
+        "--optuna-x-pad-max",
+        type=float,
+        default=None,
+        help="Maximum x_pad to tune; requires --optuna-x-pad-min.",
+    )
     parser.add_argument("--optuna-tune-baseline-crop", action="store_true")
     parser.add_argument(
         "--optuna-tune-baseline-params",
@@ -1124,6 +1153,8 @@ def main() -> None:
             y_pad_min=args.optuna_y_pad_min,
             y_pad_max=args.optuna_y_pad_max,
             x_pad=args.x_pad,
+            x_pad_min=args.optuna_x_pad_min,
+            x_pad_max=args.optuna_x_pad_max,
             tune_baseline_crop=args.optuna_tune_baseline_crop,
             tune_baseline_params=args.optuna_tune_baseline_params,
             tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
