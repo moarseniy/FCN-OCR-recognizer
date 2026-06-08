@@ -14,6 +14,7 @@ from PIL import Image
 from fcn_ocr import BaselineDetector, InferenceConfig
 from tool.evaluation import interpolate_polyline, polyline_x_bounds
 from tool.markup import annotated_items, load_document, safe_image_path
+from tool.optuna_progress import optimize_with_progress
 
 
 def build_jobs(
@@ -247,6 +248,7 @@ def optimize(
     trials_output: Path | None,
     study_name: str | None,
     storage: str | None,
+    progress: bool = False,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -273,7 +275,13 @@ def optimize(
             append_trial(trials_output, trial.number, metrics)
         return float(metrics["failure_penalized_normalized_mae"])
 
-    study.optimize(objective, n_trials=trials)
+    optimize_with_progress(
+        study,
+        objective,
+        n_trials=trials,
+        metric_name="baseline MAE",
+        enabled=progress,
+    )
     detector.baseline_detector_threshold = float(study.best_params["threshold"])
     print(f"Best Optuna params: {json.dumps(study.best_params, sort_keys=True)}")
     print(f"Best failure-penalized normalized MAE: {study.best_value:.8f}")
@@ -337,6 +345,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-trials-out", default=None)
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
+    parser.add_argument(
+        "--no-optuna-progress",
+        action="store_true",
+        help="Disable the interactive Optuna progress bar.",
+    )
     return parser.parse_args()
 
 
@@ -367,6 +380,7 @@ def main() -> None:
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
+            progress=not args.no_optuna_progress,
         )
     else:
         metrics = evaluate_detector(

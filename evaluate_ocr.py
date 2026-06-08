@@ -12,6 +12,7 @@ from typing import Any
 from PIL import Image
 
 from fcn_ocr import InferenceConfig, TextRecognizer, VerticalSegmentator
+from tool.optuna_progress import optimize_with_progress
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -573,6 +574,7 @@ def optimize_preprocess(
     segmentator_decode_center_fraction_max: float | None = None,
     segmentator_decode_min_score_width_min: int | None = None,
     segmentator_decode_min_score_width_max: int | None = None,
+    progress: bool = False,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -777,7 +779,13 @@ def optimize_preprocess(
         f"tune_baseline_line_pad={optuna_tune_baseline_line_pad}, "
         f"tune_baseline_line_pad_px={optuna_tune_baseline_line_pad_px}"
     )
-    study.optimize(objective, n_trials=trials)
+    optimize_with_progress(
+        study,
+        objective,
+        n_trials=trials,
+        metric_name=metric_name,
+        enabled=progress,
+    )
 
     best_params = dict(study.best_params)
     print(f"Best Optuna params: {json.dumps(best_params, ensure_ascii=False, sort_keys=True)}")
@@ -991,6 +999,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-trials-out", default=None, help="Optional TSV file with Optuna trial metrics.")
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None, help="Optional Optuna storage URL, e.g. sqlite:///study.db.")
+    parser.add_argument(
+        "--no-optuna-progress",
+        action="store_true",
+        help="Disable the interactive Optuna progress bar.",
+    )
 
     parser.add_argument("--optuna-x-pad-min", type=float, default=None)
     parser.add_argument("--optuna-x-pad-max", type=float, default=None)
@@ -1150,6 +1163,7 @@ def main() -> None:
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
+            progress=not args.no_optuna_progress,
             optuna_tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
             optuna_tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
             x_pad_min=args.optuna_x_pad_min,

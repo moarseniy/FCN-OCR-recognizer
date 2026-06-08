@@ -16,6 +16,7 @@ import torch
 from fcn_ocr import InferenceConfig, VerticalSegmentator
 from tool.evaluation import match_sorted_points
 from tool.markup import annotated_items, is_manual_markup, safe_image_path
+from tool.optuna_progress import optimize_with_progress
 
 
 def get_gt_text(task: dict[str, Any]) -> str:
@@ -661,6 +662,7 @@ def optimize(
     study_name: str | None = None,
     storage: str | None = None,
     cut_tolerance_px: float = 3.0,
+    progress: bool = False,
 ) -> dict[str, Any]:
     try:
         import optuna
@@ -799,7 +801,13 @@ def optimize(
         f"tune_max_angle={tune_baseline_max_angle}, "
         f"tune_baseline_deskew={tune_baseline_deskew}"
     )
-    study.optimize(objective, n_trials=trials)
+    optimize_with_progress(
+        study,
+        objective,
+        n_trials=trials,
+        metric_name=metric_name,
+        enabled=progress,
+    )
 
     best_params = dict(study.best_params)
     if "baseline_crop" not in best_params:
@@ -1002,6 +1010,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-trials-out", default=None)
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
+    parser.add_argument(
+        "--no-optuna-progress",
+        action="store_true",
+        help="Disable the interactive Optuna progress bar.",
+    )
     return parser.parse_args()
 
 
@@ -1118,6 +1131,7 @@ def main() -> None:
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
             cut_tolerance_px=args.cut_tolerance_px,
+            progress=not args.no_optuna_progress,
         )
     else:
         metrics = evaluate(
