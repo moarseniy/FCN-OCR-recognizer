@@ -35,14 +35,26 @@ def get_image_name(task: dict[str, Any]) -> str:
 
 def build_rows_and_jobs(
     json_path: Path,
-    images_dir: Path,
+    images_dir: Path | None,
     limit: int | None,
 ) -> tuple[list[dict[str, Any]], list[tuple[int, Path]]]:
     with json_path.open("r", encoding="utf-8") as file:
         tasks = json.load(file)
 
     if is_manual_markup(tasks):
-        return build_manual_rows_and_jobs(tasks, images_dir, limit)
+        images_root = (
+            images_dir.expanduser().resolve()
+            if images_dir is not None
+            else Path(tasks["images_root"]).expanduser().resolve()
+        )
+        return build_manual_rows_and_jobs(tasks, images_root, limit)
+
+    if images_dir is None:
+        raise ValueError(
+            "--images is required for Label Studio JSON; "
+            "manual markup JSON can use its stored images_root"
+        )
+    images_dir = images_dir.expanduser().resolve()
 
     if limit is not None:
         tasks = tasks[:limit]
@@ -618,7 +630,7 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
 
 def optimize(
     json_path: Path,
-    images_dir: Path,
+    images_dir: Path | None,
     checkpoint_path: Path,
     output_csv: Path,
     device: str | None,
@@ -859,7 +871,7 @@ def optimize(
 
 def evaluate(
     json_path: Path,
-    images_dir: Path,
+    images_dir: Path | None,
     checkpoint_path: Path,
     output_csv: Path,
     device: str | None,
@@ -915,7 +927,11 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Label Studio export JSON or manual markup JSON created by tool.annotation_server.",
     )
-    parser.add_argument("--images", required=True, help="Folder with images.")
+    parser.add_argument(
+        "--images",
+        default=None,
+        help="Override images directory stored in manual markup JSON; required for Label Studio JSON.",
+    )
     parser.add_argument("--checkpoint", required=True, help="Path to vertical cut segmentator checkpoint.")
     parser.add_argument(
         "--inference-ocr-checkpoint",
@@ -1019,7 +1035,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) -> None:
-    _, jobs = build_rows_and_jobs(Path(args.json), Path(args.images), args.limit)
+    images_dir = Path(args.images) if args.images else None
+    _, jobs = build_rows_and_jobs(Path(args.json), images_dir, args.limit)
     image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
     ocr_checkpoint = args.inference_ocr_checkpoint or "<OCR_CHECKPOINT>"
     inference_config = InferenceConfig.model_validate(
@@ -1084,10 +1101,11 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
 
 def main() -> None:
     args = parse_args()
+    images_dir = Path(args.images) if args.images else None
     if args.optuna_trials > 0:
         metrics = optimize(
             json_path=Path(args.json),
-            images_dir=Path(args.images),
+            images_dir=images_dir,
             checkpoint_path=Path(args.checkpoint),
             output_csv=Path(args.out),
             device=args.device,
@@ -1136,7 +1154,7 @@ def main() -> None:
     else:
         metrics = evaluate(
             json_path=Path(args.json),
-            images_dir=Path(args.images),
+            images_dir=images_dir,
             checkpoint_path=Path(args.checkpoint),
             output_csv=Path(args.out),
             device=args.device,

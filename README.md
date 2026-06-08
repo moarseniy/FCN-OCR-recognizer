@@ -506,7 +506,6 @@ python -m tool.annotation_server \
 ```bash
 python evaluate_segmentator.py \
   --json output/manual_markup.json \
-  --images /path/to/images \
   --checkpoint checkpoints/cut_segmentator/best_model.pth \
   --device cuda \
   --cut-tolerance-px 3 \
@@ -518,6 +517,10 @@ python evaluate_segmentator.py \
   --optuna-peak-min-distance-max 8 \
   --out output/segmentator_manual.csv
 ```
+
+Для `manual_markup.json` папка изображений автоматически берётся из поля
+`images_root`. Параметр `--images` нужен только для переопределения сохранённого
+пути или при использовании экспорта Label Studio.
 
 Для ручного JSON дополнительно считаются `cut_precision`, `cut_recall`,
 `cut_f1` и средняя ошибка совпавших линий по X. Предсказанные линии
