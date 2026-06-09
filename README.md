@@ -985,16 +985,59 @@ python evaluate_ocr.py \
   --json path/to/export.json \
   --images path/to/images \
   --checkpoint checkpoints/best_model.pth \
+  --segmentator-checkpoint checkpoints/cut_segmentator/best_model.pth \
+  --decode-with-segmentator \
   --out output/ocr_metrics.csv \
-  --optuna-trials 30 \
+  --optuna-trials 100 \
   --optuna-scale-x-min -0.25 \
   --optuna-scale-x-max 0.25 \
   --optuna-y-pad-min -0.25 \
   --optuna-y-pad-max 0.25 \
+  --optuna-x-pad-min 0.0 \
+  --optuna-x-pad-max 0.1 \
+  --optuna-segmentator-scale-x-min -0.25 \
+  --optuna-segmentator-scale-x-max 0.25 \
+  --optuna-segmentator-y-pad-min -0.25 \
+  --optuna-segmentator-y-pad-max 0.25 \
+  --optuna-segmentator-x-pad-min 0.0 \
+  --optuna-segmentator-x-pad-max 0.1 \
   --optuna-metric global_char_accuracy \
   --baseline-crop \
   --optuna-trials-out output/optuna_trials.tsv
 ```
+
+`--scale-x`, `--y-pad`, `--x-pad` и соответствующие
+`--optuna-...` диапазоны относятся только к OCR. Для вертикального
+сегментатора используются независимые `--segmentator-scale-x`,
+`--segmentator-y-pad`, `--segmentator-x-pad` и
+`--optuna-segmentator-...` диапазоны. Диапазоны сегментатора участвуют в
+Optuna только вместе с `--decode-with-segmentator` и
+`--segmentator-checkpoint`.
+
+Если baseline и вертикальный сегментатор уже настроены, удобнее передать
+готовый inference-конфиг и подбирать только OCR:
+
+```bash
+python evaluate_ocr.py \
+  --json path/to/export.json \
+  --images path/to/images \
+  --inference-config configs/inference/eng_101.yaml \
+  --optuna-trials 200 \
+  --optuna-scale-x-min -0.25 \
+  --optuna-scale-x-max 0.25 \
+  --optuna-y-pad-min -0.4 \
+  --optuna-y-pad-max 0.5 \
+  --optuna-x-pad-min 0.0 \
+  --optuna-x-pad-max 0.12 \
+  --optuna-metric global_char_accuracy \
+  --out output/ocr_metrics.csv
+```
+
+В этом режиме из YAML берутся OCR checkpoint, baseline detector, вертикальный
+сегментатор, их фиксированные preprocessing/postprocessing-параметры и decode.
+Optuna меняет только параметры с явно переданными диапазонами. Явные обычные
+CLI-параметры имеют приоритет над значениями YAML; например, `--device cuda`
+можно использовать независимо от сохраненного в конфиге устройства.
 
 После evaluation рядом с CSV сохраняется готовый inference-конфиг, например
 `output/ocr_metrics.inference.yaml`, и в терминал выводится короткая команда
