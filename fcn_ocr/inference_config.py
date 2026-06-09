@@ -38,7 +38,7 @@ class OCRInferenceConfig(BaseModel):
 class SegmentatorInferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    checkpoint: Path | None = None
+    checkpoint: Path
     preprocessing: InferencePreprocessingConfig = Field(default_factory=InferencePreprocessingConfig)
     cut_threshold: float | None = Field(default=None, gt=0.0, lt=1.0)
     peak_min_distance: int | None = Field(default=None, ge=1)
@@ -58,7 +58,7 @@ class SegmentatorInferenceConfig(BaseModel):
 class SegmentatorDecodeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
+    enabled: bool = False
     top_k: int = Field(default=8, ge=1)
     center_fraction: float = Field(default=0.6, gt=0.0, le=1.0)
     min_score_width: int = Field(default=1, ge=1)
@@ -74,16 +74,23 @@ class InferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device: str | None = None
-    baseline: BaselineInferenceConfig = Field(default_factory=BaselineInferenceConfig)
-    ocr: OCRInferenceConfig
-    segmentator: SegmentatorInferenceConfig = Field(default_factory=SegmentatorInferenceConfig)
+    baseline: BaselineInferenceConfig | None = None
+    ocr: OCRInferenceConfig | None = None
+    segmentator: SegmentatorInferenceConfig | None = None
     decode: SegmentatorDecodeConfig = Field(default_factory=SegmentatorDecodeConfig)
     debug: DebugInferenceConfig = Field(default_factory=DebugInferenceConfig)
 
     @model_validator(mode="after")
     def validate_pipeline(self) -> "InferenceConfig":
-        if self.decode.enabled and self.segmentator.checkpoint is None:
-            raise ValueError("decode.enabled requires segmentator.checkpoint")
+        has_baseline = self.baseline is not None and self.baseline.enabled
+        if not has_baseline and self.ocr is None and self.segmentator is None:
+            raise ValueError("Inference config must enable at least one stage: baseline, segmentator, or ocr")
+        if self.decode.enabled and (self.ocr is None or self.segmentator is None):
+            raise ValueError("decode.enabled requires both ocr and segmentator sections")
+        if has_baseline and self.baseline.detector_checkpoint is None and self.ocr is None and self.segmentator is None:
+            raise ValueError(
+                "A standalone baseline stage requires baseline.detector_checkpoint"
+            )
         return self
 
     @classmethod
@@ -103,22 +110,23 @@ class InferenceConfig(BaseModel):
             path = value.expanduser()
             return (config_dir / path).resolve() if not path.is_absolute() else path.resolve()
 
-        return self.model_copy(
-            update={
-                "baseline": self.baseline.model_copy(
-                    update={"detector_checkpoint": resolve(self.baseline.detector_checkpoint)}
-                ),
-                "ocr": self.ocr.model_copy(
-                    update={"checkpoint": resolve(self.ocr.checkpoint)}
-                ),
-                "segmentator": self.segmentator.model_copy(
-                    update={"checkpoint": resolve(self.segmentator.checkpoint)}
-                ),
-            }
-        )
+        updates: dict[str, Any] = {}
+        if self.baseline is not None:
+            updates["baseline"] = self.baseline.model_copy(
+                update={"detector_checkpoint": resolve(self.baseline.detector_checkpoint)}
+            )
+        if self.ocr is not None:
+            updates["ocr"] = self.ocr.model_copy(
+                update={"checkpoint": resolve(self.ocr.checkpoint)}
+            )
+        if self.segmentator is not None:
+            updates["segmentator"] = self.segmentator.model_copy(
+                update={"checkpoint": resolve(self.segmentator.checkpoint)}
+            )
+        return self.model_copy(update=updates)
 
     def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        return self.model_dump(mode="json", exclude_none=True)
 
     def save(self, config_path: str | Path) -> Path:
         path = Path(config_path).expanduser().resolve()

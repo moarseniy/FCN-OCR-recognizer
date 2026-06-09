@@ -1151,45 +1151,46 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
     images_dir = Path(args.images) if args.images else None
     _, jobs = build_rows_and_jobs(Path(args.json), images_dir, args.limit)
     image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
-    ocr_checkpoint = args.inference_ocr_checkpoint or "<OCR_CHECKPOINT>"
-    inference_config = InferenceConfig.model_validate(
-        {
-            "device": args.device,
-            "baseline": {
-                "enabled": metrics["baseline_crop"],
-                "detector_checkpoint": (
-                    str(Path(metrics["baseline_detector_checkpoint"]).expanduser().resolve())
-                    if metrics.get("baseline_detector_checkpoint")
-                    else None
-                ),
-                "detector_threshold": metrics["baseline_detector_threshold"],
-                "deskew": metrics["baseline_deskew"],
-                "max_angle": metrics["baseline_max_angle"],
-                "strict_lines": metrics["baseline_strict_lines"],
-                "line_pad": metrics["baseline_line_pad"],
-                "line_pad_px": metrics["baseline_line_pad_px"],
+    config_data: dict[str, Any] = {
+        "device": args.device,
+        "baseline": {
+            "enabled": metrics["baseline_crop"],
+            "detector_checkpoint": (
+                str(Path(metrics["baseline_detector_checkpoint"]).expanduser().resolve())
+                if metrics.get("baseline_detector_checkpoint")
+                else None
+            ),
+            "detector_threshold": metrics["baseline_detector_threshold"],
+            "deskew": metrics["baseline_deskew"],
+            "max_angle": metrics["baseline_max_angle"],
+            "strict_lines": metrics["baseline_strict_lines"],
+            "line_pad": metrics["baseline_line_pad"],
+            "line_pad_px": metrics["baseline_line_pad_px"],
+        },
+        "segmentator": {
+            "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
+            "preprocessing": {
+                "scale_x": metrics["scale_x"],
+                "y_pad": metrics["y_pad"],
+                "x_pad": metrics["x_pad"],
             },
-            "ocr": {
-                "checkpoint": str(ocr_checkpoint),
-            },
-            "segmentator": {
-                "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
-                "preprocessing": {
-                    "scale_x": metrics["scale_x"],
-                    "y_pad": metrics["y_pad"],
-                    "x_pad": metrics["x_pad"],
-                },
-                "cut_threshold": metrics["cut_threshold"],
-                "peak_min_distance": metrics["peak_min_distance"],
-                "cut_postprocess": metrics["cut_postprocess"],
-                "cut_min_width": metrics["cut_min_width"],
-                "cut_max_width": metrics["cut_max_width"],
-                "cut_candidate_threshold": metrics["cut_candidate_threshold"],
-                "cut_smooth_radius": metrics["cut_smooth_radius"],
-            },
-            "decode": {"enabled": True},
+            "cut_threshold": metrics["cut_threshold"],
+            "peak_min_distance": metrics["peak_min_distance"],
+            "cut_postprocess": metrics["cut_postprocess"],
+            "cut_min_width": metrics["cut_min_width"],
+            "cut_max_width": metrics["cut_max_width"],
+            "cut_candidate_threshold": metrics["cut_candidate_threshold"],
+            "cut_smooth_radius": metrics["cut_smooth_radius"],
+        },
+        "decode": {"enabled": bool(args.inference_ocr_checkpoint)},
+    }
+    if args.inference_ocr_checkpoint:
+        config_data["ocr"] = {
+            "checkpoint": str(
+                Path(args.inference_ocr_checkpoint).expanduser().resolve()
+            ),
         }
-    )
+    inference_config = InferenceConfig.model_validate(config_data)
     config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
     inference_config.save(config_path)
     command = [

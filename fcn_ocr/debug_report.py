@@ -207,9 +207,215 @@ def render_segmentation_panel(
     return panel
 
 
+def _append_final_input(
+    items: list[tuple[str, Image.Image]],
+    image: Image.Image | None,
+) -> None:
+    if image is None:
+        return
+    if any("final network input" in title.lower() for title, _ in items):
+        return
+    items.append(("final network input", image))
+
+
+def _render_stage_column(
+    title: str,
+    items: list[tuple[str, Image.Image]],
+    enabled: bool,
+    width: int,
+) -> Image.Image:
+    padding = 12
+    font = load_debug_font(14)
+    title_font = load_debug_font(19)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    title_height = text_height(probe, title_font) + 18
+    label_height = text_height(probe, font) + 7
+    max_image_width = width - padding * 2
+    prepared = [
+        (label, image.size, resize_debug_image(image, max_image_width))
+        for label, image in items
+    ]
+    content_height = sum(
+        label_height + image.height + padding
+        for _, _, image in prepared
+    )
+    skipped_height = 46 if not enabled else 0
+    height = max(180, title_height + padding + content_height + skipped_height)
+    panel = Image.new("RGB", (width, height), color=(250, 250, 250))
+    draw = ImageDraw.Draw(panel)
+    header_fill = (220, 226, 235) if enabled else (232, 232, 232)
+    draw.rectangle((0, 0, width - 1, title_height), fill=header_fill)
+    draw.rectangle((0, 0, width - 1, height - 1), outline=(170, 175, 182), width=1)
+    draw.text((padding, 8), title, fill=(24, 28, 34), font=title_font)
+
+    y = title_height + padding
+    for label, original_size, image in prepared:
+        draw.text(
+            (padding, y),
+            f"{label} ({original_size[0]}x{original_size[1]})",
+            fill=(55, 55, 55),
+            font=font,
+        )
+        y += label_height
+        panel.paste(image, (padding + (max_image_width - image.width) // 2, y))
+        y += image.height + padding
+
+    if not enabled:
+        draw.rectangle(
+            (padding, y, width - padding - 1, y + 32),
+            fill=(242, 242, 242),
+            outline=(185, 185, 185),
+        )
+        draw.text((padding + 10, y + 7), "SKIPPED: section is absent or disabled", fill=(105, 105, 105), font=font)
+    return panel
+
+
+def render_pipeline_panel(
+    source_image: Image.Image,
+    baseline_output_image: Image.Image | None,
+    baseline_preprocess_images: list[tuple[str, Image.Image]] | None,
+    baseline_enabled: bool,
+    segmentator_input_image: Image.Image | None,
+    segmentator_preprocess_images: list[tuple[str, Image.Image]] | None,
+    segmentation_result: VerticalSegmentationResult | None,
+    segmentator_enabled: bool,
+    network_input_image: Image.Image | None,
+    preprocess_images: list[tuple[str, Image.Image]] | None,
+    ocr_enabled: bool,
+) -> Image.Image:
+    column_width = 560
+    gap = 12
+    outer_padding = 16
+    title_font = load_debug_font(23)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    heading_height = text_height(probe, title_font) + 18
+
+    baseline_items = [("source image", source_image)]
+    baseline_items.extend(baseline_preprocess_images or [])
+    if baseline_enabled and baseline_output_image is not None:
+        baseline_items.append(("shared baseline output", baseline_output_image))
+
+    segmentator_items = list(segmentator_preprocess_images or [])
+    _append_final_input(segmentator_items, segmentator_input_image)
+    if segmentation_result is not None and segmentator_input_image is not None:
+        segmentator_items.append(
+            (
+                "cut projection and detected vertical lines",
+                render_segmentation_panel(segmentator_input_image, segmentation_result),
+            )
+        )
+
+    ocr_items = list(preprocess_images or [])
+    _append_final_input(ocr_items, network_input_image)
+
+    panels = [
+        _render_stage_column("1. BASELINE DETECTION", baseline_items, baseline_enabled, column_width),
+        _render_stage_column("2. VERTICAL SEGMENTATION", segmentator_items, segmentator_enabled, column_width),
+        _render_stage_column("3. OCR", ocr_items, ocr_enabled, column_width),
+    ]
+    content_height = max(panel.height for panel in panels)
+    width = outer_padding * 2 + column_width * 3 + gap * 2
+    canvas = Image.new(
+        "RGB",
+        (width, outer_padding + heading_height + content_height + outer_padding),
+        color=(246, 246, 246),
+    )
+    draw = ImageDraw.Draw(canvas)
+    draw.text((outer_padding, outer_padding), "Inference pipeline", fill=(20, 20, 20), font=title_font)
+    x = outer_padding
+    y = outer_padding + heading_height
+    for panel in panels:
+        canvas.paste(panel, (x, y))
+        x += column_width + gap
+    return canvas
+
+
+def _flatten_metadata(metadata: dict[str, Any]) -> list[str]:
+    priority = (
+        "source",
+        "inference_config",
+        "device",
+        "baseline_status",
+        "checkpoint",
+        "segmentator_checkpoint",
+        "expected_text",
+    )
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    def append_value(key: str, value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                append_value(f"{key}.{child_key}", child_value)
+            return
+        lines.append(f"{key}: {value}")
+
+    for key in priority:
+        if key in metadata:
+            append_value(key, metadata[key])
+            seen.add(key)
+    for key in sorted(metadata):
+        if key not in seen:
+            append_value(key, metadata[key])
+    return lines
+
+
+def _table_block_height(row_count: int, font: ImageFont.ImageFont) -> int:
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    row_height = text_height(probe, font) + 12
+    return text_height(probe, font) + 10 + row_height * (max(1, row_count) + 1) + 16
+
+
+def _draw_table(
+    draw: ImageDraw.ImageDraw,
+    y: int,
+    width: int,
+    padding: int,
+    title: str,
+    headers: list[str],
+    rows: list[list[str]],
+    empty_message: str,
+    font: ImageFont.ImageFont,
+) -> int:
+    draw.text((padding, y), title, fill=(20, 20, 20), font=font)
+    y += text_height(draw, font) + 10
+    table_width = width - padding * 2
+    fixed_widths = [56, 96, 180, 118]
+    column_widths = fixed_widths + [table_width - sum(fixed_widths)]
+    row_height = text_height(draw, font) + 12
+
+    x = padding
+    for header, column_width in zip(headers, column_widths):
+        draw.rectangle(
+            (x, y, x + column_width, y + row_height),
+            fill=(220, 226, 235),
+            outline=(150, 155, 165),
+        )
+        draw.text((x + 7, y + 6), header, fill=(20, 20, 20), font=font)
+        x += column_width
+    y += row_height
+
+    table_rows = rows or [["-", "<empty>", "-", "-", empty_message]]
+    for row_index, row in enumerate(table_rows):
+        x = padding
+        fill = (255, 255, 255) if row_index % 2 == 0 else (248, 250, 252)
+        for value, column_width in zip(row, column_widths):
+            draw.rectangle(
+                (x, y, x + column_width, y + row_height),
+                fill=fill,
+                outline=(190, 190, 190),
+            )
+            draw.text((x + 7, y + 6), value, fill=(20, 20, 20), font=font)
+            x += column_width
+        y += row_height
+    return y + 16
+
+
 def save_debug_image(
     source_image: Image.Image,
-    result: RecognitionResult,
+    result: RecognitionResult | None,
     output_path: str | Path,
     metadata: dict[str, Any],
     network_input_image: Image.Image | None = None,
@@ -217,416 +423,193 @@ def save_debug_image(
     segmentation_result: VerticalSegmentationResult | None = None,
     segmentator_input_image: Image.Image | None = None,
     cut_decoding_result: CutDecodingResult | None = None,
+    baseline_output_image: Image.Image | None = None,
+    baseline_preprocess_images: list[tuple[str, Image.Image]] | None = None,
+    segmentator_preprocess_images: list[tuple[str, Image.Image]] | None = None,
+    baseline_enabled: bool = True,
+    segmentator_enabled: bool = True,
+    ocr_enabled: bool = True,
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    pipeline_panel = render_pipeline_panel(
+        source_image=source_image,
+        baseline_output_image=baseline_output_image,
+        baseline_preprocess_images=baseline_preprocess_images,
+        baseline_enabled=baseline_enabled,
+        segmentator_input_image=segmentator_input_image,
+        segmentator_preprocess_images=segmentator_preprocess_images,
+        segmentation_result=segmentation_result,
+        segmentator_enabled=segmentator_enabled,
+        network_input_image=network_input_image,
+        preprocess_images=preprocess_images,
+        ocr_enabled=ocr_enabled,
+    )
+
+    width = pipeline_panel.width
+    padding = 16
+    table_width = width - padding * 2
     font = load_debug_font(16)
     small_font = load_debug_font(14)
     title_font = load_debug_font(22)
     result_font = load_debug_font(20)
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    padding = 16
-    min_report_width = 1280
-    raw_segmentation_panel = None
-    if segmentation_result is not None:
-        segmentation_base_image = segmentator_input_image or network_input_image
-        if segmentation_base_image is not None:
-            raw_segmentation_panel = render_segmentation_panel(segmentation_base_image, segmentation_result)
 
-    canvas_width = max(
-        min_report_width,
-        source_image.width + padding * 2,
-        (network_input_image.width + padding * 2) if network_input_image is not None else 0,
-        (raw_segmentation_panel.width + padding * 2) if raw_segmentation_panel is not None else 0,
-    )
-
-    max_image_width = canvas_width - padding * 2
-    image = resize_debug_image(source_image, max_image_width)
-    input_image = resize_debug_image(network_input_image, max_image_width) if network_input_image is not None else None
-    debug_preprocess_images = [
-        (title, resize_debug_image(debug_image, max_image_width))
-        for title, debug_image in (preprocess_images or [])
-    ]
-    segmentation_panel = (
-        resize_debug_image(raw_segmentation_panel, max_image_width)
-        if raw_segmentation_panel is not None
-        else None
-    )
-
-    table_width = canvas_width - padding * 2
-    position_width = 56
-    char_width = 96
-    timestep_width = 96
-    confidence_width = 118
-    candidates_width = table_width - position_width - char_width - timestep_width - confidence_width
-    column_widths = [position_width, char_width, timestep_width, confidence_width, candidates_width]
-    column_titles = ["#", "answer", "time", "conf", "ordered candidates"]
-
-    rows = result.decoded_symbols
-    line_height = text_height(probe, font) + 12
-    row_gap = 3
-    row_heights: list[int] = []
-    for _ in rows:
-        row_heights.append(line_height)
-    if not rows:
-        row_heights.append(line_height)
-    table_height = line_height + sum(row_heights) + row_gap * max(0, len(row_heights) - 1)
-    cut_rows = cut_decoding_result.symbols if cut_decoding_result is not None else []
-    cut_row_heights = [line_height for _ in cut_rows] or ([line_height] if cut_decoding_result is not None else [])
-    cut_table_height = 0
-    if cut_decoding_result is not None:
-        cut_table_height = (
-            text_height(probe, font) + 8
-            + line_height
-            + sum(cut_row_heights)
-            + row_gap * max(0, len(cut_row_heights) - 1)
-            + 14
-        )
-
-    info_lines = [
-        f"source: {metadata.get('source', '-')}",
-        f"checkpoint: {metadata.get('checkpoint', '-')}",
-        f"device: {metadata.get('device', '-')}",
-        f"input tensor shape: {result.input_shape}",
-        f"logits shape: {result.logits_shape}",
-        f"timesteps: {len(result.raw_indices)}",
-        f"decoded symbols: {len(result.decoded_symbols)}",
-    ]
-    if "scale_x" in metadata:
-        info_lines.append(f"scale_x: {float(metadata['scale_x']):+.4f}")
-    if "y_pad" in metadata:
-        info_lines.append(f"y_pad: {float(metadata['y_pad']):+.4f}")
-    if "x_pad" in metadata:
-        info_lines.append(f"x_pad: {float(metadata['x_pad']):.4f}")
-    if "x_pad_mode" in metadata:
-        info_lines.append(f"x_pad mode: {metadata['x_pad_mode']}")
-    if "baseline_crop" in metadata:
-        info_lines.append(f"baseline crop: {metadata['baseline_crop']}")
-    if "baseline_strict_lines" in metadata:
-        info_lines.append(f"baseline strict lines: {metadata['baseline_strict_lines']}")
-    if metadata.get("baseline_line_pad") is not None:
-        info_lines.append(f"baseline line pad: {float(metadata['baseline_line_pad']):.3f}")
-    if metadata.get("baseline_line_pad_px") is not None:
-        info_lines.append(f"baseline line pad px: {float(metadata['baseline_line_pad_px']):.1f}")
-    if metadata.get("baseline_detector_checkpoint"):
-        info_lines.append(f"baseline detector: {metadata['baseline_detector_checkpoint']}")
-    if metadata.get("baseline_detector_checkpoint") and metadata.get("baseline_detector_threshold") is not None:
-        info_lines.append(f"baseline detector threshold: {float(metadata['baseline_detector_threshold']):.3f}")
-    if metadata.get("baseline_status"):
-        info_lines.append(f"baseline status: {metadata['baseline_status']}")
-    if metadata.get("baseline_angle_degrees") is not None:
-        info_lines.append(f"alignment angle: {float(metadata['baseline_angle_degrees']):+.3f} deg")
-    if metadata.get("baseline_top_angle_degrees") is not None:
-        info_lines.append(f"alignment top angle: {float(metadata['baseline_top_angle_degrees']):+.3f} deg")
-    if metadata.get("baseline_bottom_angle_degrees") is not None:
-        info_lines.append(f"alignment bottom angle: {float(metadata['baseline_bottom_angle_degrees']):+.3f} deg")
-    if metadata.get("baseline_pair_angle_difference") is not None:
-        info_lines.append(
-            "alignment angle difference: "
-            f"{float(metadata['baseline_pair_angle_difference']):.3f}/"
-            f"{float(metadata.get('baseline_pair_angle_max_difference', 0.0)):.3f} deg"
-        )
-    if metadata.get("baseline_top_angle_weight") is not None:
-        info_lines.append(
-            "alignment weights top/bottom: "
-            f"{float(metadata['baseline_top_angle_weight']):.3f}/"
-            f"{float(metadata.get('baseline_bottom_angle_weight', 0.0)):.3f}"
-        )
-    if metadata.get("baseline_angle_method") is not None:
-        info_lines.append(f"alignment method: {metadata['baseline_angle_method']}")
-    if metadata.get("baseline_residual_angle_degrees") is not None:
-        info_lines.append(f"residual alignment angle: {float(metadata['baseline_residual_angle_degrees']):+.3f} deg")
-    if metadata.get("baseline_confidence") is not None:
-        info_lines.append(f"baseline confidence: {float(metadata['baseline_confidence']):.3f}")
-    if metadata.get("baseline_bottom_confidence") is not None:
-        info_lines.append(f"bottom confidence: {float(metadata['baseline_bottom_confidence']):.3f}")
-    if metadata.get("baseline_method") is not None:
-        info_lines.append(f"baseline method: {metadata['baseline_method']}")
-    if metadata.get("baseline_mask") is not None:
-        info_lines.append(f"baseline mask: {metadata['baseline_mask']}")
-    if metadata.get("baseline_candidate_count") is not None:
-        info_lines.append(f"baseline candidates: {metadata['baseline_candidate_count']}")
-    if metadata.get("baseline_inlier_ratio") is not None:
-        info_lines.append(f"baseline inlier ratio: {float(metadata['baseline_inlier_ratio']):.3f}")
-    if metadata.get("baseline_profile_coverage") is not None:
-        info_lines.append(f"baseline profile coverage: {float(metadata['baseline_profile_coverage']):.3f}")
-    if metadata.get("baseline_residual_mad") is not None:
-        info_lines.append(f"baseline residual MAD: {float(metadata['baseline_residual_mad']):.3f}")
-    if metadata.get("topline_angle_degrees") is not None:
-        info_lines.append(f"topline angle: {float(metadata['topline_angle_degrees']):+.3f} deg")
-    if metadata.get("topline_confidence") is not None:
-        info_lines.append(f"topline confidence: {float(metadata['topline_confidence']):.3f}")
-    if metadata.get("topline_method") is not None:
-        info_lines.append(f"topline method: {metadata['topline_method']}")
-    if metadata.get("topline_inlier_ratio") is not None:
-        info_lines.append(f"topline inlier ratio: {float(metadata['topline_inlier_ratio']):.3f}")
-    if metadata.get("topline_profile_coverage") is not None:
-        info_lines.append(f"topline profile coverage: {float(metadata['topline_profile_coverage']):.3f}")
-    if metadata.get("topline_residual_mad") is not None:
-        info_lines.append(f"topline residual MAD: {float(metadata['topline_residual_mad']):.3f}")
-    if metadata.get("baseline_crop_box") is not None:
-        info_lines.append(f"baseline crop box: {metadata['baseline_crop_box']}")
-    if metadata.get("baseline_text_height") is not None:
-        info_lines.append(f"baseline text height: {metadata['baseline_text_height']}")
-    if metadata.get("baseline_rejected_angle_degrees") is not None:
-        info_lines.append(f"baseline rejected angle: {float(metadata['baseline_rejected_angle_degrees']):+.3f} deg")
-    if metadata.get("baseline_rejected_confidence") is not None:
-        info_lines.append(f"baseline rejected confidence: {float(metadata['baseline_rejected_confidence']):.3f}")
-    if "expected_text" in metadata:
-        info_lines.append(f"expected text: {metadata['expected_text']!r}")
-    if segmentation_result is not None:
-        info_lines.append(f"segmentator checkpoint: {metadata.get('segmentator_checkpoint', '-')}")
-        info_lines.append(f"segmentator mode: {segmentation_result.mode}")
-        info_lines.append(f"segmentator input tensor shape: {segmentation_result.input_shape}")
-        info_lines.append(f"segmentator logits shape: {segmentation_result.logits_shape}")
-        info_lines.append(f"segmentator timesteps: {len(segmentation_result.raw_indices)}")
-        info_lines.append(f"segmentator cuts: {len(segmentation_result.cut_positions or [])}")
-        info_lines.append(f"segmentator candidates: {len(segmentation_result.candidate_cut_positions or [])}")
-        info_lines.append(f"segmentator cut threshold: {segmentation_result.cut_threshold:.3f}")
-        info_lines.append(f"segmentator peak min distance: {segmentation_result.peak_min_distance}")
-        info_lines.append(f"segmentator cut postprocess: {segmentation_result.cut_postprocess}")
-        info_lines.append(f"segmentator cut candidate threshold: {segmentation_result.cut_candidate_threshold:.3f}")
-        info_lines.append(f"segmentator cut min width: {segmentation_result.cut_min_width}")
-        info_lines.append(f"segmentator cut max width: {segmentation_result.cut_max_width}")
-        info_lines.append(f"segmentator cut smooth radius: {segmentation_result.cut_smooth_radius}")
-    if cut_decoding_result is not None:
-        info_lines.append(f"legacy+cuts symbols: {len(cut_decoding_result.symbols)}")
-        info_lines.append(f"legacy+cuts raw cuts: {len(cut_decoding_result.cuts)}")
-        info_lines.append(f"legacy+cuts OCR timesteps: {cut_decoding_result.ocr_width}")
-        info_lines.append(f"legacy+cuts segmentator timesteps: {cut_decoding_result.segmentator_width}")
-        if "legacy_cuts_decode_center_fraction" in metadata:
-            info_lines.append(
-                "legacy+cuts score center fraction: "
-                f"{float(metadata['legacy_cuts_decode_center_fraction']):.3f}"
-            )
-        if "legacy_cuts_decode_min_score_width" in metadata:
-            info_lines.append(f"legacy+cuts min score width: {metadata['legacy_cuts_decode_min_score_width']}")
-
+    result_texts: list[tuple[str, tuple[int, int, int]]] = []
     expected_text = metadata.get("expected_text")
-    result_lines = wrapped_lines(probe, f"result: {result.text!r}", result_font, table_width)
-    cut_result_lines = (
-        wrapped_lines(probe, f"legacy+cuts: {cut_decoding_result.text!r}", result_font, table_width)
-        if cut_decoding_result is not None
-        else []
-    )
-    expected_lines = wrapped_lines(probe, f"expected: {expected_text!r}", result_font, table_width) if expected_text is not None else []
-    result_block_height = (
-        len(result_lines) * (text_height(probe, result_font) + 6)
-        + len(cut_result_lines) * (text_height(probe, result_font) + 6)
-        + len(expected_lines) * (text_height(probe, result_font) + 6)
-        + 8
-    )
-    info_height = len(info_lines) * (text_height(probe, small_font) + 5)
-    raw_summary = raw_timestep_summary(result)
-    raw_lines = wrapped_lines(probe, f"raw OCR runs: {raw_summary}", small_font, table_width)
-    raw_height = len(raw_lines) * (text_height(probe, small_font) + 4)
+    if result is not None:
+        result_color = (20, 90, 40)
+        if expected_text is not None and expected_text != result.text:
+            result_color = (150, 30, 30)
+        result_texts.append((f"raw OCR: {result.text!r}", result_color))
+    if cut_decoding_result is not None:
+        cut_color = (30, 80, 120)
+        if expected_text is not None and expected_text != cut_decoding_result.text:
+            cut_color = (150, 30, 30)
+        result_texts.append((f"final OCR with cuts: {cut_decoding_result.text!r}", cut_color))
+    if expected_text is not None:
+        result_texts.append((f"expected: {expected_text!r}", (120, 70, 20)))
+    if not result_texts:
+        result_texts.append(("No OCR output: OCR stage was skipped", (105, 105, 105)))
 
+    result_lines: list[tuple[str, tuple[int, int, int]]] = []
+    for text, color in result_texts:
+        result_lines.extend(
+            (line, color)
+            for line in wrapped_lines(probe, text, result_font, table_width)
+        )
+
+    metadata_lines: list[str] = []
+    for line in _flatten_metadata(metadata):
+        metadata_lines.extend(wrapped_lines(probe, line, small_font, table_width))
+
+    if result is not None:
+        metadata_lines.extend(
+            [
+                f"ocr input tensor shape: {result.input_shape}",
+                f"ocr logits shape: {result.logits_shape}",
+                f"ocr timesteps: {len(result.raw_indices)}",
+                f"ocr decoded symbols: {len(result.decoded_symbols)}",
+            ]
+        )
+    if segmentation_result is not None:
+        metadata_lines.extend(
+            [
+                f"segmentator input tensor shape: {segmentation_result.input_shape}",
+                f"segmentator logits shape: {segmentation_result.logits_shape}",
+                f"segmentator timesteps: {len(segmentation_result.raw_indices)}",
+                f"segmentator cuts: {len(segmentation_result.cut_positions or [])}",
+                f"segmentator candidate cuts: {len(segmentation_result.candidate_cut_positions or [])}",
+                f"segmentator threshold: {segmentation_result.cut_threshold:.4f}",
+                f"segmentator postprocess: {segmentation_result.cut_postprocess}",
+            ]
+        )
+
+    result_line_height = text_height(probe, result_font) + 6
+    metadata_line_height = text_height(probe, small_font) + 5
     report_height = (
         padding
-        + text_height(probe, title_font) + 14
-        + result_block_height + 12
-        + info_height + 14
-        + text_height(probe, font) + 8
-        + table_height + 14
-        + cut_table_height
-        + raw_height
-        + padding
+        + text_height(probe, title_font)
+        + 14
+        + len(result_lines) * result_line_height
+        + 12
+        + len(metadata_lines) * metadata_line_height
+        + 12
     )
-    image_title_height = text_height(probe, small_font) + 6
-    images_height = image_title_height + image.height
-    for _, debug_image in debug_preprocess_images:
-        images_height += padding + image_title_height + debug_image.height
-    if input_image is not None:
-        images_height += padding + image_title_height + input_image.height
-    if segmentation_panel is not None:
-        images_height += padding + image_title_height + segmentation_panel.height
+    if result is not None:
+        report_height += _table_block_height(len(result.decoded_symbols), font)
+        raw_lines = wrapped_lines(
+            probe,
+            f"raw OCR runs: {raw_timestep_summary(result)}",
+            small_font,
+            table_width,
+        )
+        report_height += len(raw_lines) * (text_height(probe, small_font) + 4) + 14
+    else:
+        raw_lines = []
+    if cut_decoding_result is not None:
+        report_height += _table_block_height(len(cut_decoding_result.symbols), font)
 
-    canvas_height = padding + images_height + report_height
-    canvas = Image.new("RGB", (canvas_width, canvas_height), color=(246, 246, 246))
-    draw = ImageDraw.Draw(canvas)
-
+    report = Image.new("RGB", (width, report_height), color=(246, 246, 246))
+    draw = ImageDraw.Draw(report)
     y = padding
-    draw.text(
-        (padding, y),
-        f"original image ({source_image.width}x{source_image.height})",
-        fill=(55, 55, 55),
-        font=small_font,
-    )
-    y += image_title_height
-    image_x = (canvas_width - image.width) // 2
-    canvas.paste(image, (image_x, y))
-    y += image.height
-
-    for title, debug_image in debug_preprocess_images:
-        y += padding
-        draw.text(
-            (padding, y),
-            f"{title} ({debug_image.width}x{debug_image.height})",
-            fill=(55, 55, 55),
-            font=small_font,
-        )
-        y += image_title_height
-        debug_x = (canvas_width - debug_image.width) // 2
-        canvas.paste(debug_image, (debug_x, y))
-        y += debug_image.height
-
-    if input_image is not None:
-        y += padding
-        draw.text(
-            (padding, y),
-            f"network input image ({network_input_image.width}x{network_input_image.height})",
-            fill=(55, 55, 55),
-            font=small_font,
-        )
-        y += image_title_height
-        input_x = (canvas_width - input_image.width) // 2
-        canvas.paste(input_image, (input_x, y))
-        y += input_image.height
-
-    if segmentation_panel is not None:
-        y += padding
-        draw.text(
-            (padding, y),
-            f"vertical segmentator ({segmentation_panel.width}x{segmentation_panel.height})",
-            fill=(55, 55, 55),
-            font=small_font,
-        )
-        y += image_title_height
-        segmentator_x = (canvas_width - segmentation_panel.width) // 2
-        canvas.paste(segmentation_panel, (segmentator_x, y))
-        y += segmentation_panel.height
-
-    y += padding
-
-    draw.text((padding, y), "OCR inference debug", fill=(20, 20, 20), font=title_font)
+    draw.text((padding, y), "Inference details", fill=(20, 20, 20), font=title_font)
     y += text_height(draw, title_font) + 14
-
-    result_fill = (20, 90, 40)
-    expected_fill = (120, 70, 20)
-    if expected_text is not None and expected_text != result.text:
-        result_fill = (150, 30, 30)
-    for line in result_lines:
-        draw.text((padding, y), line, fill=result_fill, font=result_font)
-        y += text_height(draw, result_font) + 6
-    cut_result_fill = (30, 80, 120)
-    if expected_text is not None and cut_decoding_result is not None and expected_text != cut_decoding_result.text:
-        cut_result_fill = (150, 30, 30)
-    for line in cut_result_lines:
-        draw.text((padding, y), line, fill=cut_result_fill, font=result_font)
-        y += text_height(draw, result_font) + 6
-    for line in expected_lines:
-        draw.text((padding, y), line, fill=expected_fill, font=result_font)
-        y += text_height(draw, result_font) + 6
+    for line, color in result_lines:
+        draw.text((padding, y), line, fill=color, font=result_font)
+        y += result_line_height
+    y += 8
+    for line in metadata_lines:
+        draw.text((padding, y), line, fill=(55, 55, 55), font=small_font)
+        y += metadata_line_height
     y += 8
 
-    for line in info_lines:
-        draw.text((padding, y), line, fill=(55, 55, 55), font=small_font)
-        y += text_height(draw, small_font) + 5
-    y += 10
-
-    draw.text(
-        (padding, y),
-        f"decoded symbols in output order; each row contains top-{metadata.get('debug_top_k', '-')} candidates sorted by confidence",
-        fill=(20, 20, 20),
-        font=font,
-    )
-    y += text_height(draw, font) + 8
-
-    x = padding
-    header_y = y
-    for title, width in zip(column_titles, column_widths):
-        draw.rectangle((x, header_y, x + width, header_y + line_height), fill=(220, 226, 235), outline=(150, 155, 165))
-        draw.text((x + 8, header_y + 6), title, fill=(20, 20, 20), font=font)
-        x += width
-    y += line_height
-
-    if not rows:
-        x = padding
-        empty_row = ["-", "<empty>", "-", "-", "no decoded symbols"]
-        row_height = row_heights[0]
-        for cell, width in zip(empty_row, column_widths):
-            draw.rectangle((x, y, x + width, y + row_height), fill=(255, 255, 255), outline=(190, 190, 190))
-            draw.text((x + 8, y + 6), cell, fill=(20, 20, 20), font=font)
-            x += width
-        y += row_height
-
-    for row_index, item in enumerate(rows):
-        row_height = row_heights[row_index]
-        x = padding
-        fill = (255, 255, 255) if row_index % 2 == 0 else (248, 250, 252)
-        candidates_text = format_candidate_row(item.candidates)
-        cells = [
-            str(row_index + 1),
-            display_char(item.char),
-            "-" if item.timestep < 0 else str(item.timestep),
-            "-" if item.timestep < 0 else f"{item.confidence:.4f}",
-            candidates_text,
+    if result is not None:
+        ocr_rows = [
+            [
+                str(index + 1),
+                display_char(symbol.char),
+                "-" if symbol.timestep < 0 else str(symbol.timestep),
+                "-" if symbol.timestep < 0 else f"{symbol.confidence:.4f}",
+                format_candidate_row(symbol.candidates),
+            ]
+            for index, symbol in enumerate(result.decoded_symbols)
         ]
-        for cell_index, (cell, width) in enumerate(zip(cells, column_widths)):
-            draw.rectangle((x, y, x + width, y + row_height), fill=fill, outline=(190, 190, 190))
-            if cell_index == 4:
-                draw.text((x + 6, y + 6), cell, fill=(20, 20, 20), font=font)
-            else:
-                draw.text((x + 8, y + 6), cell, fill=(20, 20, 20), font=font)
-            x += width
-        y += row_height + row_gap
+        y = _draw_table(
+            draw,
+            y,
+            width,
+            padding,
+            f"Raw OCR symbols; top-{metadata.get('debug_top_k', '-')} candidates in confidence order",
+            ["#", "answer", "time", "conf", "ordered candidates"],
+            ocr_rows,
+            "no decoded symbols",
+            font,
+        )
 
     if cut_decoding_result is not None:
-        y += 14
-        draw.text(
-            (padding, y),
-            "legacy+cuts symbols; each row is one interval between neighboring vertical cuts",
-            fill=(20, 20, 20),
-            font=font,
-        )
-        y += text_height(draw, font) + 8
-
-        x = padding
-        header_y = y
-        cut_column_titles = ["#", "answer", "ocr span", "conf", "ordered candidates"]
-        for title, width in zip(cut_column_titles, column_widths):
-            draw.rectangle((x, header_y, x + width, header_y + line_height), fill=(220, 226, 235), outline=(150, 155, 165))
-            draw.text((x + 8, header_y + 6), title, fill=(20, 20, 20), font=font)
-            x += width
-        y += line_height
-
-        if not cut_rows:
-            x = padding
-            empty_row = ["-", "<empty>", "-", "-", "no intervals decoded from segmentator cuts"]
-            row_height = cut_row_heights[0]
-            for cell, width in zip(empty_row, column_widths):
-                draw.rectangle((x, y, x + width, y + row_height), fill=(255, 255, 255), outline=(190, 190, 190))
-                draw.text((x + 8, y + 6), cell, fill=(20, 20, 20), font=font)
-                x += width
-            y += row_height
-
-        for row_index, item in enumerate(cut_rows):
-            row_height = cut_row_heights[row_index]
-            x = padding
-            fill = (255, 255, 255) if row_index % 2 == 0 else (248, 250, 252)
-            candidates_text = format_candidate_row(item.candidates)
-            span = f"{item.start}-{item.end - 1}" if item.end > item.start else "-"
-            if item.score_start is not None and item.score_end is not None:
-                score_span = f"{item.score_start}-{item.score_end - 1}" if item.score_end > item.score_start else "-"
+        cut_rows: list[list[str]] = []
+        for index, symbol in enumerate(cut_decoding_result.symbols):
+            span = f"{symbol.start}-{symbol.end - 1}" if symbol.end > symbol.start else "-"
+            if symbol.score_start is not None and symbol.score_end is not None:
+                score_span = (
+                    f"{symbol.score_start}-{symbol.score_end - 1}"
+                    if symbol.score_end > symbol.score_start
+                    else "-"
+                )
                 if score_span != span:
                     span = f"{span} / score {score_span}"
-            cells = [
-                str(row_index + 1),
-                display_char(item.char),
-                span,
-                f"{item.confidence:.4f}",
-                candidates_text,
-            ]
-            for cell_index, (cell, width) in enumerate(zip(cells, column_widths)):
-                draw.rectangle((x, y, x + width, y + row_height), fill=fill, outline=(190, 190, 190))
-                if cell_index == 4:
-                    draw.text((x + 6, y + 6), cell, fill=(20, 20, 20), font=font)
-                else:
-                    draw.text((x + 8, y + 6), cell, fill=(20, 20, 20), font=font)
-                x += width
-            y += row_height + row_gap
+            cut_rows.append(
+                [
+                    str(index + 1),
+                    display_char(symbol.char),
+                    span,
+                    f"{symbol.confidence:.4f}",
+                    format_candidate_row(symbol.candidates),
+                ]
+            )
+        y = _draw_table(
+            draw,
+            y,
+            width,
+            padding,
+            "Final OCR symbols; one class per interval between neighboring cuts",
+            ["#", "answer", "ocr span", "conf", "ordered candidates"],
+            cut_rows,
+            "no intervals decoded from segmentator cuts",
+            font,
+        )
 
-    y += 14
-    draw_wrapped_text(draw, (padding, y), f"raw OCR runs: {raw_summary}", small_font, (55, 55, 55), table_width)
+    for line in raw_lines:
+        draw.text((padding, y), line, fill=(55, 55, 55), font=small_font)
+        y += text_height(draw, small_font) + 4
+
+    canvas = Image.new(
+        "RGB",
+        (width, pipeline_panel.height + report.height),
+        color=(246, 246, 246),
+    )
+    canvas.paste(pipeline_panel, (0, 0))
+    canvas.paste(report, (0, pipeline_panel.height))
     canvas.save(output_path)

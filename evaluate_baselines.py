@@ -297,20 +297,21 @@ def optimize(
 
 
 def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], image_path: Path | None) -> None:
-    config = InferenceConfig.model_validate(
-        {
-            "device": args.device,
-            "baseline": {
-                "enabled": True,
-                "detector_checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
-                "detector_threshold": metrics["threshold"],
-            },
-            "ocr": {
-                "checkpoint": args.inference_ocr_checkpoint or "<OCR_CHECKPOINT>",
-            },
-            "decode": {"enabled": False},
+    config_data: dict[str, Any] = {
+        "device": args.device,
+        "baseline": {
+            "enabled": True,
+            "detector_checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
+            "detector_threshold": metrics["threshold"],
+        },
+    }
+    if args.inference_ocr_checkpoint:
+        config_data["ocr"] = {
+            "checkpoint": str(
+                Path(args.inference_ocr_checkpoint).expanduser().resolve()
+            ),
         }
-    )
+    config = InferenceConfig.model_validate(config_data)
     config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
     config.save(config_path)
     command = [
@@ -323,8 +324,6 @@ def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], i
     ]
     print(f"Inference config saved to:  {config_path}")
     print("\n=== Inference command ===")
-    if args.inference_ocr_checkpoint is None:
-        print(f"Set ocr.checkpoint in {config_path} before running:")
     print(shlex.join(command))
 
 

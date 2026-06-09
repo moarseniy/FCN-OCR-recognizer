@@ -17,6 +17,12 @@ class BaselineDetector(TextRecognizer):
         checkpoint_path: str | Path,
         device: str | None = None,
         threshold: float = 0.35,
+        deskew: bool = True,
+        max_angle: float = 12.0,
+        strict_lines: bool = True,
+        line_pad: float = 0.08,
+        line_pad_px: float = 0.0,
+        background: int = 255,
     ) -> None:
         if not 0.0 < threshold < 1.0:
             raise ValueError("threshold must be between 0 and 1")
@@ -24,10 +30,13 @@ class BaselineDetector(TextRecognizer):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.baseline_detector_checkpoint = Path(checkpoint_path)
         self.baseline_detector_threshold = float(threshold)
-        self.baseline_line_pad = 0.0
-        self.baseline_line_pad_px = 0.0
-        self.baseline_strict_lines = True
-        self.baseline_max_angle = 12.0
+        self.baseline_crop = True
+        self.baseline_deskew = bool(deskew)
+        self.baseline_line_pad = float(line_pad)
+        self.baseline_line_pad_px = float(line_pad_px)
+        self.baseline_strict_lines = bool(strict_lines)
+        self.baseline_max_angle = float(max_angle)
+        self.preprocess_fill = int(background)
         self.baseline_detector_model = None
         self.baseline_detector_in_channels = 1
         self.baseline_detector_image_height = 0

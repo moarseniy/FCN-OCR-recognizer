@@ -51,11 +51,11 @@ def load_dataset_config(config_path: str | Path) -> SingleLineDatasetConfig:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run configured FCN OCR inference.")
+    parser = argparse.ArgumentParser(description="Run a configured FCN inference pipeline.")
     parser.add_argument(
         "--config",
         required=True,
-        help="Inference YAML with checkpoints, shared baseline settings, and separate OCR/segmentator preprocessing.",
+        help="Inference YAML; omitted baseline, segmentator, or OCR sections are skipped.",
     )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
@@ -94,7 +94,11 @@ def _load_source_image(
         raise ValueError("--image or --generation-config is required")
     sample_index = args.sample_index if args.sample_index is not None else 0
     dataset_config = load_dataset_config(args.generation_config)
-    recognizer = pipeline.recognizer
+    recognizer = pipeline.recognizer or pipeline.segmentator
+    if recognizer is None:
+        raise ValueError(
+            "Synthetic --sample-index inference requires an ocr or segmentator section"
+        )
     dataset_config = dataset_config.model_copy(
         update={
             "alphabet": recognizer.alphabet,
@@ -125,20 +129,29 @@ def _debug_metadata(
     metadata = {
         "source": source,
         "inference_config": str(config_path),
-        "checkpoint": str(config.ocr.checkpoint),
-        "device": str(pipeline.recognizer.device),
-        "scale_x": config.ocr.preprocessing.scale_x,
-        "y_pad": config.ocr.preprocessing.y_pad,
-        "x_pad": config.ocr.preprocessing.x_pad,
         "debug_top_k": config.debug.top_k,
         "expected_text": expected_text,
         "baseline_shared": True,
-        "ocr_preprocessing": config.ocr.preprocessing.model_dump(),
-        "segmentator_preprocessing": config.segmentator.preprocessing.model_dump(),
+        "baseline_enabled": bool(config.baseline is not None and config.baseline.enabled),
+        "segmentator_enabled": config.segmentator is not None,
+        "ocr_enabled": config.ocr is not None,
     }
-    metadata.update(result.ocr_preprocess_debug.metadata)
-    if config.segmentator.checkpoint is not None:
+    active_model = pipeline.recognizer or pipeline.segmentator or pipeline.baseline_processor
+    if active_model is not None:
+        metadata["device"] = str(active_model.device)
+    metadata.update(result.baseline_preprocess_debug.metadata)
+    if config.ocr is not None:
+        metadata["checkpoint"] = str(config.ocr.checkpoint)
+        metadata["ocr_preprocessing"] = config.ocr.preprocessing.model_dump()
+    if result.ocr_preprocess_debug is not None:
+        metadata["ocr_preprocessing_runtime"] = result.ocr_preprocess_debug.metadata
+    if config.segmentator is not None:
         metadata["segmentator_checkpoint"] = str(config.segmentator.checkpoint)
+        metadata["segmentator_preprocessing"] = config.segmentator.preprocessing.model_dump()
+    if result.segmentator_preprocess_debug is not None:
+        metadata["segmentator_preprocessing_runtime"] = (
+            result.segmentator_preprocess_debug.metadata
+        )
     if result.cut_decoding is not None:
         metadata.update(
             {
@@ -169,7 +182,17 @@ def main() -> None:
         )
     if result.cut_decoding is not None:
         print(f"Recognized text (legacy+cuts): '{result.cut_decoding.text}'")
-    print(f"Recognized text (raw OCR): '{result.recognition.text}'")
+    if result.recognition is not None:
+        print(f"Recognized text (raw OCR): '{result.recognition.text}'")
+    else:
+        print("OCR stage: skipped")
+    if result.segmentation is None:
+        print("Vertical segmentator stage: skipped")
+    baseline_status = result.baseline_preprocess_debug.metadata.get(
+        "baseline_status",
+        "unknown",
+    )
+    print(f"Baseline stage: {baseline_status}")
 
     if args.debug_image:
         metadata = _debug_metadata(
@@ -184,19 +207,42 @@ def main() -> None:
             result.recognition,
             args.debug_image,
             metadata,
-            network_input_image=tensor_to_pil(result.ocr_input),
-            preprocess_images=result.ocr_preprocess_debug.images,
+            baseline_output_image=result.baseline_image,
+            baseline_preprocess_images=result.baseline_preprocess_debug.images,
+            baseline_enabled=bool(
+                pipeline.config.baseline is not None
+                and pipeline.config.baseline.enabled
+            ),
+            network_input_image=(
+                tensor_to_pil(result.ocr_input)
+                if result.ocr_input is not None
+                else None
+            ),
+            preprocess_images=(
+                result.ocr_preprocess_debug.images
+                if result.ocr_preprocess_debug is not None
+                else None
+            ),
+            ocr_enabled=pipeline.config.ocr is not None,
             segmentation_result=result.segmentation,
             segmentator_input_image=(
                 tensor_to_pil(result.segmentator_input)
                 if result.segmentator_input is not None
                 else None
             ),
+            segmentator_preprocess_images=(
+                result.segmentator_preprocess_debug.images
+                if result.segmentator_preprocess_debug is not None
+                else None
+            ),
+            segmentator_enabled=pipeline.config.segmentator is not None,
             cut_decoding_result=result.cut_decoding,
         )
         print(f"Saved debug image: {args.debug_image}")
 
     if args.show_raw:
+        if result.recognition is None:
+            raise ValueError("--show-raw requires an ocr section in the inference config")
         print(f"Raw indices: {result.recognition.raw_indices}")
         print(f"Raw chars: {result.recognition.raw_chars}")
         print(
