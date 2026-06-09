@@ -41,8 +41,16 @@ SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols",)
 SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
-SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS = ("peaks", "widths")
 TRAINING_CONFIG_FILENAME = "training_config.yaml"
+NON_TRAINING_SEGMENTATOR_KEYS = {
+    "segmentator_cut_threshold",
+    "segmentator_peak_min_distance",
+    "segmentator_cut_postprocess",
+    "segmentator_cut_min_width",
+    "segmentator_cut_max_width",
+    "segmentator_cut_candidate_threshold",
+    "segmentator_cut_smooth_radius",
+}
 
 
 class TrainingConfig(BaseModel):
@@ -90,13 +98,6 @@ class TrainingConfig(BaseModel):
     baseline_heatmap_strict_size: bool = True
     baseline_heatmap_loss: str = "bce"
     baseline_heatmap_positive_weight: float = Field(default=4.0, ge=1.0)
-    segmentator_cut_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)
-    segmentator_peak_min_distance: int = Field(default=1, ge=1)
-    segmentator_cut_postprocess: str = "widths"
-    segmentator_cut_min_width: int = Field(default=1, ge=1)
-    segmentator_cut_max_width: int = Field(default=0, ge=0)
-    segmentator_cut_candidate_threshold: float = Field(default=0.1, ge=0.0, lt=1.0)
-    segmentator_cut_smooth_radius: int = Field(default=0, ge=0)
     scheduler: str = "reduce_on_plateau"
     scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     scheduler_patience: int = Field(default=3, ge=0)
@@ -133,6 +134,12 @@ class TrainingConfig(BaseModel):
     @classmethod
     def model_validate_with_paths(cls, data: Any, config_path: str | Path) -> "TrainingConfig":
         data = dict(data)
+        misplaced = sorted(NON_TRAINING_SEGMENTATOR_KEYS.intersection(data))
+        if misplaced:
+            raise ValueError(
+                "Segmentator postprocessing parameters do not belong in a training config: "
+                f"{misplaced}. Set them in evaluate_segmentator.py or an inference config."
+            )
         generator_config = data.pop("generator_config", None)
         if generator_config:
             raise ValueError(
@@ -222,14 +229,6 @@ class TrainingConfig(BaseModel):
         value = value.lower()
         if value not in SUPPORTED_BASELINE_HEATMAP_LOSSES:
             raise ValueError(f"baseline_heatmap_loss must be one of {SUPPORTED_BASELINE_HEATMAP_LOSSES}")
-        return value
-
-    @field_validator("segmentator_cut_postprocess")
-    @classmethod
-    def segmentator_cut_postprocess_must_be_supported(cls, value: str) -> str:
-        value = value.lower()
-        if value not in SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS:
-            raise ValueError(f"segmentator_cut_postprocess must be one of {SUPPORTED_SEGMENTATOR_CUT_POSTPROCESS}")
         return value
 
     @field_validator("augmentation_probabilities")
@@ -1455,16 +1454,6 @@ def run_training(
         print(
             f"Cut projection loss: {args.cut_projection_loss} "
             f"positive_weight={args.cut_projection_positive_weight:g}"
-        )
-        print(
-            "Cut postprocess: "
-            f"{args.segmentator_cut_postprocess} "
-            f"threshold={args.segmentator_cut_threshold:g} "
-            f"peak_min_distance={args.segmentator_peak_min_distance} "
-            f"min_width={args.segmentator_cut_min_width} "
-            f"max_width={args.segmentator_cut_max_width} "
-            f"candidate_threshold={args.segmentator_cut_candidate_threshold:g} "
-            f"smooth_radius={args.segmentator_cut_smooth_radius}"
         )
     elif args.loss_mode == "baseline_heatmap":
         print("Batch targets: two-channel top/bottom baseline heatmaps from chunks")

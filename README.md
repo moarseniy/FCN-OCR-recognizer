@@ -377,17 +377,13 @@ cut_projection_crop_right: 0
 cut_projection_strict_width: true
 cut_projection_loss: mse
 cut_projection_positive_weight: 4.0
-segmentator_cut_threshold: 0.35
-segmentator_peak_min_distance: 3
-segmentator_cut_postprocess: widths
-segmentator_cut_min_width: 3
-segmentator_cut_max_width: 24
-segmentator_cut_candidate_threshold: 0.12
-segmentator_cut_smooth_radius: 1
 ```
 
 Пример конфига: `configs/eng_train_101_cuts.yaml`.
 Соответствующий generation-конфиг: `synth_generators/line_generator/configs/eng_101_cuts.yaml`.
+Пороги и параметры postprocess (`cut_threshold`, `peak_min_distance`, режим
+`peaks/widths` и ограничения ширины) в обучении не участвуют. Они задаются при
+`evaluate_segmentator.py` и сохраняются в отдельном inference-конфиге.
 
 Для обучения нейронного детектора верхней/нижней базовой линии:
 
@@ -865,9 +861,9 @@ for path in ["line_1.png", "line_2.png"]:
 похожи, но отвечают за разные места пайплайна. Первый ограничивает
 дистанцию между raw peak-ами при выборе пиков. Второй ограничивает ширину
 готовых символных интервалов после postprocess `widths`. Если
-`segmentator.cut_min_width: null`, используется значение
-`segmentator_cut_min_width` из checkpoint-конфига, а если его нет —
-`segmentator_peak_min_distance`.
+`segmentator.cut_min_width: null`, используется значение старого
+checkpoint-конфига для обратной совместимости, а для новых checkpoint —
+`segmentator.peak_min_distance`.
 
 #### Legacy OCR + Segmentator Decode
 
