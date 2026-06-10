@@ -110,7 +110,7 @@ def recognize_images_with_segmentator(
     segmentator_decode_top_k: int,
     segmentator_decode_center_fraction: float,
     segmentator_decode_min_score_width: int,
-) -> tuple[dict[int, str], dict[int, str]]:
+) -> tuple[dict[int, str], dict[int, str], dict[str, float | int]]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
 
@@ -118,6 +118,11 @@ def recognize_images_with_segmentator(
     errors: dict[int, str] = {}
     processed = 0
     started_at = time.perf_counter()
+    gpu_batches = 0
+    gpu_batch_items = 0
+    padded_width_total = 0
+    useful_width_total = 0
+    max_gpu_batch_size = 0
 
     for start in range(0, len(jobs), batch_size):
         batch_jobs = jobs[start : start + batch_size]
@@ -173,22 +178,36 @@ def recognize_images_with_segmentator(
                 predictions[row_index] = ""
                 errors[row_index] = repr(image_error)
 
-        if prepared:
+        for width_batch in _make_width_aware_batches(
+            prepared,
+            max_batch_size=batch_size,
+        ):
             try:
                 ocr_batch = _pad_inference_batch(
-                    [item["ocr_input"] for item in prepared],
+                    [item["ocr_input"] for item in width_batch],
                     device=recognizer.device,
                 )
                 segmentator_batch = _pad_inference_batch(
-                    [item["segmentator_input"] for item in prepared],
+                    [item["segmentator_input"] for item in width_batch],
                     device=segmentator.device,
+                )
+                gpu_batches += 1
+                gpu_batch_items += len(width_batch)
+                max_gpu_batch_size = max(max_gpu_batch_size, len(width_batch))
+                padded_width_total += len(width_batch) * (
+                    int(ocr_batch.shape[-1]) + int(segmentator_batch.shape[-1])
+                )
+                useful_width_total += sum(
+                    int(item["ocr_input"].shape[-1])
+                    + int(item["segmentator_input"].shape[-1])
+                    for item in width_batch
                 )
                 ocr_logits, _ = recognizer.logits_from_tensor(ocr_batch)
                 segmentator_logits, _ = segmentator.logits_from_tensor(
                     segmentator_batch
                 )
 
-                for batch_index, item in enumerate(prepared):
+                for batch_index, item in enumerate(width_batch):
                     row_index = int(item["row_index"])
                     try:
                         ocr_width = int(item["ocr_output_width"])
@@ -225,7 +244,7 @@ def recognize_images_with_segmentator(
                         predictions[row_index] = ""
                         errors[row_index] = repr(image_error)
             except Exception as batch_error:
-                for item in prepared:
+                for item in width_batch:
                     row_index = int(item["row_index"])
                     predictions[row_index] = ""
                     errors[row_index] = f"batch_error={batch_error!r}"
@@ -242,7 +261,83 @@ def recognize_images_with_segmentator(
                 f"(batch_size={batch_size}, {speed:.2f} img/s)"
             )
 
-    return predictions, errors
+    padding_efficiency = (
+        useful_width_total / padded_width_total
+        if padded_width_total > 0
+        else 1.0
+    )
+    return predictions, errors, {
+        "gpu_batches": gpu_batches,
+        "average_gpu_batch_size": (
+            gpu_batch_items / gpu_batches
+            if gpu_batches > 0
+            else 0.0
+        ),
+        "max_gpu_batch_size": max_gpu_batch_size,
+        "padding_efficiency": padding_efficiency,
+    }
+
+
+def _make_width_aware_batches(
+    prepared: list[dict[str, Any]],
+    max_batch_size: int,
+    max_width_ratio: float = 1.35,
+) -> list[list[dict[str, Any]]]:
+    if max_batch_size < 1:
+        raise ValueError("max_batch_size must be >= 1")
+    if max_width_ratio < 1.0:
+        raise ValueError("max_width_ratio must be >= 1")
+    if not prepared:
+        return []
+
+    ordered = sorted(
+        prepared,
+        key=lambda item: max(
+            int(item["ocr_input"].shape[-1]),
+            int(item["segmentator_input"].shape[-1]),
+        ),
+    )
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    min_ocr_width = 0
+    max_ocr_width = 0
+    min_segmentator_width = 0
+    max_segmentator_width = 0
+
+    for item in ordered:
+        ocr_width = int(item["ocr_input"].shape[-1])
+        segmentator_width = int(item["segmentator_input"].shape[-1])
+        if not current:
+            current = [item]
+            min_ocr_width = max_ocr_width = ocr_width
+            min_segmentator_width = max_segmentator_width = segmentator_width
+            continue
+
+        next_min_ocr = min(min_ocr_width, ocr_width)
+        next_max_ocr = max(max_ocr_width, ocr_width)
+        next_min_segmentator = min(min_segmentator_width, segmentator_width)
+        next_max_segmentator = max(max_segmentator_width, segmentator_width)
+        width_compatible = (
+            next_max_ocr / max(1, next_min_ocr) <= max_width_ratio
+            and next_max_segmentator / max(1, next_min_segmentator)
+            <= max_width_ratio
+        )
+        if len(current) >= max_batch_size or not width_compatible:
+            batches.append(current)
+            current = [item]
+            min_ocr_width = max_ocr_width = ocr_width
+            min_segmentator_width = max_segmentator_width = segmentator_width
+            continue
+
+        current.append(item)
+        min_ocr_width = next_min_ocr
+        max_ocr_width = next_max_ocr
+        min_segmentator_width = next_min_segmentator
+        max_segmentator_width = next_max_segmentator
+
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _pad_inference_batch(
@@ -382,7 +477,15 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Total Levenshtein:          {metrics['total_levenshtein']}")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
-    print(f"Batch size:                 {metrics['batch_size']}")
+    print(f"Requested batch size:       {metrics['batch_size']}")
+    if "gpu_batches" in metrics:
+        print(f"GPU sub-batches:            {metrics['gpu_batches']}")
+        print(
+            "Average GPU batch size:     "
+            f"{metrics['average_gpu_batch_size']:.2f}"
+        )
+        print(f"Maximum GPU batch size:     {metrics['max_gpu_batch_size']}")
+        print(f"Padding efficiency:         {metrics['padding_efficiency']:.4f}")
     print(f"OCR scale_x:                {metrics['scale_x']:+.5f}")
     print(f"OCR y_pad:                  {metrics['y_pad']:+.5f}")
     print(f"OCR x_pad:                  {metrics['x_pad']:.5f}")
@@ -472,6 +575,7 @@ def evaluate_prepared(
     )
 
     segmentator = None
+    batch_metrics: dict[str, float | int] = {}
     if decode_with_segmentator:
         segmentator = VerticalSegmentator(
             segmentator_checkpoint,
@@ -490,7 +594,7 @@ def evaluate_prepared(
             cut_candidate_threshold=segmentator_cut_candidate_threshold,
             cut_smooth_radius=segmentator_cut_smooth_radius,
         )
-        predictions, errors = recognize_images_with_segmentator(
+        predictions, errors, batch_metrics = recognize_images_with_segmentator(
             recognizer,
             segmentator,
             jobs,
@@ -511,6 +615,7 @@ def evaluate_prepared(
         rows[row_index]["error"] = error
 
     metrics = compute_metrics(rows, elapsed)
+    metrics.update(batch_metrics)
     metrics["scale_x"] = float(scale_x)
     metrics["y_pad"] = float(y_pad)
     metrics["x_pad"] = float(x_pad)
