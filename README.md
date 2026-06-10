@@ -1014,6 +1014,11 @@ python evaluate_ocr.py \
 Optuna только вместе с `--decode-with-segmentator` и
 `--segmentator-checkpoint`.
 
+`--batch-size` применяется как к обычному OCR evaluation, так и к совместному
+OCR+segmentator decode. Картинки разной ширины дополняются справа фоном только
+внутри батча; перед decode logits обрезаются до реальной выходной ширины каждого
+изображения.
+
 Если baseline и вертикальный сегментатор уже настроены, удобнее передать
 готовый inference-конфиг и подбирать только OCR:
 

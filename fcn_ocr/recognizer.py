@@ -192,7 +192,7 @@ class TextRecognizer:
         print(f"Preprocess scale_x: {self.scale_x:+.4f}")
         print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
         print(f"Preprocess x_pad:   {self.x_pad:.4f}")
-        print(f"Baseline crop:      {self.baseline_crop}")
+        print(f"Model-internal baseline crop: {self.baseline_crop}")
         if self.baseline_crop:
             print(
                 f"  deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "

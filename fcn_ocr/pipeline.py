@@ -112,6 +112,36 @@ class OCRPipeline:
                 self.baseline_processor.baseline_line_pad_px = baseline.line_pad_px
                 self.baseline_processor.baseline_detector_threshold = baseline.detector_threshold
 
+        if verbose:
+            self._print_pipeline_summary()
+
+    def _print_pipeline_summary(self) -> None:
+        baseline = self.config.baseline
+        print("\nInference pipeline:")
+        if baseline is None or not baseline.enabled:
+            print("  Shared pipeline baseline: disabled")
+        else:
+            detector = (
+                f"neural detector {baseline.detector_checkpoint}"
+                if baseline.detector_checkpoint is not None
+                else "model-hosted heuristic detector"
+            )
+            print(f"  Shared pipeline baseline: enabled ({detector})")
+            print(
+                "    runs once before OCR/segmentator; "
+                f"deskew={baseline.deskew}, strict_lines={baseline.strict_lines}, "
+                f"line_pad={baseline.line_pad:.3f}, line_pad_px={baseline.line_pad_px:.1f}"
+            )
+        print(
+            "  OCR stage: "
+            f"{'enabled; receives shared baseline output' if self.recognizer is not None else 'disabled'}"
+        )
+        print(
+            "  Vertical segmentator stage: "
+            f"{'enabled; receives shared baseline output' if self.segmentator is not None else 'disabled'}"
+        )
+        print(f"  Decode with segmentator: {self.config.decode.enabled}")
+
     def recognize_path(
         self,
         image_path: str | Path,

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+import torch
 
 from fcn_ocr import InferenceConfig, TextRecognizer, VerticalSegmentator
 from tool.optuna_progress import optimize_with_progress
@@ -104,54 +105,168 @@ def recognize_images_with_segmentator(
     recognizer: TextRecognizer,
     segmentator: VerticalSegmentator,
     jobs: list[tuple[int, Path]],
+    batch_size: int,
     log_every: int,
     segmentator_decode_top_k: int,
     segmentator_decode_center_fraction: float,
     segmentator_decode_min_score_width: int,
 ) -> tuple[dict[int, str], dict[int, str]]:
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+
     predictions: dict[int, str] = {}
     errors: dict[int, str] = {}
     processed = 0
     started_at = time.perf_counter()
 
-    for row_index, path in jobs:
-        try:
-            with Image.open(path) as image_file:
-                source_image = image_file.convert("RGB")
+    for start in range(0, len(jobs), batch_size):
+        batch_jobs = jobs[start : start + batch_size]
+        prepared: list[dict[str, Any]] = []
 
-            baseline_image, _ = recognizer.prepare_baseline_image(source_image)
-            input_tensor, ocr_source_x = recognizer.preprocess_pil_after_baseline_with_source_x(
-                baseline_image
-            )
-            ocr_logits, _ = recognizer.logits_from_tensor(input_tensor)
-            segmentator_input_tensor, segmentator_source_x = (
-                segmentator.preprocess_pil_after_baseline_with_source_x(baseline_image)
-            )
-            segmentation_result = segmentator.segment_tensor_debug(segmentator_input_tensor)
+        for row_index, path in batch_jobs:
+            try:
+                with Image.open(path) as image_file:
+                    source_image = image_file.convert("RGB")
 
-            cut_decoding_result = recognizer.decode_legacy_with_cuts(
-                ocr_logits,
-                segmentation_result,
-                input_width=int(input_tensor.shape[-1]),
-                top_k=segmentator_decode_top_k,
-                center_fraction=segmentator_decode_center_fraction,
-                min_score_width=segmentator_decode_min_score_width,
-                ocr_source_x=ocr_source_x,
-                segmentator_source_x=segmentator_source_x,
-            )
-            predictions[row_index] = cut_decoding_result.text.strip()
-            errors[row_index] = ""
-        except Exception as image_error:
-            predictions[row_index] = ""
-            errors[row_index] = repr(image_error)
+                baseline_image, _ = recognizer.prepare_baseline_image(source_image)
+                ocr_input, ocr_source_x = (
+                    recognizer.preprocess_pil_after_baseline_with_source_x(
+                        baseline_image
+                    )
+                )
+                segmentator_input, segmentator_source_x = (
+                    segmentator.preprocess_pil_after_baseline_with_source_x(
+                        baseline_image
+                    )
+                )
+                ocr_output_width = recognizer.output_width_for_input_width(
+                    int(ocr_input.shape[-1])
+                )
+                segmentator_output_width = segmentator.output_width_for_input_width(
+                    int(segmentator_input.shape[-1])
+                )
+                if ocr_output_width < 1:
+                    raise ValueError(
+                        "OCR preprocessing produced an input that is too narrow "
+                        f"for {recognizer.architecture}: "
+                        f"input={tuple(ocr_input.shape)}, output_width={ocr_output_width}"
+                    )
+                if segmentator_output_width < 1:
+                    raise ValueError(
+                        "Segmentator preprocessing produced an input that is too narrow "
+                        f"for {segmentator.architecture}: "
+                        f"input={tuple(segmentator_input.shape)}, "
+                        f"output_width={segmentator_output_width}"
+                    )
+                prepared.append(
+                    {
+                        "row_index": row_index,
+                        "ocr_input": ocr_input,
+                        "ocr_source_x": ocr_source_x,
+                        "ocr_output_width": ocr_output_width,
+                        "segmentator_input": segmentator_input,
+                        "segmentator_source_x": segmentator_source_x,
+                        "segmentator_output_width": segmentator_output_width,
+                    }
+                )
+            except Exception as image_error:
+                predictions[row_index] = ""
+                errors[row_index] = repr(image_error)
 
-        processed += 1
-        if log_every > 0 and (processed == len(jobs) or processed % log_every == 0):
+        if prepared:
+            try:
+                ocr_batch = _pad_inference_batch(
+                    [item["ocr_input"] for item in prepared],
+                    device=recognizer.device,
+                )
+                segmentator_batch = _pad_inference_batch(
+                    [item["segmentator_input"] for item in prepared],
+                    device=segmentator.device,
+                )
+                ocr_logits, _ = recognizer.logits_from_tensor(ocr_batch)
+                segmentator_logits, _ = segmentator.logits_from_tensor(
+                    segmentator_batch
+                )
+
+                for batch_index, item in enumerate(prepared):
+                    row_index = int(item["row_index"])
+                    try:
+                        ocr_width = int(item["ocr_output_width"])
+                        segmentator_width = int(item["segmentator_output_width"])
+                        sample_ocr_logits = ocr_logits[
+                            batch_index : batch_index + 1,
+                            :,
+                            :ocr_width,
+                        ]
+                        sample_segmentator_logits = segmentator_logits[
+                            batch_index : batch_index + 1,
+                            :,
+                            :segmentator_width,
+                        ]
+                        segmentator_input = item["segmentator_input"]
+                        segmentation_result = segmentator.analyze_segmentation_logits(
+                            sample_segmentator_logits,
+                            input_shape=(1, *tuple(segmentator_input.shape)),
+                        )
+                        ocr_input = item["ocr_input"]
+                        cut_decoding_result = recognizer.decode_legacy_with_cuts(
+                            sample_ocr_logits,
+                            segmentation_result,
+                            input_width=int(ocr_input.shape[-1]),
+                            top_k=segmentator_decode_top_k,
+                            center_fraction=segmentator_decode_center_fraction,
+                            min_score_width=segmentator_decode_min_score_width,
+                            ocr_source_x=item["ocr_source_x"],
+                            segmentator_source_x=item["segmentator_source_x"],
+                        )
+                        predictions[row_index] = cut_decoding_result.text.strip()
+                        errors[row_index] = ""
+                    except Exception as image_error:
+                        predictions[row_index] = ""
+                        errors[row_index] = repr(image_error)
+            except Exception as batch_error:
+                for item in prepared:
+                    row_index = int(item["row_index"])
+                    predictions[row_index] = ""
+                    errors[row_index] = f"batch_error={batch_error!r}"
+
+        processed += len(batch_jobs)
+        if log_every > 0 and (
+            processed == len(jobs)
+            or processed % log_every == 0
+        ):
             elapsed = max(1e-9, time.perf_counter() - started_at)
             speed = processed / elapsed
-            print(f"Recognized {processed}/{len(jobs)} images with segmentator ({speed:.2f} img/s)")
+            print(
+                f"Recognized {processed}/{len(jobs)} images with segmentator "
+                f"(batch_size={batch_size}, {speed:.2f} img/s)"
+            )
 
     return predictions, errors
+
+
+def _pad_inference_batch(
+    tensors: list[torch.Tensor],
+    device: torch.device,
+) -> torch.Tensor:
+    if not tensors:
+        raise ValueError("Cannot build an empty inference batch")
+    channels = int(tensors[0].shape[0])
+    height = int(tensors[0].shape[1])
+    max_width = max(int(tensor.shape[-1]) for tensor in tensors)
+    batch = torch.ones(
+        (len(tensors), channels, height, max_width),
+        dtype=tensors[0].dtype,
+        device=device,
+    )
+    for batch_index, tensor in enumerate(tensors):
+        if tuple(tensor.shape[:2]) != (channels, height):
+            raise ValueError(
+                "All tensors in an inference batch must have equal channels/height; "
+                f"expected {(channels, height)}, got {tuple(tensor.shape[:2])}"
+            )
+        batch[batch_index, :, :, : tensor.shape[-1]] = tensor.to(device)
+    return batch
 
 
 def build_rows_and_jobs(
@@ -267,6 +382,7 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Total Levenshtein:          {metrics['total_levenshtein']}")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
+    print(f"Batch size:                 {metrics['batch_size']}")
     print(f"OCR scale_x:                {metrics['scale_x']:+.5f}")
     print(f"OCR y_pad:                  {metrics['y_pad']:+.5f}")
     print(f"OCR x_pad:                  {metrics['x_pad']:.5f}")
@@ -378,6 +494,7 @@ def evaluate_prepared(
             recognizer,
             segmentator,
             jobs,
+            batch_size=batch_size,
             log_every=log_every,
             segmentator_decode_top_k=segmentator_decode_top_k,
             segmentator_decode_center_fraction=segmentator_decode_center_fraction,
@@ -397,6 +514,7 @@ def evaluate_prepared(
     metrics["scale_x"] = float(scale_x)
     metrics["y_pad"] = float(y_pad)
     metrics["x_pad"] = float(x_pad)
+    metrics["batch_size"] = int(batch_size)
     metrics["baseline_crop"] = bool(baseline_crop)
     metrics["baseline_strict_lines"] = bool(baseline_strict_lines)
     metrics["baseline_line_pad"] = float(baseline_line_pad)
@@ -1127,7 +1245,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--segmentator-decode-center-fraction", type=float, default=None)
     parser.add_argument("--segmentator-decode-min-score-width", type=int, default=None)
 
-    parser.add_argument("--batch-size", type=int, default=32, help="Direct OCR inference batch size.")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Inference batch size for OCR and OCR+segmentator evaluation.",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
     parser.add_argument(
