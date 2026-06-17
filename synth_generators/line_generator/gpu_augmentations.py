@@ -194,6 +194,8 @@ class GpuTextAugmenter:
             return self._rescale_quality(images, params, collect_metadata)
         if name == "random_line":
             return self._random_line(images, params, collect_metadata)
+        if name == "baseline_line":
+            return self._baseline_line(images, params, collect_metadata)
         if name == "morphology":
             return self._morphology(images, params, collect_metadata)
         if name == "unsharp_mask":
@@ -1114,6 +1116,129 @@ class GpuTextAugmenter:
             ]
         return output, logs
 
+    def _baseline_line(
+        self,
+        images: torch.Tensor,
+        params: dict[str, Any],
+        collect_metadata: bool,
+    ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
+        _, _, height, width = images.shape
+        if height <= 0 or width <= 0:
+            return images, None
+
+        side = str(params.get("side", params.get("mode", "random"))).lower()
+        batch_size = images.size(0)
+        device = images.device
+        dtype = images.dtype
+
+        if side in {"top", "upper"}:
+            top_active = torch.ones(batch_size, device=device, dtype=torch.bool)
+            bottom_active = torch.zeros(batch_size, device=device, dtype=torch.bool)
+        elif side in {"bottom", "lower"}:
+            top_active = torch.zeros(batch_size, device=device, dtype=torch.bool)
+            bottom_active = torch.ones(batch_size, device=device, dtype=torch.bool)
+        elif side == "both":
+            top_active = torch.ones(batch_size, device=device, dtype=torch.bool)
+            bottom_active = torch.ones(batch_size, device=device, dtype=torch.bool)
+        elif side == "random":
+            top_active = torch.rand(batch_size, device=device) < 0.5
+            bottom_active = ~top_active
+        elif side in {"random_or_both", "any"}:
+            both_probability = float(params.get("both_probability", 1.0 / 3.0))
+            both_probability = min(max(both_probability, 0.0), 1.0)
+            draw_both = torch.rand(batch_size, device=device) < both_probability
+            draw_top = torch.rand(batch_size, device=device) < 0.5
+            top_active = draw_both | draw_top
+            bottom_active = draw_both | (~draw_top)
+        else:
+            raise ValueError(
+                "baseline_line side/mode must be one of: "
+                "top, bottom, both, random, random_or_both"
+            )
+
+        if not bool((top_active | bottom_active).any()):
+            return images, None
+
+        top_y = self._sample_tensor_range_with_default_range(
+            params,
+            "top_y",
+            default_min=0.18,
+            default_max=0.36,
+            count=batch_size,
+            device=device,
+            dtype=dtype,
+        ).clamp(0.0, 1.0)
+        bottom_y = self._sample_tensor_range_with_default_range(
+            params,
+            "bottom_y",
+            default_min=0.64,
+            default_max=0.88,
+            count=batch_size,
+            device=device,
+            dtype=dtype,
+        ).clamp(0.0, 1.0)
+        angle_degrees = self._sample_tensor_range(params, "angle_degrees", 0.0, batch_size, device, dtype)
+        line_width = self._sample_tensor_range(params, "line_width", 1.0, batch_size, device, dtype).clamp(min=0.25)
+        alpha = self._sample_tensor_range(params, "alpha", 0.75, batch_size, device, dtype).clamp(0.0, 1.0)
+        value = self._sample_tensor_range(params, "value", 45.0, batch_size, device, dtype).clamp(0.0, 255.0) / 255.0
+
+        if bool((alpha <= 0.0).all()):
+            return images, None
+
+        output = images
+        output = self._blend_slanted_line(
+            output,
+            y_position=top_y,
+            angle_degrees=angle_degrees,
+            line_width=line_width,
+            alpha=alpha * top_active.to(dtype),
+            value=value,
+        )
+        output = self._blend_slanted_line(
+            output,
+            y_position=bottom_y,
+            angle_degrees=angle_degrees,
+            line_width=line_width,
+            alpha=alpha * bottom_active.to(dtype),
+            value=value,
+        )
+
+        logs = None
+        if collect_metadata:
+            logs = []
+            top_values = top_y.detach().cpu().tolist()
+            bottom_values = bottom_y.detach().cpu().tolist()
+            top_flags = top_active.detach().cpu().tolist()
+            bottom_flags = bottom_active.detach().cpu().tolist()
+            for sample_top, sample_bottom, has_top, has_bottom, sample_angle, sample_width, sample_alpha, sample_value in zip(
+                top_values,
+                bottom_values,
+                top_flags,
+                bottom_flags,
+                angle_degrees.detach().cpu().tolist(),
+                line_width.detach().cpu().tolist(),
+                alpha.detach().cpu().tolist(),
+                (value * 255.0).detach().cpu().tolist(),
+            ):
+                drawn_sides = []
+                if has_top:
+                    drawn_sides.append("top")
+                if has_bottom:
+                    drawn_sides.append("bottom")
+                logs.append(
+                    {
+                        "side": side,
+                        "drawn_sides": drawn_sides,
+                        "top_y": float(sample_top),
+                        "bottom_y": float(sample_bottom),
+                        "angle_degrees": float(sample_angle),
+                        "line_width": float(sample_width),
+                        "alpha": float(sample_alpha),
+                        "value": float(sample_value),
+                    }
+                )
+        return output, logs
+
     def _morphology(
         self,
         images: torch.Tensor,
@@ -1229,6 +1354,55 @@ class GpuTextAugmenter:
             return torch.empty((count,), device=device, dtype=dtype).uniform_(low, high)
 
         return torch.full((count,), float(default), device=device, dtype=dtype)
+
+    @classmethod
+    def _sample_tensor_range_with_default_range(
+        cls,
+        params: dict[str, Any],
+        name: str,
+        default_min: float,
+        default_max: float,
+        count: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if name in params or f"{name}_min" in params or f"{name}_max" in params:
+            default = (float(default_min) + float(default_max)) * 0.5
+            return cls._sample_tensor_range(params, name, default, count, device, dtype)
+
+        low = float(default_min)
+        high = float(default_max)
+        if high < low:
+            low, high = high, low
+        return torch.empty((count,), device=device, dtype=dtype).uniform_(low, high)
+
+    @staticmethod
+    def _blend_slanted_line(
+        images: torch.Tensor,
+        y_position: torch.Tensor,
+        angle_degrees: torch.Tensor,
+        line_width: torch.Tensor,
+        alpha: torch.Tensor,
+        value: torch.Tensor,
+    ) -> torch.Tensor:
+        if bool((alpha <= 0.0).all()):
+            return images
+
+        _, _, height, width = images.shape
+        x_coords = torch.arange(width, device=images.device, dtype=images.dtype).view(1, 1, width)
+        y_coords = torch.arange(height, device=images.device, dtype=images.dtype).view(1, height, 1)
+        x_center = (width - 1) * 0.5
+        y_center = y_position.view(-1, 1, 1) * max(height - 1, 1)
+        slope = torch.tan(angle_degrees.view(-1, 1, 1) * math.pi / 180.0)
+
+        distance = torch.abs((y_coords - y_center) - slope * (x_coords - x_center))
+        distance = distance / torch.sqrt(1.0 + slope * slope)
+        half_width = (line_width.view(-1, 1, 1) * 0.5).clamp(min=0.125)
+        mask = (half_width + 0.5 - distance).clamp(0.0, 1.0).unsqueeze(1)
+
+        blend = mask * alpha.view(-1, 1, 1, 1)
+        line_value = value.view(-1, 1, 1, 1)
+        return images * (1.0 - blend) + line_value * blend
 
     @staticmethod
     def _randint(low: int, high: int) -> int:

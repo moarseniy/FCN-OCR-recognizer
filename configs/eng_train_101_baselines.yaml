@@ -58,6 +58,7 @@ augmentation_probabilities:
   crop_y: 0.20
   rescale_quality: 0.25
   random_line: 0.35
+  baseline_line: 0.15
   morphology: 0.15
   unsharp_mask: 0.20
   gaussian_blur: 0.0
@@ -140,6 +141,21 @@ augmentations:
     value_max: 90.0
     y_min: 0.0
     y_max: 1.0
+  baseline_line:
+    side: random_or_both
+    both_probability: 0.35
+    top_y_min: 0.14
+    top_y_max: 0.36
+    bottom_y_min: 0.62
+    bottom_y_max: 0.90
+    angle_degrees_min: -2.5
+    angle_degrees_max: 2.5
+    line_width_min: 0.75
+    line_width_max: 2.0
+    alpha_min: 0.20
+    alpha_max: 0.70
+    value_min: 0.0
+    value_max: 90.0
   morphology:
     operation: random
     size: 3

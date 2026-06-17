@@ -39,6 +39,7 @@ SUPPORTED_AUGMENTATIONS = (
     "crop_y",
     "rescale_quality",
     "random_line",
+    "baseline_line",
     "morphology",
     "unsharp_mask",
     "gaussian_blur",
@@ -874,7 +875,6 @@ class SingleLineDataset(Dataset):
         draw = ImageDraw.Draw(image)
 
         bbox = self._text_bbox(text, font, style)
-        text_width = bbox[2] - bbox[0]
         x_min = cfg.horizontal_padding - bbox[0]
         x_max = cfg.image_width - cfg.horizontal_padding - bbox[2]
         free_x = max(0, int(math.floor(x_max - x_min)))

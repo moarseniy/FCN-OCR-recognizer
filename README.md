@@ -95,6 +95,7 @@ augmentation_probabilities:
   crop_y: 0.05
   rescale_quality: 0.2
   random_line: 0.1
+  baseline_line: 0.1
   morphology: 0.08
   unsharp_mask: 0.12
   gaussian_blur: 0.0
@@ -140,6 +141,21 @@ augmentations:
     value_max: 80.0
     y_min: 0.15
     y_max: 0.9
+  baseline_line:
+    side: random_or_both
+    both_probability: 0.35
+    top_y_min: 0.18
+    top_y_max: 0.36
+    bottom_y_min: 0.62
+    bottom_y_max: 0.88
+    angle_degrees_min: -2.5
+    angle_degrees_max: 2.5
+    line_width_min: 0.75
+    line_width_max: 2.0
+    alpha_min: 0.25
+    alpha_max: 0.75
+    value_min: 0.0
+    value_max: 90.0
   gaussian_blur:
     radius_min: 0.0
     radius_max: 0.25
@@ -160,7 +176,7 @@ augmentations:
 Доступные OCR-аугментации: `cycle_shift`, `preprocess_geometry`,
 `strong_blur`, `motion_blur`, `scale`, `darkening`, `vertical_fade`, `noise`, `projective`,
 `rotate`, `x_pad`, `crop_x`, `crop_y`, `rescale_quality`, `random_line`,
-`morphology`, `unsharp_mask`.
+`baseline_line`, `morphology`, `unsharp_mask`.
 `preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
 `x_pad` сжимает содержимое по X внутрь исходного размера тензора и заполняет
 поля `fillcolor`; для target-ов применяется такое же преобразование.
@@ -173,6 +189,9 @@ augmentations:
 медианным цветом его рамки. `extent` задаёт долю высоты эффекта, `strength`
 силу у края, `gamma` форму перехода; геометрическая разметка не меняется.
 `random_line` добавляет почти горизонтальную линию под небольшим углом.
+`baseline_line` добавляет верхнюю, нижнюю или обе baseline-like линии.
+`side` может быть `top`, `bottom`, `both`, `random` или `random_or_both`;
+позиции задаются через `top_y_*` и `bottom_y_*` в долях высоты изображения.
 Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 
 Сохранить один пример изображения по указанному тексту:
