@@ -1,11 +1,20 @@
-sample_alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+sample_alphabet: " -0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 space_char: " "
-samples: 100000
+channels: 1
+seed: 42
+samples: 1024
 output_dir: ../../../data
-chunk_size: 1024
+chunk_size: 256
 num_workers: 4
 overwrite: false
+
 save_dense_targets: true
+save_cut_projection_targets: true
+cut_projection_peak_radius: 1
+cut_projection_include_margins: true
+save_baseline_targets: true
+baseline_target_radius: 1
+
 image_height: 48
 image_width: 64
 min_text_length: 4
@@ -19,6 +28,12 @@ crop_stride: 64
 min_crop_text_length: 1
 edge_char_min_visible_ratio: 0.75
 edge_fragment_max_visible_ratio: 0.25
+neighbor_lines_probability: 0.7
+neighbor_line_min_crop_ratio: 0.7
+neighbor_line_visible_ratio_min: 0.06
+neighbor_line_gap_min: 0
+neighbor_line_gap_max: 7
+
 font_dir: ../fonts
 font_extensions:
   - .ttf
@@ -27,12 +42,12 @@ font_extensions:
   - .otc
 font_size_min: 24
 font_size_max: 34
+
 char_spacing_min: -0.4
 char_spacing_max: 1.6
 word_spacing_multiplier_min: 0.75
 word_spacing_multiplier_max: 1.7
-channels: 1
-seed: 42
+
 background_dir: ../backgrounds
 background_extensions:
   - .png
