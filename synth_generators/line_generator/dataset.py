@@ -85,6 +85,10 @@ class SingleLineDatasetConfig(BaseModel):
     font_size_max: int = Field(default=34, ge=6)
     char_spacing_min: float = 0.0
     char_spacing_max: float = 0.0
+    ink_spacing_enabled: bool = False
+    ink_spacing_min_char_gap_px: float = 0.0
+    ink_spacing_touch_gap_px: float = Field(default=0.5, ge=0.0)
+    ink_spacing_touch_probability: float = Field(default=1.0, ge=0.0, le=1.0)
     word_spacing_multiplier_min: float = Field(default=1.0, gt=0.0)
     word_spacing_multiplier_max: float = Field(default=1.0, gt=0.0)
     channels: int = Field(default=3, ge=1, le=3)
@@ -394,8 +398,20 @@ class SingleLineDataset(Dataset):
         if self.config.line_crops:
             return next(self._iter_line_crop_samples(rng))
 
-        text, font, style = self._make_text_that_fits(rng)
-        return self.generate_text_sample(text, rng, font, style)
+        last_error: Exception | None = None
+        for _ in range(1000):
+            try:
+                text, font, style = self._make_text_that_fits(rng)
+                return self.generate_text_sample(text, rng, font, style)
+            except ValueError as exc:
+                last_error = exc
+
+        details = f" Last generation error: {last_error}" if last_error is not None else ""
+        raise RuntimeError(
+            "failed to create a text sample that satisfies configured ink spacing. "
+            "Relax ink_spacing_* constraints or reduce text/font density."
+            f"{details}"
+        )
 
     def iter_generated_samples(self) -> Iterable[GeneratedLineSample]:
         if not self.config.line_crops:
@@ -426,6 +442,11 @@ class SingleLineDataset(Dataset):
         style = style or self._sample_text_style(rng)
         font = font or self._load_font_that_fits(text, rng, style)
         image, spans, cut_spans, baseline_top, baseline_bottom = self._render_text(text, font, rng, style)
+        if not self._accept_ink_spacing(cut_spans, rng):
+            raise ValueError(
+                "rendered text violates ink spacing constraints; "
+                "relax ink_spacing_* or render with a different font/style"
+            )
         return self._make_sample(image, text, spans, cut_spans, baseline_top, baseline_bottom)
 
     def _validate_text(self, text: str) -> None:
@@ -997,6 +1018,8 @@ class SingleLineDataset(Dataset):
                 continue
             if len(text) > cfg.max_text_length:
                 continue
+            if not self._accept_ink_spacing(crop_cut_spans, rng):
+                continue
             crop = image.crop((left, 0, right, cfg.image_height))
             crop_baseline_top = baseline_top
             crop_baseline_bottom = baseline_bottom
@@ -1355,6 +1378,47 @@ class SingleLineDataset(Dataset):
                 ink_end = logical_end
             cut_spans.append((char, ink_start, ink_end))
         return cut_spans
+
+    def _accept_ink_spacing(
+        self,
+        cut_spans: list[tuple[str, float, float]],
+        rng: random.Random,
+    ) -> bool:
+        cfg = self.config
+        if not cfg.ink_spacing_enabled:
+            return True
+
+        gaps = self._adjacent_non_space_ink_gaps(cut_spans)
+        if not gaps:
+            return True
+
+        min_gap = min(gaps)
+        if min_gap < cfg.ink_spacing_min_char_gap_px:
+            return False
+
+        if (
+            cfg.ink_spacing_touch_probability < 1.0
+            and min_gap <= cfg.ink_spacing_touch_gap_px
+        ):
+            return rng.random() <= cfg.ink_spacing_touch_probability
+        return True
+
+    def _adjacent_non_space_ink_gaps(
+        self,
+        cut_spans: list[tuple[str, float, float]],
+    ) -> list[float]:
+        gaps: list[float] = []
+        previous: tuple[str, float, float] | None = None
+        for span in cut_spans:
+            char, start, end = span
+            if char == self.config.space_char:
+                previous = None
+                continue
+            if previous is not None:
+                _, _, previous_end = previous
+                gaps.append(float(start) - float(previous_end))
+            previous = span
+        return gaps
 
     def _styled_char_layout(
         self,

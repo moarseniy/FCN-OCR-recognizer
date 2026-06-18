@@ -28,11 +28,11 @@ crop_stride: 64
 min_crop_text_length: 1
 edge_char_min_visible_ratio: 0.75
 edge_fragment_max_visible_ratio: 0.25
-neighbor_lines_probability: 0.7
-neighbor_line_min_crop_ratio: 0.7
-neighbor_line_visible_ratio_min: 0.06
+neighbor_lines_probability: 1.0
+neighbor_line_min_crop_ratio: 0.65
+neighbor_line_visible_ratio_min: 0.35
 neighbor_line_gap_min: 0
-neighbor_line_gap_max: 7
+neighbor_line_gap_max: 0
 
 font_dir: ../fonts
 font_extensions:
@@ -45,6 +45,10 @@ font_size_max: 34
 
 char_spacing_min: -0.4
 char_spacing_max: 1.6
+ink_spacing_enabled: true
+ink_spacing_min_char_gap_px: 0.0
+ink_spacing_touch_gap_px: 0.5
+ink_spacing_touch_probability: 0.10
 word_spacing_multiplier_min: 0.75
 word_spacing_multiplier_max: 1.7
 
