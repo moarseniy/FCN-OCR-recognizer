@@ -31,13 +31,16 @@ baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где кана
 нормализует строки, убирая пробелы в начале/конце и схлопывая несколько
 пробелов подряд в один.
 
-Примеры конфигов:
+Основные конфиги для эксперимента `101` теперь разделены по назначению:
+
+- `synth_generators/line_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `dense_targets`, без соседних строк;
+- `synth_generators/line_generator/configs/eng_101_cuts.yaml` — cuts-сегментатор: чистая основная строка, `cut_projection_targets`, без соседних строк;
+- `synth_generators/line_generator/configs/eng_101_baselines.yaml` — baseline detector: `baseline_targets`, соседние верхние/нижние строки как вертикальный мусор.
+
+Старые минимальные примеры также остаются:
 
 - `synth_generators/line_generator/configs/eng_001.yaml` — генерация;
 - `configs/eng_train_001.yaml` — обучение.
-- `synth_generators/line_generator/configs/eng_101.yaml` — генерация OCR-чанков с `dense_targets`;
-- `synth_generators/line_generator/configs/eng_101_cuts.yaml` — генерация чанков для вертикального cut-сегментатора.
-- `synth_generators/line_generator/configs/eng_101_baselines.yaml` — генерация чанков для top/bottom baseline-детектора.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -210,6 +213,19 @@ python -m synth_generators.line_generator.generate_dataset \
   --config synth_generators/line_generator/configs/eng_001.yaml
 ```
 
+Для раздельной генерации данных под OCR, cuts и baseline:
+
+```bash
+python -m synth_generators.line_generator.generate_dataset \
+  --config synth_generators/line_generator/configs/eng_101.yaml
+
+python -m synth_generators.line_generator.generate_dataset \
+  --config synth_generators/line_generator/configs/eng_101_cuts.yaml
+
+python -m synth_generators.line_generator.generate_dataset \
+  --config synth_generators/line_generator/configs/eng_101_baselines.yaml
+```
+
 В generation-конфиге можно задавать межсимвольные интервалы. Значения
 сэмплятся один раз на всю строку, поэтому строка остается написанной одним
 стилем:
@@ -225,19 +241,31 @@ word_spacing_multiplier_max: 1.7
 слова, а `word_spacing_multiplier_*` отдельно меняет ширину пробелов.
 
 В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
-`N x C x H x W`) и исходные `texts` как текстовая разметка. Если нужен
-`legacy_logreg` с плотной разметкой, добавьте в generation-конфиг:
+`N x C x H x W`) и исходные `texts` как текстовая разметка. Нужный тип
+разметки включается в generation-конфиге отдельно:
 
 ```yaml
 save_dense_targets: true
+```
+
+для OCR `legacy_logreg`,
+
+```yaml
 save_cut_projection_targets: true
-save_baseline_targets: true
 cut_projection_peak_radius: 1
 cut_projection_include_margins: true
+```
+
+для вертикального cuts-сегментатора,
+
+```yaml
+save_baseline_targets: true
 baseline_target_radius: 1
 ```
 
-Тогда в чанки также попадет `dense_targets` (`N x W`) — класс символа для
+для top/bottom baseline detector.
+
+Тогда в чанки попадет `dense_targets` (`N x W`) — класс символа для
 каждой X-колонки исходного кропа. Если включен `save_cut_projection_targets`,
 в чанки попадет `cut_projection_targets` (`N x W`, `uint8`) — heatmap
 правильных вертикальных разрезов. Каждый внутренний разрез ставится посередине
