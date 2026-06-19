@@ -747,7 +747,7 @@ def optimize(
         verbose=True,
         scale_x=0.0,
         y_pad=0.0,
-        x_pad=x_pad,
+        x_pad=0.0,
         baseline_crop=baseline_crop,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
