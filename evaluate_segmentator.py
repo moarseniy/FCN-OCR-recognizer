@@ -812,11 +812,15 @@ def optimize(
             if bool(trial_baseline_crop) and tune_baseline_deskew
             else baseline_deskew
         )
-        trial_x_pad = (
-            trial.suggest_float("x_pad", x_pad_min, x_pad_max)
-            if x_pad_min is not None and x_pad_max is not None
-            else x_pad
-        )
+        if x_pad_min is not None and x_pad_max is not None:
+            trial_x_pad = float(trial.suggest_float("x_pad", x_pad_min, x_pad_max))
+        else:
+            if not isinstance(x_pad, (int, float)) or isinstance(x_pad, bool):
+                raise TypeError(
+                    "fixed x_pad must be a number; put [min, max] inside "
+                    "parameters.x_pad to tune it"
+                )
+            trial_x_pad = float(x_pad)
         configure_segmentator(
             segmentator,
             cut_threshold=trial.suggest_float("cut_threshold", cut_threshold_min, cut_threshold_max),
