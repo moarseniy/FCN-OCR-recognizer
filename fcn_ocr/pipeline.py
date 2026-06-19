@@ -47,6 +47,7 @@ class OCRPipeline:
         verbose: bool = False,
     ) -> None:
         self.config = InferenceConfig.load(config) if isinstance(config, (str, Path)) else config
+        self.decode = self.config.ocr.decode if self.config.ocr is not None else None
         self.recognizer: TextRecognizer | None = None
         if self.config.ocr is not None:
             ocr = self.config.ocr
@@ -137,7 +138,7 @@ class OCRPipeline:
             "  Vertical segmentator stage: "
             f"{'enabled; receives shared baseline output' if self.segmentator is not None else 'disabled'}"
         )
-        print(f"  Decode with segmentator: {self.config.decode.enabled}")
+        print(f"  Decode with segmentator: {bool(self.decode and self.decode.enabled)}")
 
     def recognize_path(
         self,
@@ -204,7 +205,7 @@ class OCRPipeline:
             segmentation = self.segmentator.segment_tensor_debug(segmentator_input)
 
         cut_decoding = None
-        if self.config.decode.enabled:
+        if self.decode is not None and self.decode.enabled:
             if (
                 self.recognizer is None
                 or ocr_logits is None
@@ -218,9 +219,9 @@ class OCRPipeline:
                 ocr_logits,
                 segmentation,
                 input_width=int(ocr_input.shape[-1]),
-                top_k=self.config.decode.top_k,
-                center_fraction=self.config.decode.center_fraction,
-                min_score_width=self.config.decode.min_score_width,
+                top_k=self.decode.top_k,
+                center_fraction=self.decode.center_fraction,
+                min_score_width=self.decode.min_score_width,
                 ocr_source_x=ocr_source_x,
                 segmentator_source_x=segmentator_source_x,
             )

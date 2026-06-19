@@ -28,11 +28,21 @@ class BaselineInferenceConfig(BaseModel):
     line_pad_px: float = Field(default=0.0, ge=0.0)
 
 
+class OCRDecodeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    top_k: int = Field(default=8, ge=1)
+    center_fraction: float = Field(default=0.6, gt=0.0, le=1.0)
+    min_score_width: int = Field(default=1, ge=1)
+
+
 class OCRInferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checkpoint: Path
     preprocessing: InferencePreprocessingConfig = Field(default_factory=InferencePreprocessingConfig)
+    decode: OCRDecodeConfig = Field(default_factory=OCRDecodeConfig)
 
 
 class SegmentatorInferenceConfig(BaseModel):
@@ -44,15 +54,6 @@ class SegmentatorInferenceConfig(BaseModel):
     cut_min_width: int | None = Field(default=None, ge=1)
     cut_max_width: int | None = Field(default=None, ge=0)
     cut_smooth_radius: int | None = Field(default=None, ge=0)
-
-
-class SegmentatorDecodeConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    top_k: int = Field(default=8, ge=1)
-    center_fraction: float = Field(default=0.6, gt=0.0, le=1.0)
-    min_score_width: int = Field(default=1, ge=1)
 
 
 class DebugInferenceConfig(BaseModel):
@@ -68,7 +69,6 @@ class InferenceConfig(BaseModel):
     baseline: BaselineInferenceConfig | None = None
     ocr: OCRInferenceConfig | None = None
     segmentator: SegmentatorInferenceConfig | None = None
-    decode: SegmentatorDecodeConfig = Field(default_factory=SegmentatorDecodeConfig)
     debug: DebugInferenceConfig = Field(default_factory=DebugInferenceConfig)
 
     @model_validator(mode="after")
@@ -76,8 +76,8 @@ class InferenceConfig(BaseModel):
         has_baseline = self.baseline is not None and self.baseline.enabled
         if not has_baseline and self.ocr is None and self.segmentator is None:
             raise ValueError("Inference config must enable at least one stage: baseline, segmentator, or ocr")
-        if self.decode.enabled and (self.ocr is None or self.segmentator is None):
-            raise ValueError("decode.enabled requires both ocr and segmentator sections")
+        if self.ocr is not None and self.ocr.decode.enabled and self.segmentator is None:
+            raise ValueError("ocr.decode.enabled requires a segmentator section")
         if has_baseline and self.baseline.detector_checkpoint is None and self.ocr is None and self.segmentator is None:
             raise ValueError(
                 "A standalone baseline stage requires baseline.detector_checkpoint"

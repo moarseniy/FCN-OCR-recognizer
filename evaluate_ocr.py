@@ -1406,7 +1406,7 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
     baseline = config.baseline if config is not None else None
     ocr = config.ocr if config is not None else None
     segmentator = config.segmentator if config is not None else None
-    decode = config.decode if config is not None else None
+    decode = ocr.decode if ocr is not None else None
 
     args.device = _first_defined(args.device, config.device if config else None)
     args.checkpoint = _first_defined(
@@ -1626,12 +1626,12 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 "y_pad": metrics["y_pad"],
                 "x_pad": metrics["x_pad"],
             },
-        },
-        "decode": {
-            "enabled": bool(metrics["decode_with_segmentator"] and has_segmentator),
-            "top_k": metrics["segmentator_decode_top_k"],
-            "center_fraction": metrics["segmentator_decode_center_fraction"],
-            "min_score_width": metrics["segmentator_decode_min_score_width"],
+            "decode": {
+                "enabled": bool(metrics["decode_with_segmentator"] and has_segmentator),
+                "top_k": metrics["segmentator_decode_top_k"],
+                "center_fraction": metrics["segmentator_decode_center_fraction"],
+                "min_score_width": metrics["segmentator_decode_min_score_width"],
+            },
         },
         "debug": {
             "top_k": getattr(args, "inference_debug_top_k", 8),

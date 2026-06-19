@@ -1154,13 +1154,13 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "cut_max_width": metrics["cut_max_width"],
             "cut_smooth_radius": metrics["cut_smooth_radius"],
         },
-        "decode": {"enabled": bool(args.inference_ocr_checkpoint)},
     }
     if args.inference_ocr_checkpoint:
         config_data["ocr"] = {
             "checkpoint": str(
                 Path(args.inference_ocr_checkpoint).expanduser().resolve()
             ),
+            "decode": {"enabled": True},
         }
     inference_config = InferenceConfig.model_validate(config_data)
     config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")

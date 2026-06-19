@@ -800,6 +800,11 @@ ocr:
     scale_x: 0.0
     y_pad: 0.4
     x_pad: 0.03
+  decode:
+    enabled: true
+    top_k: 8
+    center_fraction: 0.6
+    min_score_width: 1
 
 segmentator:
   checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
@@ -811,12 +816,6 @@ segmentator:
   cut_min_width: null
   cut_max_width: null
   cut_smooth_radius: null
-
-decode:
-  enabled: true
-  top_k: 8
-  center_fraction: 0.6
-  min_score_width: 1
 ```
 
 `null` у параметра сегментатора означает: использовать значение из его
@@ -825,8 +824,8 @@ training-конфига, сохраненного в checkpoint.
 Разделы `baseline`, `segmentator` и `ocr` независимы. Если раздел отсутствует,
 соответствующий этап полностью пропускается и его checkpoint не загружается.
 Дополнительно `baseline.enabled: false` отключает существующий раздел baseline.
-Раздел `decode` по умолчанию выключен; `decode.enabled: true` требует
-одновременно `ocr` и `segmentator`.
+Раздел `ocr.decode` по умолчанию выключен; `ocr.decode.enabled: true` требует
+наличия `segmentator`.
 
 Например, минимальный конфиг только для вертикальной сегментации:
 
@@ -895,7 +894,7 @@ for path in ["line_1.png", "line_2.png"]:
 11. Если присутствует раздел `ocr`, OCR FCN возвращает logits `B x C x T`.
 12. Обычный OCR decode берет `argmax` по классам на каждом timestep, схлопывает
    подряд идущие одинаковые классы и переводит индексы в символы alphabet.
-13. Если `decode.enabled: true`, OCR logits декодируются через
+13. Если `ocr.decode.enabled: true`, OCR logits декодируются через
     интервалы между cut-точками сегментатора: для каждого интервала берется средняя
     вероятность OCR-классов, а top-класс становится символом. Первая и последняя
     cut-линии являются границами текста; внешние области не декодируются.
@@ -967,14 +966,14 @@ for path in ["line_1.png", "line_2.png"]:
 
 #### Legacy OCR + Segmentator Decode
 
-Эти параметры используются только если `decode.enabled: true`.
+Эти параметры используются только если `ocr.decode.enabled: true`.
 
 | Параметр | Что делает |
 | --- | --- |
-| `decode.enabled` | Включает декодирование OCR по cut-ячейкам. |
-| `decode.top_k` | Сколько OCR class-кандидатов хранить для каждой ячейки. |
-| `decode.center_fraction` | Центральная доля ячейки для усреднения OCR-вероятностей. |
-| `decode.min_score_width` | Минимальное число OCR timestep-ов в области оценки. |
+| `ocr.decode.enabled` | Включает декодирование OCR по cut-ячейкам. |
+| `ocr.decode.top_k` | Сколько OCR class-кандидатов хранить для каждой ячейки. |
+| `ocr.decode.center_fraction` | Центральная доля ячейки для усреднения OCR-вероятностей. |
+| `ocr.decode.min_score_width` | Минимальное число OCR timestep-ов в области оценки. |
 
 ### Baseline Detector
 
@@ -1102,7 +1101,7 @@ python evaluate_ocr.py \
 ```
 
 В этом режиме из YAML берутся OCR checkpoint, baseline detector, вертикальный
-сегментатор, их фиксированные preprocessing/postprocessing-параметры и decode.
+сегментатор, их фиксированные preprocessing/postprocessing-параметры и `ocr.decode`.
 Optuna меняет только параметры с явно переданными диапазонами. Явные обычные
 CLI-параметры имеют приоритет над значениями YAML; например, `--device cuda`
 можно использовать независимо от сохраненного в конфиге устройства.

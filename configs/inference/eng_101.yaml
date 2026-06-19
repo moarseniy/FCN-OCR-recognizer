@@ -17,6 +17,11 @@ ocr:
     scale_x: 0.0
     y_pad: 0.4
     x_pad: 0.03
+  decode:
+    enabled: true
+    top_k: 8
+    center_fraction: 0.6
+    min_score_width: 1
 
 segmentator:
   checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
@@ -28,12 +33,6 @@ segmentator:
   cut_min_width: null
   cut_max_width: null
   cut_smooth_radius: null
-
-decode:
-  enabled: true
-  top_k: 8
-  center_fraction: 0.6
-  min_score_width: 1
 
 debug:
   top_k: 8
