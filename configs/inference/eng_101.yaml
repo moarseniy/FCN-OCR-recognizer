@@ -25,11 +25,8 @@ segmentator:
     y_pad: 0.0
     x_pad: 0.03
   cut_threshold: null
-  peak_min_distance: null
-  cut_postprocess: null
   cut_min_width: null
   cut_max_width: null
-  cut_candidate_threshold: null
   cut_smooth_radius: null
 
 decode:

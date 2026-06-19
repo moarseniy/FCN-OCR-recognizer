@@ -76,11 +76,8 @@ class OCRPipeline:
                 baseline_crop=False,
                 baseline_detector_checkpoint=None,
                 cut_threshold=segmentator.cut_threshold,
-                peak_min_distance=segmentator.peak_min_distance,
-                cut_postprocess=segmentator.cut_postprocess,
                 cut_min_width=segmentator.cut_min_width,
                 cut_max_width=segmentator.cut_max_width,
-                cut_candidate_threshold=segmentator.cut_candidate_threshold,
                 cut_smooth_radius=segmentator.cut_smooth_radius,
             )
 

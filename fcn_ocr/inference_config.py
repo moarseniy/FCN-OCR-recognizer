@@ -41,18 +41,9 @@ class SegmentatorInferenceConfig(BaseModel):
     checkpoint: Path
     preprocessing: InferencePreprocessingConfig = Field(default_factory=InferencePreprocessingConfig)
     cut_threshold: float | None = Field(default=None, gt=0.0, lt=1.0)
-    peak_min_distance: int | None = Field(default=None, ge=1)
-    cut_postprocess: str | None = None
     cut_min_width: int | None = Field(default=None, ge=1)
     cut_max_width: int | None = Field(default=None, ge=0)
-    cut_candidate_threshold: float | None = Field(default=None, ge=0.0, lt=1.0)
     cut_smooth_radius: int | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def validate_postprocess(self) -> "SegmentatorInferenceConfig":
-        if self.cut_postprocess not in {None, "peaks", "widths"}:
-            raise ValueError("cut_postprocess must be 'peaks' or 'widths'")
-        return self
 
 
 class SegmentatorDecodeConfig(BaseModel):

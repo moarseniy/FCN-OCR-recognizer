@@ -159,8 +159,6 @@ def render_segmentation_panel(
         f"T={len(result.raw_indices)}; "
         f"cut threshold={result.cut_threshold:.3f}"
     )
-    if result.cut_postprocess:
-        title += f"; postprocess={result.cut_postprocess}"
     draw.text((padding, y), title, fill=(55, 55, 55), font=font)
     y += title_height
     panel.paste(image_with_lines, (padding, y))
@@ -500,9 +498,8 @@ def save_debug_image(
                 f"segmentator logits shape: {segmentation_result.logits_shape}",
                 f"segmentator timesteps: {len(segmentation_result.raw_indices)}",
                 f"segmentator cuts: {len(segmentation_result.cut_positions or [])}",
-                f"segmentator candidate cuts: {len(segmentation_result.candidate_cut_positions or [])}",
                 f"segmentator threshold: {segmentation_result.cut_threshold:.4f}",
-                f"segmentator postprocess: {segmentation_result.cut_postprocess}",
+                f"segmentator min/max width: {segmentation_result.cut_min_width}/{segmentation_result.cut_max_width}",
             ]
         )
 

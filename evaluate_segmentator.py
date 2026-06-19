@@ -406,7 +406,9 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
     print(f"segmentator_mode:           {metrics.get('segmentator_mode', 'cut_projection')}")
     print(f"cut_threshold:              {metrics['cut_threshold']:.5f}")
-    print(f"peak_min_distance:          {metrics['peak_min_distance']}")
+    print(f"cut_min_width:              {metrics['cut_min_width']}")
+    print(f"cut_max_width:              {metrics['cut_max_width']}")
+    print(f"cut_smooth_radius:          {metrics['cut_smooth_radius']}")
     print(f"scale_x:                    {metrics['scale_x']:+.5f}")
     print(f"y_pad:                      {metrics['y_pad']:+.5f}")
     print(f"x_pad:                      {metrics['x_pad']:.5f}")
@@ -426,11 +428,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
 def configure_segmentator(
     segmentator: VerticalSegmentator,
     cut_threshold: float | None,
-    peak_min_distance: int | None,
-    cut_postprocess: str | None,
     cut_min_width: int | None,
     cut_max_width: int | None,
-    cut_candidate_threshold: float | None,
     cut_smooth_radius: int | None,
     scale_x: float,
     y_pad: float,
@@ -462,17 +461,6 @@ def configure_segmentator(
         cut_threshold,
         {"segmentator_cut_threshold": segmentator.cut_threshold},
     )
-    segmentator.peak_min_distance = segmentator._resolve_non_negative_int(
-        peak_min_distance,
-        {"segmentator_peak_min_distance": segmentator.peak_min_distance},
-        "segmentator_peak_min_distance",
-        default=segmentator.peak_min_distance,
-        min_value=1,
-    )
-    segmentator.cut_postprocess = segmentator._resolve_cut_postprocess(
-        cut_postprocess,
-        {"segmentator_cut_postprocess": segmentator.cut_postprocess},
-    )
     segmentator.cut_min_width = segmentator._resolve_non_negative_int(
         cut_min_width,
         {"segmentator_cut_min_width": segmentator.cut_min_width},
@@ -486,10 +474,6 @@ def configure_segmentator(
         "segmentator_cut_max_width",
         default=segmentator.cut_max_width,
         min_value=0,
-    )
-    segmentator.cut_candidate_threshold = segmentator._resolve_cut_candidate_threshold(
-        cut_candidate_threshold,
-        {"segmentator_cut_candidate_threshold": segmentator.cut_candidate_threshold},
     )
     segmentator.cut_smooth_radius = segmentator._resolve_non_negative_int(
         cut_smooth_radius,
@@ -533,11 +517,8 @@ def evaluate_with_segmentator(
     metrics = compute_metrics(rows, elapsed, cut_tolerance_px=cut_tolerance_px)
     metrics["segmentator_mode"] = getattr(segmentator, "target_format", "cut_projection")
     metrics["cut_threshold"] = float(segmentator.cut_threshold)
-    metrics["peak_min_distance"] = int(segmentator.peak_min_distance)
-    metrics["cut_postprocess"] = str(segmentator.cut_postprocess)
     metrics["cut_min_width"] = int(segmentator.cut_min_width)
     metrics["cut_max_width"] = int(segmentator.cut_max_width)
-    metrics["cut_candidate_threshold"] = float(segmentator.cut_candidate_threshold)
     metrics["cut_smooth_radius"] = int(segmentator.cut_smooth_radius)
     metrics["scale_x"] = float(segmentator.scale_x)
     metrics["y_pad"] = float(segmentator.y_pad)
@@ -570,11 +551,8 @@ def evaluate_prepared(
     log_every: int,
     verbose: bool,
     cut_threshold: float | None,
-    peak_min_distance: int | None,
-    cut_postprocess: str | None,
     cut_min_width: int | None,
     cut_max_width: int | None,
-    cut_candidate_threshold: float | None,
     cut_smooth_radius: int | None,
     scale_x: float,
     y_pad: float,
@@ -605,21 +583,15 @@ def evaluate_prepared(
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
         cut_threshold=cut_threshold,
-        peak_min_distance=peak_min_distance,
-        cut_postprocess=cut_postprocess,
         cut_min_width=cut_min_width,
         cut_max_width=cut_max_width,
-        cut_candidate_threshold=cut_candidate_threshold,
         cut_smooth_radius=cut_smooth_radius,
     )
     configure_segmentator(
         segmentator,
         cut_threshold=cut_threshold,
-        peak_min_distance=peak_min_distance,
-        cut_postprocess=cut_postprocess,
         cut_min_width=cut_min_width,
         cut_max_width=cut_max_width,
-        cut_candidate_threshold=cut_candidate_threshold,
         cut_smooth_radius=cut_smooth_radius,
         scale_x=scale_x,
         y_pad=y_pad,
@@ -652,7 +624,8 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
     with path.open("a", encoding="utf-8") as file:
         if is_new_file:
             file.write(
-                "trial\tcut_threshold\tpeak_min_distance\tscale_x\ty_pad\tx_pad\t"
+                "trial\tcut_threshold\tcut_min_width\tcut_max_width\tcut_smooth_radius\t"
+                "scale_x\ty_pad\tx_pad\t"
                 "baseline_crop\tbaseline_strict_lines\tbaseline_line_pad\t"
                 "baseline_line_pad_px\tbaseline_deskew\tbaseline_max_angle\t"
                 "baseline_detector_threshold\t"
@@ -661,7 +634,8 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
                 "cut_f1\tcut_mae_px\tspeed\n"
             )
         file.write(
-            f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['peak_min_distance']}\t"
+            f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['cut_min_width']}\t"
+            f"{metrics['cut_max_width']}\t{metrics['cut_smooth_radius']}\t"
             f"{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t{metrics['x_pad']:.8f}\t"
             f"{int(metrics['baseline_crop'])}\t{int(metrics['baseline_strict_lines'])}\t"
             f"{metrics['baseline_line_pad']:.8f}\t"
@@ -691,13 +665,12 @@ def optimize(
     trials_output: Path | None,
     cut_threshold_min: float,
     cut_threshold_max: float,
-    peak_min_distance_min: int,
-    peak_min_distance_max: int,
-    cut_postprocess: str | None,
-    cut_min_width: int | None,
-    cut_max_width: int | None,
-    cut_candidate_threshold: float | None,
-    cut_smooth_radius: int | None,
+    cut_min_width_min: int,
+    cut_min_width_max: int,
+    cut_max_width_min: int,
+    cut_max_width_max: int,
+    cut_smooth_radius_min: int,
+    cut_smooth_radius_max: int,
     scale_x_min: float,
     scale_x_max: float,
     y_pad_min: float,
@@ -740,6 +713,18 @@ def optimize(
 
     if trials < 1:
         raise ValueError("trials must be >= 1")
+    if not 0.0 < cut_threshold_min <= cut_threshold_max < 1.0:
+        raise ValueError("Optuna cut threshold bounds must satisfy 0 < min <= max < 1")
+    integer_ranges = (
+        ("cut_min_width", cut_min_width_min, cut_min_width_max, 1),
+        ("cut_max_width", cut_max_width_min, cut_max_width_max, 0),
+        ("cut_smooth_radius", cut_smooth_radius_min, cut_smooth_radius_max, 0),
+    )
+    for name, minimum, maximum, lower_bound in integer_ranges:
+        if minimum < lower_bound or maximum < minimum:
+            raise ValueError(
+                f"Optuna {name} bounds must satisfy {lower_bound} <= min <= max"
+            )
     if (x_pad_min is None) != (x_pad_max is None):
         raise ValueError("x_pad tuning requires both --optuna-x-pad-min and --optuna-x-pad-max")
     if x_pad_min is not None and x_pad_max is not None:
@@ -771,11 +756,6 @@ def optimize(
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        cut_postprocess=cut_postprocess,
-        cut_min_width=cut_min_width,
-        cut_max_width=cut_max_width,
-        cut_candidate_threshold=cut_candidate_threshold,
-        cut_smooth_radius=cut_smooth_radius,
     )
     direction = "maximize" if metric_name in {"length_accuracy", "cut_precision", "cut_recall", "cut_f1"} else "minimize"
     study = optuna.create_study(
@@ -843,12 +823,13 @@ def optimize(
         configure_segmentator(
             segmentator,
             cut_threshold=trial.suggest_float("cut_threshold", cut_threshold_min, cut_threshold_max),
-            peak_min_distance=trial.suggest_int("peak_min_distance", peak_min_distance_min, peak_min_distance_max),
-            cut_postprocess=cut_postprocess,
-            cut_min_width=cut_min_width,
-            cut_max_width=cut_max_width,
-            cut_candidate_threshold=cut_candidate_threshold,
-            cut_smooth_radius=cut_smooth_radius,
+            cut_min_width=trial.suggest_int("cut_min_width", cut_min_width_min, cut_min_width_max),
+            cut_max_width=trial.suggest_int("cut_max_width", cut_max_width_min, cut_max_width_max),
+            cut_smooth_radius=trial.suggest_int(
+                "cut_smooth_radius",
+                cut_smooth_radius_min,
+                cut_smooth_radius_max,
+            ),
             scale_x=trial.suggest_float("scale_x", scale_x_min, scale_x_max),
             y_pad=trial.suggest_float("y_pad", y_pad_min, y_pad_max),
             x_pad=trial_x_pad,
@@ -881,7 +862,9 @@ def optimize(
         "Optuna segmentator search: "
         f"trials={trials}, metric={metric_name}, "
         f"cut_threshold=[{cut_threshold_min}, {cut_threshold_max}], "
-        f"peak_min_distance=[{peak_min_distance_min}, {peak_min_distance_max}], "
+        f"cut_min_width=[{cut_min_width_min}, {cut_min_width_max}], "
+        f"cut_max_width=[{cut_max_width_min}, {cut_max_width_max}], "
+        f"cut_smooth_radius=[{cut_smooth_radius_min}, {cut_smooth_radius_max}], "
         f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
         f"x_pad={x_pad if x_pad_min is None else f'[{x_pad_min}, {x_pad_max}]'}, "
         f"baseline_detector={baseline_detector_checkpoint}, "
@@ -922,12 +905,9 @@ def optimize(
     configure_segmentator(
         segmentator,
         cut_threshold=float(best_params["cut_threshold"]),
-        peak_min_distance=int(best_params["peak_min_distance"]),
-        cut_postprocess=cut_postprocess,
-        cut_min_width=cut_min_width,
-        cut_max_width=cut_max_width,
-        cut_candidate_threshold=cut_candidate_threshold,
-        cut_smooth_radius=cut_smooth_radius,
+        cut_min_width=int(best_params["cut_min_width"]),
+        cut_max_width=int(best_params["cut_max_width"]),
+        cut_smooth_radius=int(best_params["cut_smooth_radius"]),
         scale_x=float(best_params["scale_x"]),
         y_pad=float(best_params["y_pad"]),
         x_pad=float(best_params["x_pad"]),
@@ -965,11 +945,8 @@ def evaluate(
     limit: int | None,
     log_every: int,
     cut_threshold: float | None,
-    peak_min_distance: int | None,
-    cut_postprocess: str | None,
     cut_min_width: int | None,
     cut_max_width: int | None,
-    cut_candidate_threshold: float | None,
     cut_smooth_radius: int | None,
     scale_x: float,
     y_pad: float,
@@ -995,11 +972,8 @@ def evaluate(
         log_every=log_every,
         verbose=True,
         cut_threshold=cut_threshold,
-        peak_min_distance=peak_min_distance,
-        cut_postprocess=cut_postprocess,
         cut_min_width=cut_min_width,
         cut_max_width=cut_max_width,
-        cut_candidate_threshold=cut_candidate_threshold,
         cut_smooth_radius=cut_smooth_radius,
         scale_x=scale_x,
         y_pad=y_pad,
@@ -1047,11 +1021,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--cut-threshold", type=float, default=None)
-    parser.add_argument("--peak-min-distance", type=int, default=None)
-    parser.add_argument("--cut-postprocess", choices=("peaks", "widths"), default=None)
     parser.add_argument("--cut-min-width", type=int, default=None)
     parser.add_argument("--cut-max-width", type=int, default=None)
-    parser.add_argument("--cut-candidate-threshold", type=float, default=None)
     parser.add_argument("--cut-smooth-radius", type=int, default=None)
     parser.add_argument("--scale-x", type=float, default=0.0)
     parser.add_argument("--y-pad", type=float, default=0.0)
@@ -1082,8 +1053,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--optuna-cut-threshold-min", type=float, default=0.25)
     parser.add_argument("--optuna-cut-threshold-max", type=float, default=0.85)
-    parser.add_argument("--optuna-peak-min-distance-min", type=int, default=1)
-    parser.add_argument("--optuna-peak-min-distance-max", type=int, default=4)
+    parser.add_argument("--optuna-cut-min-width-min", type=int, default=1)
+    parser.add_argument("--optuna-cut-min-width-max", type=int, default=8)
+    parser.add_argument("--optuna-cut-max-width-min", type=int, default=0)
+    parser.add_argument("--optuna-cut-max-width-max", type=int, default=32)
+    parser.add_argument("--optuna-cut-smooth-radius-min", type=int, default=0)
+    parser.add_argument("--optuna-cut-smooth-radius-max", type=int, default=3)
     parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
     parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
     parser.add_argument("--optuna-y-pad-min", type=float, default=-0.25)
@@ -1175,11 +1150,8 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 "x_pad": metrics["x_pad"],
             },
             "cut_threshold": metrics["cut_threshold"],
-            "peak_min_distance": metrics["peak_min_distance"],
-            "cut_postprocess": metrics["cut_postprocess"],
             "cut_min_width": metrics["cut_min_width"],
             "cut_max_width": metrics["cut_max_width"],
-            "cut_candidate_threshold": metrics["cut_candidate_threshold"],
             "cut_smooth_radius": metrics["cut_smooth_radius"],
         },
         "decode": {"enabled": bool(args.inference_ocr_checkpoint)},
@@ -1226,13 +1198,12 @@ def main() -> None:
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             cut_threshold_min=args.optuna_cut_threshold_min,
             cut_threshold_max=args.optuna_cut_threshold_max,
-            peak_min_distance_min=args.optuna_peak_min_distance_min,
-            peak_min_distance_max=args.optuna_peak_min_distance_max,
-            cut_postprocess=args.cut_postprocess,
-            cut_min_width=args.cut_min_width,
-            cut_max_width=args.cut_max_width,
-            cut_candidate_threshold=args.cut_candidate_threshold,
-            cut_smooth_radius=args.cut_smooth_radius,
+            cut_min_width_min=args.optuna_cut_min_width_min,
+            cut_min_width_max=args.optuna_cut_min_width_max,
+            cut_max_width_min=args.optuna_cut_max_width_min,
+            cut_max_width_max=args.optuna_cut_max_width_max,
+            cut_smooth_radius_min=args.optuna_cut_smooth_radius_min,
+            cut_smooth_radius_max=args.optuna_cut_smooth_radius_max,
             scale_x_min=args.optuna_scale_x_min,
             scale_x_max=args.optuna_scale_x_max,
             y_pad_min=args.optuna_y_pad_min,
@@ -1278,11 +1249,8 @@ def main() -> None:
             limit=args.limit,
             log_every=args.log_every,
             cut_threshold=args.cut_threshold,
-            peak_min_distance=args.peak_min_distance,
-            cut_postprocess=args.cut_postprocess,
             cut_min_width=args.cut_min_width,
             cut_max_width=args.cut_max_width,
-            cut_candidate_threshold=args.cut_candidate_threshold,
             cut_smooth_radius=args.cut_smooth_radius,
             scale_x=args.scale_x,
             y_pad=args.y_pad,

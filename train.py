@@ -48,11 +48,8 @@ SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 TRAINING_CONFIG_FILENAME = "training_config.yaml"
 NON_TRAINING_SEGMENTATOR_KEYS = {
     "segmentator_cut_threshold",
-    "segmentator_peak_min_distance",
-    "segmentator_cut_postprocess",
     "segmentator_cut_min_width",
     "segmentator_cut_max_width",
-    "segmentator_cut_candidate_threshold",
     "segmentator_cut_smooth_radius",
 }
 

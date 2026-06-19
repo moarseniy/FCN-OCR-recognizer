@@ -450,8 +450,8 @@ cut_projection_positive_weight: 4.0
 
 Пример конфига: `configs/eng_train_101_cuts.yaml`.
 Соответствующий generation-конфиг: `synth_generators/line_generator/configs/eng_101_cuts.yaml`.
-Пороги и параметры postprocess (`cut_threshold`, `peak_min_distance`, режим
-`peaks/widths` и ограничения ширины) в обучении не участвуют. Они задаются при
+Порог и параметры postprocess (`cut_threshold`, ограничения ширины и
+сглаживание) в обучении не участвуют. Они задаются при
 `evaluate_segmentator.py` и сохраняются в отдельном inference-конфиге.
 
 Для обучения нейронного детектора верхней/нижней базовой линии:
@@ -808,11 +808,8 @@ segmentator:
     y_pad: 0.0
     x_pad: 0.03
   cut_threshold: null
-  peak_min_distance: null
-  cut_postprocess: null
   cut_min_width: null
   cut_max_width: null
-  cut_candidate_threshold: null
   cut_smooth_radius: null
 
 decode:
@@ -958,20 +955,15 @@ for path in ["line_1.png", "line_2.png"]:
 | --- | --- |
 | `segmentator.checkpoint` | Checkpoint вертикального сегментатора. |
 | `segmentator.cut_threshold` | Порог основных cut peak-ов. |
-| `segmentator.peak_min_distance` | Минимальная дистанция между raw peak-ами. |
-| `segmentator.cut_postprocess` | `peaks` оставляет пики, `widths` контролирует ширины интервалов. |
-| `segmentator.cut_min_width` | Минимальная ширина интервала между cut-точками. |
-| `segmentator.cut_max_width` | Максимальная ширина; широкий внутренний интервал может получить дополнительный cut. |
-| `segmentator.cut_candidate_threshold` | Нижний порог кандидатов для вставки недостающего cut. |
+| `segmentator.cut_min_width` | Минимальная ширина между итоговыми cut-точками; из слишком близких пиков остается более уверенный. |
+| `segmentator.cut_max_width` | Жесткая максимальная ширина; широкий внутренний интервал делится в наиболее уверенной допустимой X-позиции. `0` отключает вставку. |
 | `segmentator.cut_smooth_radius` | Радиус сглаживания cut-score перед поиском peak-ов. |
 
-Важно: `segmentator.peak_min_distance` и `segmentator.cut_min_width`
-похожи, но отвечают за разные места пайплайна. Первый ограничивает
-дистанцию между raw peak-ами при выборе пиков. Второй ограничивает ширину
-готовых символных интервалов после postprocess `widths`. Если
-`segmentator.cut_min_width: null`, используется значение старого
-checkpoint-конфига для обратной совместимости, а для новых checkpoint —
-`segmentator.peak_min_distance`.
+Постобработка едина: scores сглаживаются, затем выбираются пики выше
+`cut_threshold`, применяется `cut_min_width`, после чего при
+`cut_max_width > 0` слишком широкие ячейки принудительно делятся. Если
+`segmentator.cut_min_width: null`, используется значение из checkpoint или
+дефолт `1`.
 
 #### Legacy OCR + Segmentator Decode
 

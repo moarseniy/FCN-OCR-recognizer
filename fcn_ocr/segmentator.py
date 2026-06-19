@@ -28,11 +28,8 @@ class VerticalSegmentator(TextRecognizer):
         baseline_detector_checkpoint: str | Path | None = None,
         baseline_detector_threshold: float = 0.35,
         cut_threshold: float | None = None,
-        peak_min_distance: int | None = None,
-        cut_postprocess: str | None = None,
         cut_min_width: int | None = None,
         cut_max_width: int | None = None,
-        cut_candidate_threshold: float | None = None,
         cut_smooth_radius: int | None = None,
     ):
         super().__init__(
@@ -66,19 +63,11 @@ class VerticalSegmentator(TextRecognizer):
             )
 
         self.cut_threshold = self._resolve_cut_threshold(cut_threshold, checkpoint_config)
-        self.peak_min_distance = self._resolve_non_negative_int(
-            peak_min_distance,
-            checkpoint_config,
-            "segmentator_peak_min_distance",
-            default=1,
-            min_value=1,
-        )
-        self.cut_postprocess = self._resolve_cut_postprocess(cut_postprocess, checkpoint_config)
         self.cut_min_width = self._resolve_non_negative_int(
             cut_min_width,
             checkpoint_config,
             "segmentator_cut_min_width",
-            default=self.peak_min_distance,
+            default=1,
             min_value=1,
         )
         self.cut_max_width = self._resolve_non_negative_int(
@@ -87,10 +76,6 @@ class VerticalSegmentator(TextRecognizer):
             "segmentator_cut_max_width",
             default=0,
             min_value=0,
-        )
-        self.cut_candidate_threshold = self._resolve_cut_candidate_threshold(
-            cut_candidate_threshold,
-            checkpoint_config,
         )
         self.cut_smooth_radius = self._resolve_non_negative_int(
             cut_smooth_radius,
@@ -108,20 +93,6 @@ class VerticalSegmentator(TextRecognizer):
         resolved = float(config.get("segmentator_cut_threshold", 0.5) if value is None else value)
         if not 0.0 < resolved < 1.0:
             raise ValueError("segmentator cut threshold must be between 0 and 1")
-        return resolved
-
-    @staticmethod
-    def _resolve_cut_candidate_threshold(value: float | None, config: dict) -> float:
-        resolved = float(config.get("segmentator_cut_candidate_threshold", 0.1) if value is None else value)
-        if not 0.0 <= resolved < 1.0:
-            raise ValueError("segmentator cut candidate threshold must be in [0, 1)")
-        return resolved
-
-    @staticmethod
-    def _resolve_cut_postprocess(value: str | None, config: dict) -> str:
-        resolved = str(config.get("segmentator_cut_postprocess", "widths") if value is None else value).lower()
-        if resolved not in {"peaks", "widths"}:
-            raise ValueError("segmentator cut postprocess must be 'peaks' or 'widths'")
         return resolved
 
     @staticmethod
@@ -151,11 +122,8 @@ class VerticalSegmentator(TextRecognizer):
         print(
             "Segmentator params: "
             f"cut_threshold={self.cut_threshold:.3f}, "
-            f"peak_min_distance={self.peak_min_distance}, "
-            f"postprocess={self.cut_postprocess}, "
             f"cut_min_width={self.cut_min_width}, "
             f"cut_max_width={self.cut_max_width}, "
-            f"candidate_threshold={self.cut_candidate_threshold:.3f}, "
             f"smooth_radius={self.cut_smooth_radius}"
         )
 
@@ -176,25 +144,17 @@ class VerticalSegmentator(TextRecognizer):
         cut_scores_tensor = torch.sigmoid(logits[:, 0, :])
         cut_scores = [float(value) for value in cut_scores_tensor[0].detach().cpu().tolist()]
         postprocess_scores = self._smooth_scores(cut_scores, self.cut_smooth_radius)
-        candidate_positions = self._select_cut_peaks(
-            postprocess_scores,
-            threshold=self.cut_candidate_threshold,
-            min_distance=self.peak_min_distance,
-        )
         cut_positions = self._select_cut_peaks(
             postprocess_scores,
             threshold=self.cut_threshold,
-            min_distance=self.peak_min_distance,
+            min_distance=self.cut_min_width,
         )
-        if self.cut_postprocess == "widths":
-            cut_positions = self._postprocess_cut_widths(
-                cut_positions,
-                candidate_positions,
-                postprocess_scores,
-                min_width=self.cut_min_width,
-                max_width=self.cut_max_width,
-                candidate_threshold=self.cut_candidate_threshold,
-            )
+        cut_positions = self._apply_cut_width_constraints(
+            cut_positions,
+            postprocess_scores,
+            min_width=self.cut_min_width,
+            max_width=self.cut_max_width,
+        )
         cut_set = set(cut_positions)
         raw_indices = [1 if index in cut_set else 0 for index in range(len(cut_scores))]
         raw_confidences = [
@@ -209,14 +169,10 @@ class VerticalSegmentator(TextRecognizer):
             cut_scores=cut_scores,
             runs=runs,
             cut_threshold=self.cut_threshold,
-            peak_min_distance=self.peak_min_distance,
             input_shape=input_shape,
             logits_shape=tuple(logits.shape),
             mode="cut_projection",
             cut_positions=cut_positions,
-            candidate_cut_positions=candidate_positions,
-            cut_postprocess=self.cut_postprocess,
-            cut_candidate_threshold=self.cut_candidate_threshold,
             cut_min_width=self.cut_min_width,
             cut_max_width=self.cut_max_width,
             cut_smooth_radius=self.cut_smooth_radius,
@@ -242,14 +198,12 @@ class VerticalSegmentator(TextRecognizer):
         return smoothed
 
     @classmethod
-    def _postprocess_cut_widths(
+    def _apply_cut_width_constraints(
         cls,
         cuts: list[int],
-        candidates: list[int],
         scores: list[float],
         min_width: int,
         max_width: int,
-        candidate_threshold: float,
     ) -> list[int]:
         if not scores:
             return []
@@ -258,11 +212,9 @@ class VerticalSegmentator(TextRecognizer):
         if max_width > 0:
             output = cls._insert_missing_cuts_by_width(
                 output,
-                candidates,
                 scores,
                 min_width,
                 max_width,
-                candidate_threshold,
             )
             output = cls._enforce_min_cut_width(output, scores, min_width)
         return output
@@ -291,14 +243,11 @@ class VerticalSegmentator(TextRecognizer):
     def _insert_missing_cuts_by_width(
         cls,
         cuts: list[int],
-        candidates: list[int],
         scores: list[float],
         min_width: int,
         max_width: int,
-        candidate_threshold: float,
     ) -> list[int]:
         output = sorted(set(cuts))
-        candidate_set = set(candidates)
         if len(output) < 2:
             return output
 
@@ -320,21 +269,16 @@ class VerticalSegmentator(TextRecognizer):
             if lower > upper:
                 return output
 
-            interval_candidates = [
-                candidate for candidate in candidate_set
-                if lower <= candidate <= upper and candidate not in output
+            interval_positions = [
+                position for position in range(lower, upper + 1)
+                if position not in output
             ]
-            if not interval_candidates:
-                interval_candidates = [
-                    position for position in range(lower, upper + 1)
-                    if position not in output and scores[position] >= candidate_threshold
-                ]
-            if not interval_candidates:
+            if not interval_positions:
                 return output
 
             center = (left + right) * 0.5
             chosen = max(
-                interval_candidates,
+                interval_positions,
                 key=lambda position: (scores[position], -abs(position - center)),
             )
             output.append(int(chosen))

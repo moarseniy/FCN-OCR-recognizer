@@ -79,14 +79,10 @@ class VerticalSegmentationResult:
     cut_scores: list[float]
     runs: list[SegmentationRun]
     cut_threshold: float
-    peak_min_distance: int
     input_shape: tuple[int, ...]
     logits_shape: tuple[int, ...]
     mode: str = "cut_projection"
     cut_positions: list[int] | None = None
-    candidate_cut_positions: list[int] | None = None
-    cut_postprocess: str | None = None
-    cut_candidate_threshold: float | None = None
     cut_min_width: int | None = None
     cut_max_width: int | None = None
     cut_smooth_radius: int | None = None
