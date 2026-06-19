@@ -10,41 +10,13 @@ batch_size: 64
 limit: null
 log_every: 100
 
-# Fixed values are loaded from inference_config unless overridden here.
-scale_x: null
-y_pad: null
-x_pad: null
-baseline_crop: null
-baseline_deskew: null
-baseline_max_angle: null
-baseline_strict_lines: null
-baseline_line_pad: null
-baseline_line_pad_px: null
-baseline_detector_checkpoint: null
-baseline_detector_threshold: null
-segmentator_checkpoint: null
-decode_with_segmentator: null
-segmentator_scale_x: null
-segmentator_y_pad: null
-segmentator_x_pad: null
-segmentator_cut_threshold: null
-segmentator_cut_min_width: null
-segmentator_cut_max_width: null
-segmentator_cut_smooth_radius: null
-segmentator_decode_top_k: null
-segmentator_decode_center_fraction: null
-segmentator_decode_min_score_width: null
-
-optuna_trials: 200
-optuna_metric: global_char_accuracy
-optuna_ranges:
+parameters:
   scale_x: [-0.25, 0.25]
   y_pad: [-0.40, 0.50]
   x_pad: [0.0, 0.12]
 
-# Baseline and segmentator stay fixed unless a corresponding range is set.
-optuna_tune_baseline_line_pad: false
-optuna_tune_baseline_line_pad_px: false
+optuna_trials: 200
+optuna_metric: global_char_accuracy
 
 optuna_trials_out: ../../output/ocr_trials.tsv
 optuna_storage: sqlite:///../../output/ocr_optuna.db

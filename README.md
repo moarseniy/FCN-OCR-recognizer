@@ -53,18 +53,24 @@ baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где кана
 Неизвестные ключи в generation, training, evaluation и inference YAML считаются ошибкой,
 поэтому опечатка или удалённый параметр не могут быть молча проигнорированы.
 
-Диапазоны подбора в evaluation-конфигах записываются компактными парами
-`[min, max]`:
+Настраиваемые значения в evaluation-конфигах задаются в едином блоке
+`parameters`. Обычное значение фиксирует параметр, а пара `[min, max]`
+передает его Optuna для подбора:
 
 ```yaml
-optuna_ranges:
+parameters:
   cut_threshold: [0.10, 0.95]
   cut_min_width: [1, 10]
-  scale_x: [-0.20, 0.20]
+  scale_x: 0.0
+  baseline_crop: true
+  baseline_deskew: [false, true]
 ```
 
-Имя внутри `optuna_ranges` соответствует подбираемому параметру. Фиксированные
-значения остаются обычными ключами вне этого блока. CLI-флаги вида
+В примере `cut_threshold` и `cut_min_width` подбираются, а `scale_x` и
+`baseline_crop` зафиксированы. Булевый диапазон `[false, true]` включает подбор
+переключателя, если evaluator поддерживает его оптимизацию. Служебные параметры
+запуска (`json`, `checkpoint`, `optuna_trials`, пути вывода и подобные) остаются
+на верхнем уровне конфига. CLI-флаги вида
 `--optuna-cut-threshold-min` и `--optuna-cut-threshold-max` сохранены и могут
 переопределить отдельную границу для конкретного запуска.
 

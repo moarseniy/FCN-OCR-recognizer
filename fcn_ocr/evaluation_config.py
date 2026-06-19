@@ -7,7 +7,7 @@ from typing import Iterable, Sequence
 import yaml
 
 
-def expand_optuna_ranges(
+def expand_evaluation_parameters(
     config_data: dict,
     *,
     valid_fields: set[str],
@@ -22,36 +22,61 @@ def expand_optuna_ranges(
     )
     if old_range_fields:
         raise ValueError(
-            "evaluation YAML must use optuna_ranges instead of: "
+            "evaluation YAML must use parameters with [min, max] instead of: "
             + ", ".join(old_range_fields)
         )
-    ranges = expanded.pop("optuna_ranges", None)
-    if ranges is None:
-        return expanded
-    if not isinstance(ranges, dict):
-        raise ValueError("optuna_ranges must be a YAML mapping")
+    if "optuna_ranges" in expanded:
+        raise ValueError("evaluation YAML must use parameters instead of optuna_ranges")
 
-    for raw_name, bounds in ranges.items():
+    parameters = expanded.pop("parameters", None)
+    if parameters is None:
+        return expanded
+    if not isinstance(parameters, dict):
+        raise ValueError("parameters must be a YAML mapping")
+
+    for raw_name, value in parameters.items():
         name = str(raw_name).strip().lower().replace("-", "_")
-        prefix = name if name.startswith("optuna_") else f"optuna_{name}"
-        min_field = f"{prefix}_min"
-        max_field = f"{prefix}_max"
-        if min_field not in valid_fields or max_field not in valid_fields:
-            raise ValueError(f"unknown Optuna range: {raw_name}")
-        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
-            raise ValueError(f"optuna_ranges.{raw_name} must contain [min, max]")
-        minimum, maximum = bounds
-        if (
-            isinstance(minimum, bool)
-            or isinstance(maximum, bool)
-            or not isinstance(minimum, (int, float))
-            or not isinstance(maximum, (int, float))
-        ):
-            raise ValueError(f"optuna_ranges.{raw_name} bounds must be numbers")
-        if minimum > maximum:
-            raise ValueError(f"optuna_ranges.{raw_name} requires min <= max")
-        expanded[min_field] = minimum
-        expanded[max_field] = maximum
+        if name not in valid_fields:
+            raise ValueError(f"unknown evaluation parameter: {raw_name}")
+        if name in expanded:
+            raise ValueError(f"parameter {raw_name!r} is also set at the YAML root")
+
+        min_field = f"optuna_{name}_min"
+        max_field = f"optuna_{name}_max"
+        tune_field = f"optuna_tune_{name}"
+        has_numeric_range = min_field in valid_fields and max_field in valid_fields
+        has_tune_flag = tune_field in valid_fields
+
+        if isinstance(value, (list, tuple)):
+            if len(value) != 2:
+                raise ValueError(f"parameters.{raw_name} range must contain [min, max]")
+            minimum, maximum = value
+            if isinstance(minimum, bool) or isinstance(maximum, bool):
+                if [minimum, maximum] != [False, True] or not has_tune_flag:
+                    raise ValueError(
+                        f"parameters.{raw_name} boolean range must be [false, true] "
+                        "and supported by this evaluator"
+                    )
+                expanded[tune_field] = True
+                continue
+            if not has_numeric_range:
+                raise ValueError(f"parameter {raw_name!r} does not support numeric tuning")
+            if not isinstance(minimum, (int, float)) or not isinstance(maximum, (int, float)):
+                raise ValueError(f"parameters.{raw_name} bounds must be numbers")
+            if minimum > maximum:
+                raise ValueError(f"parameters.{raw_name} requires min <= max")
+            expanded[min_field] = minimum
+            expanded[max_field] = maximum
+            if has_tune_flag:
+                expanded[tune_field] = True
+            continue
+
+        expanded[name] = value
+        if has_tune_flag:
+            expanded[tune_field] = False
+        if has_numeric_range and isinstance(value, (int, float)) and not isinstance(value, bool):
+            expanded[min_field] = value
+            expanded[max_field] = value
     return expanded
 
 
@@ -78,7 +103,7 @@ def parse_args_with_evaluation_config(
 
         valid_fields = {action.dest for action in parser._actions}
         try:
-            config_data = expand_optuna_ranges(
+            config_data = expand_evaluation_parameters(
                 config_data,
                 valid_fields=valid_fields,
             )

@@ -4,13 +4,13 @@ checkpoint: ../../checkpoints/baseline_detector/best_model.pth
 out: ../../output/baseline_metrics.csv
 device: cuda
 limit: null
-threshold: 0.35
 failure_penalty: 1.0
 inference_ocr_checkpoint: null
 
-optuna_trials: 200
-optuna_ranges:
+parameters:
   threshold: [0.10, 0.90]
+
+optuna_trials: 200
 optuna_trials_out: ../../output/baseline_trials.tsv
 optuna_storage: sqlite:///../../output/baseline_optuna.db
 optuna_study_name: eng_101_baselines_v1

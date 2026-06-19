@@ -9,26 +9,9 @@ limit: null
 log_every: 100
 cut_tolerance_px: 3.0
 
-cut_threshold: null
-cut_min_width: null
-cut_max_width: null
-cut_smooth_radius: null
-scale_x: 0.0
-y_pad: 0.0
-x_pad: 0.03
-
-baseline_crop: true
-baseline_strict_lines: true
-baseline_line_pad: 0.08
-baseline_line_pad_px: 0.0
-baseline_deskew: true
-baseline_max_angle: 12.0
 baseline_detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
-baseline_detector_threshold: 0.35
 
-optuna_trials: 300
-optuna_metric: cut_f1
-optuna_ranges:
+parameters:
   cut_threshold: [0.10, 0.95]
   cut_min_width: [1, 10]
   cut_max_width: [0, 32]
@@ -36,16 +19,16 @@ optuna_ranges:
   scale_x: [-0.20, 0.20]
   y_pad: [-0.20, 0.20]
   x_pad: [0.0, 0.08]
-  baseline_line_pad: [0.0, 0.16]
-  baseline_line_pad_px: [0.0, 6.0]
-  baseline_max_angle: [4.0, 18.0]
+  baseline_crop: true
+  baseline_strict_lines: true
+  baseline_line_pad: 0.08
+  baseline_line_pad_px: 0.0
+  baseline_deskew: true
+  baseline_max_angle: 12.0
+  baseline_detector_threshold: 0.35
 
-optuna_tune_baseline_crop: false
-optuna_tune_baseline_params: false
-optuna_tune_baseline_line_pad: false
-optuna_tune_baseline_line_pad_px: false
-optuna_tune_baseline_max_angle: false
-optuna_tune_baseline_deskew: false
+optuna_trials: 300
+optuna_metric: cut_f1
 
 optuna_trials_out: ../../output/segmentator_trials.tsv
 optuna_storage: sqlite:///../../output/segmentator_v2.db

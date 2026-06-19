@@ -680,7 +680,6 @@ def optimize(
     x_pad_min: float | None,
     x_pad_max: float | None,
     tune_baseline_crop: bool,
-    tune_baseline_params: bool,
     tune_baseline_line_pad: bool,
     tune_baseline_line_pad_px: bool,
     tune_baseline_max_angle: bool,
@@ -772,10 +771,7 @@ def optimize(
             if tune_baseline_crop
             else baseline_crop
         )
-        tune_active_line_pad = bool(trial_baseline_crop) and (
-            tune_baseline_line_pad
-            or tune_baseline_params
-        )
+        tune_active_line_pad = bool(trial_baseline_crop) and tune_baseline_line_pad
         tune_active_line_pad_px = bool(trial_baseline_crop) and tune_baseline_line_pad_px
         tune_active_max_angle = bool(trial_baseline_crop) and tune_baseline_max_angle
         tune_active_detector = bool(trial_baseline_crop) and baseline_detector_checkpoint is not None
@@ -870,7 +866,6 @@ def optimize(
         f"x_pad={x_pad if x_pad_min is None else f'[{x_pad_min}, {x_pad_max}]'}, "
         f"baseline_detector={baseline_detector_checkpoint}, "
         f"tune_baseline_crop={tune_baseline_crop}, "
-        f"tune_baseline_params={tune_baseline_params}, "
         f"tune_line_pad={tune_baseline_line_pad}, "
         f"tune_line_pad_px={tune_baseline_line_pad_px}, "
         f"tune_max_angle={tune_baseline_max_angle}, "
@@ -1087,13 +1082,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--optuna-tune-baseline-crop", action="store_true")
     parser.add_argument(
-        "--optuna-tune-baseline-params",
-        action="store_true",
-        help=(
-            "Tune active baseline crop padding through baseline_line_pad."
-        ),
-    )
-    parser.add_argument(
         "--optuna-tune-baseline-line-pad",
         action="store_true",
         help="Explicitly tune baseline_line_pad.",
@@ -1235,7 +1223,6 @@ def main() -> None:
             x_pad_min=args.optuna_x_pad_min,
             x_pad_max=args.optuna_x_pad_max,
             tune_baseline_crop=args.optuna_tune_baseline_crop,
-            tune_baseline_params=args.optuna_tune_baseline_params,
             tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
             tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
             tune_baseline_max_angle=args.optuna_tune_baseline_max_angle,
