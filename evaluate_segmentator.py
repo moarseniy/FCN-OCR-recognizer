@@ -1030,10 +1030,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--y-pad", type=float, default=0.0)
     parser.add_argument("--x-pad", type=float, default=0.0)
     parser.add_argument("--baseline-crop", action="store_true")
-    parser.add_argument("--no-baseline-strict-lines", action="store_true")
+    parser.add_argument(
+        "--baseline-strict-lines",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--baseline-line-pad", type=float, default=0.08)
     parser.add_argument("--baseline-line-pad-px", type=float, default=0.0)
-    parser.add_argument("--no-baseline-deskew", action="store_true")
+    parser.add_argument(
+        "--baseline-deskew",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--baseline-max-angle", type=float, default=12.0)
     parser.add_argument("--baseline-detector-checkpoint", default=None)
     parser.add_argument("--baseline-detector-threshold", type=float, default=0.35)
@@ -1117,9 +1125,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
     parser.add_argument(
-        "--no-optuna-progress",
-        action="store_true",
-        help="Disable the interactive Optuna progress bar.",
+        "--optuna-progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable the interactive Optuna progress bar.",
     )
     return parse_args_with_evaluation_config(
         parser,
@@ -1232,10 +1241,10 @@ def main() -> None:
             tune_baseline_max_angle=args.optuna_tune_baseline_max_angle,
             tune_baseline_deskew=args.optuna_tune_baseline_deskew,
             baseline_crop=args.baseline_crop,
-            baseline_strict_lines=not args.no_baseline_strict_lines,
+            baseline_strict_lines=args.baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
             baseline_line_pad_px=args.baseline_line_pad_px,
-            baseline_deskew=not args.no_baseline_deskew,
+            baseline_deskew=args.baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_detector_checkpoint=Path(args.baseline_detector_checkpoint) if args.baseline_detector_checkpoint else None,
             baseline_detector_threshold=args.baseline_detector_threshold,
@@ -1250,7 +1259,7 @@ def main() -> None:
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
             cut_tolerance_px=args.cut_tolerance_px,
-            progress=not args.no_optuna_progress,
+            progress=args.optuna_progress,
         )
     else:
         metrics = evaluate(
@@ -1270,10 +1279,10 @@ def main() -> None:
             y_pad=args.y_pad,
             x_pad=args.x_pad,
             baseline_crop=args.baseline_crop,
-            baseline_strict_lines=not args.no_baseline_strict_lines,
+            baseline_strict_lines=args.baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
             baseline_line_pad_px=args.baseline_line_pad_px,
-            baseline_deskew=not args.no_baseline_deskew,
+            baseline_deskew=args.baseline_deskew,
             baseline_max_angle=args.baseline_max_angle,
             baseline_detector_checkpoint=Path(args.baseline_detector_checkpoint) if args.baseline_detector_checkpoint else None,
             baseline_detector_threshold=args.baseline_detector_threshold,

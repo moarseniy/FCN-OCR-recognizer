@@ -49,4 +49,4 @@ optuna_tune_baseline_line_pad_px: false
 optuna_trials_out: ../../output/ocr_trials.tsv
 optuna_storage: sqlite:///../../output/ocr_optuna.db
 optuna_study_name: eng_101_ocr_v1
-no_optuna_progress: false
+optuna_progress: true

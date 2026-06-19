@@ -1340,9 +1340,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None, help="Optional Optuna storage URL, e.g. sqlite:///study.db.")
     parser.add_argument(
-        "--no-optuna-progress",
-        action="store_true",
-        help="Disable the interactive Optuna progress bar.",
+        "--optuna-progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable the interactive Optuna progress bar.",
     )
 
     parser.add_argument(
@@ -1717,7 +1718,7 @@ def run_evaluation(
             trials_output=trials_output,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
-            progress=not args.no_optuna_progress,
+            progress=args.optuna_progress,
             optuna_tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
             optuna_tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
             x_pad_min=args.optuna_x_pad_min,

@@ -18,10 +18,10 @@ y_pad: 0.0
 x_pad: 0.03
 
 baseline_crop: true
-no_baseline_strict_lines: false
+baseline_strict_lines: true
 baseline_line_pad: 0.08
 baseline_line_pad_px: 0.0
-no_baseline_deskew: false
+baseline_deskew: true
 baseline_max_angle: 12.0
 baseline_detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
 baseline_detector_threshold: 0.35
@@ -50,4 +50,4 @@ optuna_tune_baseline_deskew: false
 optuna_trials_out: ../../output/segmentator_trials.tsv
 optuna_storage: sqlite:///../../output/segmentator_v2.db
 optuna_study_name: eng_101_segmentator_v2
-no_optuna_progress: false
+optuna_progress: true

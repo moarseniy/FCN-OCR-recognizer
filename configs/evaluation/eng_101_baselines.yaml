@@ -14,4 +14,4 @@ optuna_ranges:
 optuna_trials_out: ../../output/baseline_trials.tsv
 optuna_storage: sqlite:///../../output/baseline_optuna.db
 optuna_study_name: eng_101_baselines_v1
-no_optuna_progress: false
+optuna_progress: true

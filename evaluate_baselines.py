@@ -347,9 +347,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
     parser.add_argument(
-        "--no-optuna-progress",
-        action="store_true",
-        help="Disable the interactive Optuna progress bar.",
+        "--optuna-progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable the interactive Optuna progress bar.",
     )
     return parse_args_with_evaluation_config(
         parser,
@@ -392,7 +393,7 @@ def main() -> None:
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
-            progress=not args.no_optuna_progress,
+            progress=args.optuna_progress,
         )
     else:
         metrics = evaluate_detector(

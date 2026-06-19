@@ -12,4 +12,4 @@ log_every: 0
 # Keep per-epoch evaluation deterministic and inexpensive.
 optuna_trials: 0
 optuna_metric: global_char_accuracy
-no_optuna_progress: false
+optuna_progress: true
