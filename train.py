@@ -46,16 +46,8 @@ SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 TRAINING_CONFIG_FILENAME = "training_config.yaml"
-NON_TRAINING_SEGMENTATOR_KEYS = {
-    "segmentator_cut_threshold",
-    "segmentator_cut_min_width",
-    "segmentator_cut_max_width",
-    "segmentator_cut_smooth_radius",
-}
-
-
 class TrainingConfig(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     alphabet: str | None = None
     space_char: str | None = None
@@ -135,19 +127,6 @@ class TrainingConfig(BaseModel):
     @classmethod
     def model_validate_with_paths(cls, data: Any, config_path: str | Path) -> "TrainingConfig":
         data = dict(data)
-        misplaced = sorted(NON_TRAINING_SEGMENTATOR_KEYS.intersection(data))
-        if misplaced:
-            raise ValueError(
-                "Segmentator postprocessing parameters do not belong in a training config: "
-                f"{misplaced}. Set them in evaluate_segmentator.py or an inference config."
-            )
-        generator_config = data.pop("generator_config", None)
-        if generator_config:
-            raise ValueError(
-                "Training-time online generation via generator_config was removed. "
-                "Generate chunks first with synth_generators.line_generator.generate_dataset "
-                "and set chunks_dir in the training config."
-            )
         config_dir = Path(config_path).resolve().parent
         for key in ("chunks_dir", "checkpoint_dir", "preview_dir"):
             value = data.get(key)
@@ -600,7 +579,6 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
 def compute_loss(
     logits,
     targets,
-    lengths,
     loss_mode="legacy_logreg",
     legacy_target_mode="dense_symbols",
     legacy_crop_left=6,
@@ -624,7 +602,6 @@ def compute_loss(
         return legacy_logreg_loss(
             logits,
             targets,
-            lengths,
             target_mode=legacy_target_mode,
             crop_left=legacy_crop_left,
             crop_right=legacy_crop_right,
@@ -655,15 +632,14 @@ def compute_loss(
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
 
-def prepare_batch(imgs, targets, lengths, device):
+def prepare_batch(imgs, targets, device):
     imgs = imgs.to(device, non_blocking=True)
     if imgs.dtype == torch.uint8:
         imgs = imgs.float().div_(255.0)
     else:
         imgs = imgs.float()
     targets = targets.to(device=device, non_blocking=True)
-    lengths = lengths.to(device=device, dtype=torch.long, non_blocking=True)
-    return imgs, targets, lengths
+    return imgs, targets
 
 
 def augmentation_target_format(loss_mode: str, legacy_target_mode: str) -> str | None:
@@ -713,11 +689,11 @@ def validate(
 
     with torch.no_grad():
         total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
-        for batch_idx, (imgs, targets, lengths) in enumerate(loader, start=1):
+        for batch_idx, (imgs, targets) in enumerate(loader, start=1):
             if max_batches is not None and batches >= max_batches:
                 break
 
-            imgs, targets, lengths = prepare_batch(imgs, targets, lengths, device)
+            imgs, targets = prepare_batch(imgs, targets, device)
             if augmenter is not None:
                 target_format = augmentation_target_format(loss_mode, legacy_target_mode)
                 if target_format is None:
@@ -726,14 +702,13 @@ def validate(
                     imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
 
             if preview_saver is not None:
-                preview_saver.save_batch(imgs, targets, lengths)
+                preview_saver.save_batch(imgs, targets)
 
             logits = model(imgs)
 
             loss = compute_loss(
                 logits,
                 targets,
-                lengths,
                 loss_mode=loss_mode,
                 legacy_target_mode=legacy_target_mode,
                 legacy_crop_left=legacy_crop_left,
@@ -809,11 +784,11 @@ def train_one_epoch(
     started_at = time.perf_counter()
 
     total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
-    for batch_idx, (imgs, targets, lengths) in enumerate(loader, start=1):
+    for batch_idx, (imgs, targets) in enumerate(loader, start=1):
         if max_batches is not None and batches >= max_batches:
             break
 
-        imgs, targets, lengths = prepare_batch(imgs, targets, lengths, device)
+        imgs, targets = prepare_batch(imgs, targets, device)
         if augmenter is not None:
             target_format = augmentation_target_format(loss_mode, legacy_target_mode)
             if target_format is None:
@@ -822,14 +797,13 @@ def train_one_epoch(
                 imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
 
         if preview_saver is not None:
-            preview_saver.save_batch(imgs, targets, lengths)
+            preview_saver.save_batch(imgs, targets)
 
         logits = model(imgs)
 
         loss = compute_loss(
             logits,
             targets,
-            lengths,
             loss_mode=loss_mode,
             legacy_target_mode=legacy_target_mode,
             legacy_crop_left=legacy_crop_left,
@@ -888,49 +862,42 @@ def tensor_to_pil(image_tensor):
     array = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     return Image.fromarray(array, mode="RGB")
 
-def decode_target_for_preview(target, length, alphabet):
-    if int(length) < 0:
-        if torch.is_floating_point(target):
-            if target.dim() == 3 and target.size(0) == 2:
-                top_y = int(target[0].amax(dim=1).argmax().item()) if target.numel() else -1
-                bottom_y = int(target[1].amax(dim=1).argmax().item()) if target.numel() else -1
-                max_value = float(target.max().item()) if target.numel() else 0.0
-                return f"<baseline_heatmap top_y={top_y} bottom_y={bottom_y} max={max_value:.3f}>"
-            peak_count = int((target > 0.5).sum().item())
+def describe_target_for_preview(target):
+    if torch.is_floating_point(target):
+        if target.dim() == 3 and target.size(0) == 2:
+            top_y = int(target[0].amax(dim=1).argmax().item()) if target.numel() else -1
+            bottom_y = int(target[1].amax(dim=1).argmax().item()) if target.numel() else -1
             max_value = float(target.max().item()) if target.numel() else 0.0
-            return f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
-        return "<dense_symbols>"
-    return "".join(alphabet[idx] for idx in target[:length].tolist())
+            return f"<baseline_heatmap top_y={top_y} bottom_y={bottom_y} max={max_value:.3f}>"
+        peak_count = int((target > 0.5).sum().item())
+        max_value = float(target.max().item()) if target.numel() else 0.0
+        return f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
+    return "<dense_symbols>"
 
 class InputPreviewSaver:
-    def __init__(self, output_dir, count, alphabet):
+    def __init__(self, output_dir, count):
         self.output_path = Path(output_dir)
         self.count = count
-        self.alphabet = alphabet
         self.saved = 0
         self.labels_file = None
 
         if count > 0:
             self.output_path.mkdir(parents=True, exist_ok=True)
             self.labels_file = (self.output_path / "labels.tsv").open("w")
-            self.labels_file.write("file\ttext\tlength\n")
+            self.labels_file.write("file\ttarget\n")
 
-    def save_batch(self, images, targets, lengths):
+    def save_batch(self, images, targets):
         if self.count <= 0 or self.saved >= self.count:
             return
 
-        for image, target, length in zip(images, targets, lengths):
+        for image, target in zip(images, targets):
             if self.saved >= self.count:
                 return
 
             filename = f"{self.saved:04d}.png"
-            text = decode_target_for_preview(
-                target,
-                int(length),
-                self.alphabet,
-            )
+            description = describe_target_for_preview(target)
             tensor_to_pil(image).save(self.output_path / filename)
-            self.labels_file.write(f"{filename}\t{text}\t{int(length)}\n")
+            self.labels_file.write(f"{filename}\t{description}\n")
             self.labels_file.flush()
             self.saved += 1
 
@@ -1109,7 +1076,11 @@ def dataset_config_from_training_config(
     config: TrainingConfig,
     base_data: dict[str, Any] | None = None,
 ) -> SingleLineDatasetConfig:
-    data = dict(base_data or {})
+    data = {
+        key: value
+        for key, value in (base_data or {}).items()
+        if key in SingleLineDatasetConfig.model_fields
+    }
 
     for field_name in DATASET_CONFIG_OVERRIDE_FIELDS:
         value = getattr(config, field_name)
@@ -1524,12 +1495,10 @@ def run_training(
         train_preview_saver = InputPreviewSaver(
             Path(args.preview_dir) / "train",
             args.preview_samples,
-            alphabet,
         )
         val_preview_saver = InputPreviewSaver(
             Path(args.preview_dir) / "val",
             args.preview_samples,
-            alphabet,
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

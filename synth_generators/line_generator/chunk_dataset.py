@@ -37,18 +37,20 @@ class ChunkedLineDataset(Dataset):
     def __init__(
         self,
         root_dir: str | Path,
+        *,
+        config: SingleLineDatasetConfig,
         cache_size: int = 2,
-        config: SingleLineDatasetConfig | None = None,
-        target_format: str = "text",
+        target_format: str = "dense_symbols",
     ):
         self.root_dir = Path(root_dir)
         self.cache_size = max(1, cache_size)
         self.config = config
         self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols", "cut_projection", "baseline_heatmap"}:
-            raise ValueError("target_format must be 'text', 'dense_symbols', 'cut_projection', or 'baseline_heatmap'")
+        if self.target_format not in {"dense_symbols", "cut_projection", "baseline_heatmap"}:
+            raise ValueError(
+                "target_format must be 'dense_symbols', 'cut_projection', or 'baseline_heatmap'"
+            )
         self.metadata = load_chunk_metadata(self.root_dir)
-        self.char_to_index = {char: idx for idx, char in enumerate(config.alphabet)} if config else {}
         chunk_paths = sorted(self.root_dir.glob("chunk_*.pt"))
         if not chunk_paths:
             raise FileNotFoundError(f"No chunk_*.pt files found in {self.root_dir}")
@@ -68,7 +70,7 @@ class ChunkedLineDataset(Dataset):
     def __len__(self) -> int:
         return self.total_samples
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         if index < 0:
             index += self.total_samples
         if index < 0 or index >= self.total_samples:
@@ -81,15 +83,13 @@ class ChunkedLineDataset(Dataset):
 
         image = chunk["images"][local_idx]
 
-        if self.config is None:
-            raise RuntimeError("config is required to encode chunk targets")
         if self.target_format == "dense_symbols":
             return self._make_dense_symbol_target(image, chunk, local_idx)
         if self.target_format == "cut_projection":
             return self._make_cut_projection_target(image, chunk, local_idx)
         if self.target_format == "baseline_heatmap":
             return self._make_baseline_heatmap_target(image, chunk, local_idx)
-        return self._make_target_from_text(image, chunk["texts"][local_idx])
+        raise RuntimeError(f"unsupported target format: {self.target_format}")
 
     def iter_texts(self):
         for chunk_idx in range(len(self.chunks)):
@@ -148,32 +148,12 @@ class ChunkedLineDataset(Dataset):
         if "baseline_targets" in chunk and chunk["baseline_targets"].shape[0] != sample_count:
             raise ValueError(f"Chunk {path} has inconsistent baseline_targets first dimension")
 
-    def _make_target_from_text(self, image: torch.Tensor, text: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.config is None:
-            raise RuntimeError("config is required to encode targets from text")
-        text = self._normalize_text(text)
-
-        missing = sorted(set(text) - set(self.config.alphabet))
-        if missing:
-            raise ValueError(f"text contains chars outside training alphabet: {missing}")
-        if not text:
-            raise ValueError("text must not be empty after space normalization")
-
-        if len(text) > self.config.max_text_length:
-            raise ValueError(
-                f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}: {text!r}"
-            )
-        target = torch.zeros(self.config.max_text_length, dtype=torch.long)
-        if text:
-            target[: len(text)] = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
-        return image, target, torch.tensor(len(text), dtype=torch.long)
-
     def _make_dense_symbol_target(
         self,
         image: torch.Tensor,
         chunk: dict,
         local_idx: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if "dense_targets" not in chunk:
             raise KeyError(
                 "Chunk does not contain dense_targets. Regenerate the dataset with "
@@ -186,14 +166,14 @@ class ChunkedLineDataset(Dataset):
             raise ValueError(
                 f"dense target width {target.size(0)} does not match image width {image.shape[-1]}"
             )
-        return image, target, torch.tensor(-1, dtype=torch.long)
+        return image, target
 
     def _make_cut_projection_target(
         self,
         image: torch.Tensor,
         chunk: dict,
         local_idx: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if "cut_projection_targets" not in chunk:
             raise KeyError(
                 "Chunk does not contain cut_projection_targets. Regenerate the dataset with "
@@ -209,14 +189,14 @@ class ChunkedLineDataset(Dataset):
             raise ValueError(
                 f"cut projection target width {target.size(0)} does not match image width {image.shape[-1]}"
             )
-        return image, target.contiguous(), torch.tensor(-1, dtype=torch.long)
+        return image, target.contiguous()
 
     def _make_baseline_heatmap_target(
         self,
         image: torch.Tensor,
         chunk: dict,
         local_idx: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if "baseline_targets" not in chunk:
             raise KeyError(
                 "Chunk does not contain baseline_targets. Regenerate the dataset with "
@@ -232,10 +212,8 @@ class ChunkedLineDataset(Dataset):
             raise ValueError(
                 f"baseline target shape {tuple(target.shape[-2:])} does not match image shape {tuple(image.shape[-2:])}"
             )
-        return image, target.contiguous(), torch.tensor(-1, dtype=torch.long)
+        return image, target.contiguous()
 
     def _normalize_text(self, text: str) -> str:
-        if self.config is None:
-            return text
         space_char = self.config.space_char
         return space_char.join(part for part in text.split(space_char) if part)

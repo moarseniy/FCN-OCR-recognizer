@@ -76,7 +76,13 @@ def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLine
 
     config_data = {}
     if chunks_dir is not None:
-        config_data.update(load_chunk_metadata(chunks_dir))
+        config_data.update(
+            {
+                key: value
+                for key, value in load_chunk_metadata(chunks_dir).items()
+                if key in SingleLineDatasetConfig.model_fields
+            }
+        )
     config_data.update(raw_config)
     config = SingleLineDatasetConfig.model_validate_with_paths(config_data, config_path)
     if config.alphabet is None:

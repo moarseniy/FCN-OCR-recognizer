@@ -54,8 +54,6 @@ augmentation_probabilities:
   crop_y: 0.4
   morphology: 0.1
   unsharp_mask: 0.2
-  gaussian_blur: 0.0
-  gaussian_noise: 0.0
   brightness: 0.3
   contrast: 0.3
   invert: 0.0
@@ -107,12 +105,6 @@ augmentations:
     percent_min: 90
     percent_max: 160
     threshold: 3
-  gaussian_blur:
-    radius_min: 0.0
-    radius_max: 0.25
-  gaussian_noise:
-    std_min: 0.0
-    std_max: 5.0
   brightness:
     factor_min: 0.85
     factor_max: 1.15

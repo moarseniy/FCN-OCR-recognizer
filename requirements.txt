@@ -4,6 +4,5 @@ pillow
 pydantic
 PyYAML
 tqdm
-opencv-python
 fonttools
 optuna

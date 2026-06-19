@@ -82,33 +82,23 @@ class OCRPipeline:
                 cut_smooth_radius=segmentator.cut_smooth_radius,
             )
 
-        self.baseline_processor: TextRecognizer | BaselineDetector | None = None
+        self.baseline_processor: BaselineDetector | None = None
         baseline = self.config.baseline
         if baseline is not None and baseline.enabled:
-            if baseline.detector_checkpoint is not None:
-                self.baseline_processor = BaselineDetector(
-                    baseline.detector_checkpoint,
-                    device=self.config.device,
-                    threshold=baseline.detector_threshold,
-                    deskew=baseline.deskew,
-                    max_angle=baseline.max_angle,
-                    strict_lines=baseline.strict_lines,
-                    line_pad=baseline.line_pad,
-                    line_pad_px=baseline.line_pad_px,
-                )
-                if verbose:
-                    self.baseline_processor.print_summary()
-            else:
-                self.baseline_processor = self.recognizer or self.segmentator
-                if self.baseline_processor is None:
-                    raise ValueError("Baseline stage has no processor")
-                self.baseline_processor.baseline_crop = True
-                self.baseline_processor.baseline_deskew = baseline.deskew
-                self.baseline_processor.baseline_max_angle = baseline.max_angle
-                self.baseline_processor.baseline_strict_lines = baseline.strict_lines
-                self.baseline_processor.baseline_line_pad = baseline.line_pad
-                self.baseline_processor.baseline_line_pad_px = baseline.line_pad_px
-                self.baseline_processor.baseline_detector_threshold = baseline.detector_threshold
+            if baseline.detector_checkpoint is None:
+                raise ValueError("Enabled baseline stage requires detector_checkpoint")
+            self.baseline_processor = BaselineDetector(
+                baseline.detector_checkpoint,
+                device=self.config.device,
+                threshold=baseline.detector_threshold,
+                deskew=baseline.deskew,
+                max_angle=baseline.max_angle,
+                strict_lines=baseline.strict_lines,
+                line_pad=baseline.line_pad,
+                line_pad_px=baseline.line_pad_px,
+            )
+            if verbose:
+                self.baseline_processor.print_summary()
 
         if verbose:
             self._print_pipeline_summary()
@@ -119,12 +109,10 @@ class OCRPipeline:
         if baseline is None or not baseline.enabled:
             print("  Shared pipeline baseline: disabled")
         else:
-            detector = (
-                f"neural detector {baseline.detector_checkpoint}"
-                if baseline.detector_checkpoint is not None
-                else "model-hosted heuristic detector"
+            print(
+                "  Shared pipeline baseline: enabled "
+                f"(neural detector {baseline.detector_checkpoint})"
             )
-            print(f"  Shared pipeline baseline: enabled ({detector})")
             print(
                 "    runs once before OCR/segmentator; "
                 f"deskew={baseline.deskew}, strict_lines={baseline.strict_lines}, "

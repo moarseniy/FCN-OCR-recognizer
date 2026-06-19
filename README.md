@@ -50,6 +50,8 @@ baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где кана
 
 Все относительные пути внутри YAML считаются от папки самого конфига. Параметры,
 переданные в командной строке, переопределяют значения из evaluation-конфига.
+Неизвестные ключи в generation, training и inference YAML считаются ошибкой,
+поэтому опечатка или удалённый параметр не могут быть молча проигнорированы.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -110,8 +112,6 @@ augmentation_probabilities:
   baseline_line: 0.1
   morphology: 0.08
   unsharp_mask: 0.12
-  gaussian_blur: 0.0
-  gaussian_noise: 0.0
   brightness: 0.3
   contrast: 0.3
   invert: 0.0
@@ -168,12 +168,6 @@ augmentations:
     alpha_max: 0.75
     value_min: 0.0
     value_max: 90.0
-  gaussian_blur:
-    radius_min: 0.0
-    radius_max: 0.25
-  gaussian_noise:
-    std_min: 0.0
-    std_max: 5.0
   brightness:
     factor_min: 0.85
     factor_max: 1.15
@@ -188,7 +182,7 @@ augmentations:
 Доступные OCR-аугментации: `cycle_shift`, `preprocess_geometry`,
 `strong_blur`, `motion_blur`, `scale`, `darkening`, `vertical_fade`, `noise`, `projective`,
 `rotate`, `x_pad`, `crop_x`, `crop_y`, `rescale_quality`, `random_line`,
-`baseline_line`, `morphology`, `unsharp_mask`.
+`baseline_line`, `morphology`, `unsharp_mask`, `brightness`, `contrast`, `invert`.
 `preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
 `x_pad` сжимает содержимое по X внутрь исходного размера тензора и заполняет
 поля `fillcolor`; для target-ов применяется такое же преобразование.
@@ -204,7 +198,6 @@ augmentations:
 `baseline_line` добавляет верхнюю, нижнюю или обе baseline-like линии.
 `side` может быть `top`, `bottom`, `both`, `random` или `random_or_both`;
 позиции задаются через `top_y_*` и `bottom_y_*` в долях высоты изображения.
-Старые `gaussian_blur` и `gaussian_noise` оставлены как совместимые алиасы.
 
 Сохранить один пример изображения по указанному тексту:
 
@@ -924,7 +917,7 @@ for path in ["line_1.png", "line_2.png"]:
 | `baseline.strict_lines` | Требует надежную пару верхней/нижней линий; `false` разрешает bbox/fallback. |
 | `baseline.line_pad` | Симметричный запас crop как доля высоты строки. |
 | `baseline.line_pad_px` | Дополнительный абсолютный запас в исходных пикселях. |
-| `baseline.detector_checkpoint` | Checkpoint нейронного top/bottom baseline-детектора; `null` включает эвристику. |
+| `baseline.detector_checkpoint` | Обязательный checkpoint нейронного top/bottom baseline-детектора. |
 | `baseline.detector_threshold` | Порог sigmoid heatmap нейронного baseline-детектора. |
 | `baseline.deskew` | Включает или отключает поворот по найденным линиям. |
 | `baseline.max_angle` | Максимальный допустимый угол baseline. |
@@ -961,45 +954,36 @@ for path in ["line_1.png", "line_2.png"]:
 
 ### Baseline Detector
 
-`baseline_crop` сейчас работает как ensemble, а не как одна эвристика:
+`baseline_crop` использует только нейросетевой top/bottom detector;
+`baseline.detector_checkpoint` обязателен при `baseline.enabled: true`:
 
-1. Строятся несколько кандидатов текстовой маски:
-   `otsu`, `clahe_otsu`, `adaptive`, `morph_contrast`.
-2. Каждая маска чистится по connected components: мелкий мусор и длинные
-   тонкие линии отбрасываются.
-3. Для каждой очищенной маски берутся несколько вариантов точек нижней линии:
-   нижние профили `lower_q80`, `lower_q88`, `lower_q94`, `lower_edge`, а также
-   `component_bottoms` по нижним точкам компонент.
-4. Для каждого набора точек robust/RANSAC-фитом ищется линия `y = ax + b`.
-   Считаются `angle`, `inlier_ratio`, `profile_coverage`, `residual_mad`,
-   `residual_rmse` и итоговый `confidence`.
-5. Для выбранного нижнего кандидата отдельно ищется верхняя текстовая линия
-   по верхним профилям `upper_edge`, `upper_q04`, `upper_q08`, `upper_q14`.
-   Она тоже фитится robust/RANSAC и получает свои confidence/coverage/residual.
-6. В строгом режиме, включенном по умолчанию, нижняя и верхняя линии одинаково
-   обязательны: кандидат без надежной верхней линии отбрасывается, а итоговый
-   confidence пары берется как минимум из confidence нижней и верхней линий.
-   Старый мягкий режим с `bbox_fallback` можно вернуть через
-   `--no-baseline-strict-lines`.
-7. Угол deskew вычисляется по обеим линиям как взвешенное среднее их углов.
+1. Изображение приводится к входной высоте detector с сохранением пропорций.
+2. Сеть выдаёт две sigmoid heatmap: верхнюю и нижнюю границы текстовой строки.
+3. Для каждого X берётся наиболее уверенная Y-позиция. Колонки ниже
+   `baseline.detector_threshold` отбрасываются.
+4. Для оставшихся точек каждой heatmap robust/RANSAC-фитом ищется линия
+   `y = ax + b`. Считаются `inlier_ratio`, `profile_coverage`, residual и
+   confidence.
+5. Обе линии обязательны. Проверяется, что верхняя находится выше нижней и
+   что их углы согласованы.
+6. Угол deskew вычисляется по обеим линиям как взвешенное среднее их углов.
    Вес каждой линии равен `confidence * profile_coverage`. Если углы расходятся
    сильнее `max(2°, min(6°, baseline_max_angle / 2))`, строгая детекция
    отклоняется. Иначе картинка поворачивается на общий угол, фон новых полей
    заполняется медианным цветом рамки, после чего обе baseline ищутся ещё раз
    на повернутом изображении.
-8. В строгом режиме crop строится после поворота только по паре верх/низ:
+7. В строгом режиме crop строится после поворота только по паре верх/низ:
    верхняя граница берется по верхней линии, нижняя - по нижней линии, без
    расширения через bbox текста. `baseline_line_pad` добавляет небольшой
    симметричный запас относительно `max(расстояние между линиями, bbox-высота
    foreground)`, а `baseline_line_pad_px` добавляет гарантированный пиксельный
    запас. Если после поворота пару линий найти не удалось, baseline crop не
-   применяется. В мягком режиме остается прежний crop по линиям плюс bbox и
-   тот же симметричный запас `baseline_line_pad` + `baseline_line_pad_px`.
+   применяется. При `strict_lines: false` crop может быть расширен bbox-областью
+   самой нейросетевой heatmap, но эвристический detector не используется.
 
 В `--debug-image` для baseline показываются overlay с нижней красной и верхней
-синей линиями, inlier-точки,
-очищенная маска, crop, а в текстовом блоке пишутся `baseline method`,
-`baseline mask`, число кандидатов, angle, confidence, topline stats и crop box.
+синей линиями, heatmap mask и crop, а в текстовом блоке пишутся angle,
+confidence, line-fit stats и crop box.
 
 Если внешний скрипт лежит вне репозитория, добавьте корень проекта в
 `PYTHONPATH`:

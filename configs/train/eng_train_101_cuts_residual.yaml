@@ -63,8 +63,6 @@ augmentation_probabilities:
   random_line: 0.22
   morphology: 0.18
   unsharp_mask: 0.3
-  gaussian_blur: 0.0
-  gaussian_noise: 0.0
   brightness: 0.4
   contrast: 0.45
   invert: 0.0

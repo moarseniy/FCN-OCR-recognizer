@@ -328,7 +328,6 @@ def baseline_heatmap_loss(
 def legacy_logreg_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
-    lengths: torch.Tensor | None = None,
     target_mode: str = "dense_symbols",
     crop_left: int = 6,
     crop_right: int = 5,

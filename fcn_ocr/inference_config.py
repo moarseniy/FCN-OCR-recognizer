@@ -78,10 +78,8 @@ class InferenceConfig(BaseModel):
             raise ValueError("Inference config must enable at least one stage: baseline, segmentator, or ocr")
         if self.ocr is not None and self.ocr.decode.enabled and self.segmentator is None:
             raise ValueError("ocr.decode.enabled requires a segmentator section")
-        if has_baseline and self.baseline.detector_checkpoint is None and self.ocr is None and self.segmentator is None:
-            raise ValueError(
-                "A standalone baseline stage requires baseline.detector_checkpoint"
-            )
+        if has_baseline and self.baseline.detector_checkpoint is None:
+            raise ValueError("An enabled baseline stage requires detector_checkpoint")
         return self
 
     @classmethod

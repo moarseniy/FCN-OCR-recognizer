@@ -166,9 +166,8 @@ class GpuTextAugmenter:
             return self._cycle_shift(images, params, collect_metadata)
         if name == "preprocess_geometry":
             return self._preprocess_geometry(images, params, collect_metadata)
-        if name in {"strong_blur", "gaussian_blur"}:
-            default = 1.2 if name == "strong_blur" else self.config.blur_radius
-            return self._gaussian_blur(images, params, default, collect_metadata)
+        if name == "strong_blur":
+            return self._gaussian_blur(images, params, 1.2, collect_metadata)
         if name == "motion_blur":
             return self._motion_blur(images, params, collect_metadata)
         if name == "scale":
@@ -178,7 +177,7 @@ class GpuTextAugmenter:
             return self._brightness(images, params, default, collect_metadata)
         if name == "vertical_fade":
             return self._vertical_fade(images, params, collect_metadata)
-        if name in {"noise", "gaussian_noise"}:
+        if name == "noise":
             return self._noise(images, params, collect_metadata)
         if name == "projective":
             return self._projective(images, params, collect_metadata)
@@ -575,17 +574,7 @@ class GpuTextAugmenter:
 
     @staticmethod
     def _effective_probabilities(config: SingleLineDatasetConfig) -> dict[str, float]:
-        if config.augmentation_probabilities:
-            return dict(config.augmentation_probabilities)
-
-        probabilities: dict[str, float] = {}
-        if config.max_rotation_degrees:
-            probabilities["rotate"] = 1.0
-        if config.blur_radius:
-            probabilities["gaussian_blur"] = 1.0
-        if config.noise_std:
-            probabilities["noise"] = 1.0
-        return probabilities
+        return dict(config.augmentation_probabilities)
 
     def _cycle_shift(
         self,
@@ -739,7 +728,7 @@ class GpuTextAugmenter:
         params: dict[str, Any],
         collect_metadata: bool,
     ) -> tuple[torch.Tensor, list[AugmentationParams] | None]:
-        max_degrees = float(params.get("max_degrees", self.config.max_rotation_degrees))
+        max_degrees = float(params.get("max_degrees", 0.0))
         if max_degrees <= 0.0:
             return images, None
         angles = (torch.rand(images.size(0), device=images.device, dtype=images.dtype) * 2.0 - 1.0) * max_degrees
@@ -982,7 +971,7 @@ class GpuTextAugmenter:
             logs = self._repeat_log(images, {"kind": "salt_pepper", "amount": amount}) if collect_metadata else None
             return output, logs
 
-        std = self._sample_range(params, "std", self.config.noise_std) / 255.0
+        std = self._sample_range(params, "std", 0.0) / 255.0
         if std <= 0.0:
             return images, None
         logs = self._repeat_log(images, {"kind": "gaussian", "std": std * 255.0}) if collect_metadata else None

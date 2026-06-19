@@ -61,8 +61,6 @@ augmentation_probabilities:
   baseline_line: 0.15
   morphology: 0.15
   unsharp_mask: 0.20
-  gaussian_blur: 0.0
-  gaussian_noise: 0.0
   brightness: 0.35
   contrast: 0.35
   invert: 0.0

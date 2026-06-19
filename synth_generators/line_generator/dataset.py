@@ -10,7 +10,6 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import torch
-from torch.utils.data import Dataset
 
 
 DEFAULT_FONT_CANDIDATES = (
@@ -42,8 +41,6 @@ SUPPORTED_AUGMENTATIONS = (
     "baseline_line",
     "morphology",
     "unsharp_mask",
-    "gaussian_blur",
-    "gaussian_noise",
     "brightness",
     "contrast",
     "invert",
@@ -53,7 +50,7 @@ SUPPORTED_AUGMENTATIONS = (
 class SingleLineDatasetConfig(BaseModel):
     """Config for a simple fully-convolutional single-line OCR dataset."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     sample_alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
     alphabet: str | None = None
@@ -99,9 +96,6 @@ class SingleLineDatasetConfig(BaseModel):
     background_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_BACKGROUND_EXTENSIONS))
     foreground_min: int = Field(default=0, ge=0, le=255)
     foreground_max: int = Field(default=60, ge=0, le=255)
-    noise_std: float = Field(default=0.0, ge=0.0)
-    blur_radius: float = Field(default=0.0, ge=0.0)
-    max_rotation_degrees: float = Field(default=0.0, ge=0.0)
     augmentation_probabilities: dict[str, float] = Field(default_factory=dict)
     augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     horizontal_padding: int = Field(default=8, ge=0)
@@ -317,21 +311,16 @@ class TextRenderStyle:
 class GeneratedLineSample:
     text: str
     image: torch.Tensor
-    target: torch.Tensor
-    length: int
     dense_target: torch.Tensor | None
     cut_projection_target: torch.Tensor | None
     baseline_target: torch.Tensor | None
 
 
-class SingleLineDataset(Dataset):
-    """Renders synthetic text lines with OCR sequence labels."""
+class SingleLineDataset:
+    """Renders synthetic text lines and optional task-specific targets."""
 
-    def __init__(self, config: SingleLineDatasetConfig, target_format: str = "text"):
+    def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
-        self.target_format = target_format
-        if self.target_format not in {"text", "dense_symbols", "cut_projection", "baseline_heatmap"}:
-            raise ValueError("target_format must be 'text', 'dense_symbols', 'cut_projection', or 'baseline_heatmap'")
         self.alphabet = config.alphabet or config.sample_alphabet
         self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
@@ -361,22 +350,6 @@ class SingleLineDataset(Dataset):
 
     def __len__(self) -> int:
         return self.config.samples
-
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        sample = self.generate_sample_from_index(index)
-        if self.target_format == "dense_symbols":
-            if sample.dense_target is None:
-                raise RuntimeError("dense target was not generated for this sample")
-            return sample.image, sample.dense_target, torch.tensor(-1, dtype=torch.long)
-        if self.target_format == "cut_projection":
-            if sample.cut_projection_target is None:
-                raise RuntimeError("cut projection target was not generated for this sample")
-            return sample.image, sample.cut_projection_target, torch.tensor(-1, dtype=torch.long)
-        if self.target_format == "baseline_heatmap":
-            if sample.baseline_target is None:
-                raise RuntimeError("baseline target was not generated for this sample")
-            return sample.image, sample.baseline_target, torch.tensor(-1, dtype=torch.long)
-        return sample.image, sample.target, torch.tensor(sample.length, dtype=torch.long)
 
     def generate_sample_from_index(self, index: int) -> GeneratedLineSample:
         if index < 0:
@@ -1120,15 +1093,14 @@ class SingleLineDataset(Dataset):
         if len(spans) != len(cut_spans):
             raise ValueError("logical and cut span counts must match")
 
-        target = self._encode_text(text)
         dense_target = None
-        if self.target_format == "dense_symbols" or self.config.save_dense_targets:
+        if self.config.save_dense_targets:
             dense_target = self._encode_dense_symbols(spans, image.width)
         cut_projection_target = None
-        if self.target_format == "cut_projection" or self.config.save_cut_projection_targets:
+        if self.config.save_cut_projection_targets:
             cut_projection_target = self._encode_cut_projection(cut_spans, image.width)
         baseline_target = None
-        if self.target_format == "baseline_heatmap" or self.config.save_baseline_targets:
+        if self.config.save_baseline_targets:
             x_start = min(start for _, start, _ in spans)
             x_end = max(end for _, _, end in spans)
             baseline_target = self._encode_baseline_heatmap(
@@ -1139,8 +1111,6 @@ class SingleLineDataset(Dataset):
                 x_start=x_start,
                 x_end=x_end,
             )
-        length = len(text)
-
         if self.config.channels == 3:
             array = np.asarray(image.convert("RGB"), dtype=np.float32)
             tensor = torch.from_numpy(array).permute(2, 0, 1) / 255.0
@@ -1151,18 +1121,10 @@ class SingleLineDataset(Dataset):
         return GeneratedLineSample(
             text=text,
             image=tensor.contiguous(),
-            target=target,
-            length=length,
             dense_target=dense_target,
             cut_projection_target=cut_projection_target,
             baseline_target=baseline_target,
         )
-
-    def _encode_text(self, text: str) -> torch.Tensor:
-        target = torch.zeros(self.config.max_text_length, dtype=torch.long)
-        encoded = torch.tensor([self.char_to_index[char] for char in text], dtype=torch.long)
-        target[: len(encoded)] = encoded
-        return target
 
     def _encode_dense_symbols(
         self,
@@ -1336,7 +1298,7 @@ class SingleLineDataset(Dataset):
         fallback_bbox: tuple[float, float, float, float],
     ) -> tuple[float, float, Image.Image | None]:
         fallback = (float(y + fallback_bbox[1]), float(y + fallback_bbox[3] - 1))
-        if self.target_format != "baseline_heatmap" and not self.config.save_baseline_targets:
+        if not self.config.save_baseline_targets:
             return fallback[0], fallback[1], None
 
         mask = Image.new("L", (width, height), color=0)
