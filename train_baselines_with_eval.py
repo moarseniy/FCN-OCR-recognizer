@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from evaluate_baselines import build_jobs, evaluate_detector, optimize
 from fcn_ocr import BaselineDetector
+from fcn_ocr.evaluation_config import expand_optuna_ranges
 from train import load_training_config, resolve_checkpoint_dir, run_training
 
 
@@ -78,6 +79,7 @@ class BaselineTrainEvalConfig(BaseModel):
         config_path = Path(path).expanduser().resolve()
         with config_path.open("r", encoding="utf-8") as file:
             raw = yaml.safe_load(file) or {}
+        raw = expand_optuna_ranges(raw, valid_fields=set(cls.model_fields))
         config_dir = config_path.parent
         for key in ("train_config", "markup_json", "images_dir", "output_dir"):
             value = raw.get(key)

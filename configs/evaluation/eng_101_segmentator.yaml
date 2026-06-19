@@ -28,20 +28,17 @@ baseline_detector_threshold: 0.35
 
 optuna_trials: 300
 optuna_metric: cut_f1
-optuna_cut_threshold_min: 0.10
-optuna_cut_threshold_max: 0.95
-optuna_cut_min_width_min: 1
-optuna_cut_min_width_max: 10
-optuna_cut_max_width_min: 0
-optuna_cut_max_width_max: 32
-optuna_cut_smooth_radius_min: 0
-optuna_cut_smooth_radius_max: 3
-optuna_scale_x_min: -0.20
-optuna_scale_x_max: 0.20
-optuna_y_pad_min: -0.20
-optuna_y_pad_max: 0.20
-optuna_x_pad_min: 0.0
-optuna_x_pad_max: 0.08
+optuna_ranges:
+  cut_threshold: [0.10, 0.95]
+  cut_min_width: [1, 10]
+  cut_max_width: [0, 32]
+  cut_smooth_radius: [0, 3]
+  scale_x: [-0.20, 0.20]
+  y_pad: [-0.20, 0.20]
+  x_pad: [0.0, 0.08]
+  baseline_line_pad: [0.0, 0.16]
+  baseline_line_pad_px: [0.0, 6.0]
+  baseline_max_angle: [4.0, 18.0]
 
 optuna_tune_baseline_crop: false
 optuna_tune_baseline_params: false
@@ -49,14 +46,6 @@ optuna_tune_baseline_line_pad: false
 optuna_tune_baseline_line_pad_px: false
 optuna_tune_baseline_max_angle: false
 optuna_tune_baseline_deskew: false
-optuna_baseline_line_pad_min: 0.0
-optuna_baseline_line_pad_max: 0.16
-optuna_baseline_line_pad_px_min: 0.0
-optuna_baseline_line_pad_px_max: 6.0
-optuna_baseline_max_angle_min: 4.0
-optuna_baseline_max_angle_max: 18.0
-optuna_baseline_detector_threshold_min: null
-optuna_baseline_detector_threshold_max: null
 
 optuna_trials_out: ../../output/segmentator_trials.tsv
 optuna_storage: sqlite:///../../output/segmentator_v2.db

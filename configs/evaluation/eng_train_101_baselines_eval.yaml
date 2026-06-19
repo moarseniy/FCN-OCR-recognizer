@@ -17,8 +17,8 @@ best_checkpoint_name: best_manual_baselines_model.pth
 # Keep disabled for normal training. Enable for a final threshold search or
 # when deliberately comparing every epoch at its own best threshold.
 optuna_trials: 0
-optuna_threshold_min: 0.10
-optuna_threshold_max: 0.90
+optuna_ranges:
+  threshold: [0.10, 0.90]
 optuna_trials_output: true
 optuna_study_name: baseline_train
 optuna_storage: null

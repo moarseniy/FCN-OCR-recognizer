@@ -37,40 +37,14 @@ segmentator_decode_min_score_width: null
 
 optuna_trials: 200
 optuna_metric: global_char_accuracy
-optuna_scale_x_min: -0.25
-optuna_scale_x_max: 0.25
-optuna_y_pad_min: -0.40
-optuna_y_pad_max: 0.50
-optuna_x_pad_min: 0.0
-optuna_x_pad_max: 0.12
+optuna_ranges:
+  scale_x: [-0.25, 0.25]
+  y_pad: [-0.40, 0.50]
+  x_pad: [0.0, 0.12]
 
 # Baseline and segmentator stay fixed unless a corresponding range is set.
 optuna_tune_baseline_line_pad: false
 optuna_tune_baseline_line_pad_px: false
-optuna_baseline_detector_threshold_min: null
-optuna_baseline_detector_threshold_max: null
-optuna_baseline_line_pad_min: null
-optuna_baseline_line_pad_max: null
-optuna_baseline_line_pad_px_min: null
-optuna_baseline_line_pad_px_max: null
-optuna_segmentator_scale_x_min: null
-optuna_segmentator_scale_x_max: null
-optuna_segmentator_y_pad_min: null
-optuna_segmentator_y_pad_max: null
-optuna_segmentator_x_pad_min: null
-optuna_segmentator_x_pad_max: null
-optuna_segmentator_cut_threshold_min: null
-optuna_segmentator_cut_threshold_max: null
-optuna_segmentator_cut_min_width_min: null
-optuna_segmentator_cut_min_width_max: null
-optuna_segmentator_cut_max_width_min: null
-optuna_segmentator_cut_max_width_max: null
-optuna_segmentator_cut_smooth_radius_min: null
-optuna_segmentator_cut_smooth_radius_max: null
-optuna_segmentator_decode_center_fraction_min: null
-optuna_segmentator_decode_center_fraction_max: null
-optuna_segmentator_decode_min_score_width_min: null
-optuna_segmentator_decode_min_score_width_max: null
 
 optuna_trials_out: ../../output/ocr_trials.tsv
 optuna_storage: sqlite:///../../output/ocr_optuna.db

@@ -7,6 +7,54 @@ from typing import Iterable, Sequence
 import yaml
 
 
+def expand_optuna_ranges(
+    config_data: dict,
+    *,
+    valid_fields: set[str],
+) -> dict:
+    expanded = dict(config_data)
+    old_range_fields = sorted(
+        field
+        for field in expanded
+        if field.startswith("optuna_")
+        and field.endswith(("_min", "_max"))
+        and field in valid_fields
+    )
+    if old_range_fields:
+        raise ValueError(
+            "evaluation YAML must use optuna_ranges instead of: "
+            + ", ".join(old_range_fields)
+        )
+    ranges = expanded.pop("optuna_ranges", None)
+    if ranges is None:
+        return expanded
+    if not isinstance(ranges, dict):
+        raise ValueError("optuna_ranges must be a YAML mapping")
+
+    for raw_name, bounds in ranges.items():
+        name = str(raw_name).strip().lower().replace("-", "_")
+        prefix = name if name.startswith("optuna_") else f"optuna_{name}"
+        min_field = f"{prefix}_min"
+        max_field = f"{prefix}_max"
+        if min_field not in valid_fields or max_field not in valid_fields:
+            raise ValueError(f"unknown Optuna range: {raw_name}")
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            raise ValueError(f"optuna_ranges.{raw_name} must contain [min, max]")
+        minimum, maximum = bounds
+        if (
+            isinstance(minimum, bool)
+            or isinstance(maximum, bool)
+            or not isinstance(minimum, (int, float))
+            or not isinstance(maximum, (int, float))
+        ):
+            raise ValueError(f"optuna_ranges.{raw_name} bounds must be numbers")
+        if minimum > maximum:
+            raise ValueError(f"optuna_ranges.{raw_name} requires min <= max")
+        expanded[min_field] = minimum
+        expanded[max_field] = maximum
+    return expanded
+
+
 def parse_args_with_evaluation_config(
     parser: argparse.ArgumentParser,
     *,
@@ -29,6 +77,13 @@ def parse_args_with_evaluation_config(
             parser.error("evaluation config must contain a YAML mapping")
 
         valid_fields = {action.dest for action in parser._actions}
+        try:
+            config_data = expand_optuna_ranges(
+                config_data,
+                valid_fields=valid_fields,
+            )
+        except ValueError as error:
+            parser.error(str(error))
         unknown_fields = sorted(set(config_data) - valid_fields)
         if unknown_fields:
             parser.error(
