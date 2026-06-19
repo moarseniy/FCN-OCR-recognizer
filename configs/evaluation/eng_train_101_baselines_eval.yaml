@@ -1,0 +1,24 @@
+# Paths are resolved relative to this file.
+train_config: ../train/eng_train_101_baselines.yaml
+markup_json: ../../output/manual_markup.json
+images_dir: null
+output_dir: ../../output/baseline_train_eval
+
+device: cuda
+limit: null
+evaluate_every: 1
+
+# Fixed threshold gives directly comparable metrics between epochs.
+threshold: 0.35
+failure_penalty: 1.0
+best_metric: failure_penalized_normalized_mae
+best_checkpoint_name: best_manual_baselines_model.pth
+
+# Keep disabled for normal training. Enable for a final threshold search or
+# when deliberately comparing every epoch at its own best threshold.
+optuna_trials: 0
+optuna_threshold_min: 0.10
+optuna_threshold_max: 0.90
+optuna_trials_output: true
+optuna_study_name: baseline_train
+optuna_storage: null

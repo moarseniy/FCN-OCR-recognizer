@@ -152,9 +152,10 @@ class TrainingConfig(BaseModel):
         for key in ("chunks_dir", "checkpoint_dir", "preview_dir"):
             value = data.get(key)
             if value:
-                path = Path(value)
+                path = Path(value).expanduser()
                 if not path.is_absolute():
-                    data[key] = str(config_dir / path)
+                    path = config_dir / path
+                data[key] = str(path.resolve())
         return cls.model_validate(data)
 
     @field_validator("alphabet")

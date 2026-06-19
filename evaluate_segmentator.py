@@ -14,6 +14,7 @@ from PIL import Image
 import torch
 
 from fcn_ocr import InferenceConfig, VerticalSegmentator
+from fcn_ocr.evaluation_config import parse_args_with_evaluation_config
 from tool.evaluation import match_sorted_points
 from tool.markup import annotated_items, is_manual_markup, safe_image_path
 from tool.optuna_progress import optimize_with_progress
@@ -992,9 +993,10 @@ def evaluate(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Tune/evaluate vertical cut segmentation.")
+    parser.add_argument("--config", default=None, help="Evaluation YAML config.")
     parser.add_argument(
         "--json",
-        required=True,
+        default=None,
         help="Label Studio export JSON or manual markup JSON created by tool.annotation_server.",
     )
     parser.add_argument(
@@ -1002,7 +1004,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override images directory stored in manual markup JSON; required for Label Studio JSON.",
     )
-    parser.add_argument("--checkpoint", required=True, help="Path to vertical cut segmentator checkpoint.")
+    parser.add_argument("--checkpoint", default=None, help="Path to vertical cut segmentator checkpoint.")
     parser.add_argument(
         "--inference-ocr-checkpoint",
         default=None,
@@ -1119,7 +1121,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable the interactive Optuna progress bar.",
     )
-    return parser.parse_args()
+    return parse_args_with_evaluation_config(
+        parser,
+        path_fields=(
+            "json",
+            "images",
+            "checkpoint",
+            "inference_ocr_checkpoint",
+            "out",
+            "baseline_detector_checkpoint",
+            "optuna_trials_out",
+        ),
+        required_fields=("json", "checkpoint"),
+    )
 
 
 def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) -> None:

@@ -7,12 +7,13 @@ import json
 import shlex
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from PIL import Image
 import torch
 
 from fcn_ocr import InferenceConfig, TextRecognizer, VerticalSegmentator
+from fcn_ocr.evaluation_config import parse_args_with_evaluation_config
 from tool.optuna_progress import optimize_with_progress
 
 
@@ -1172,10 +1173,11 @@ def evaluate(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate FCN OCR on a Label Studio JSON export.")
-    parser.add_argument("--json", required=True, help="Path to Label Studio export JSON.")
-    parser.add_argument("--images", required=True, help="Folder with images.")
+    parser.add_argument("--config", default=None, help="Evaluation YAML config.")
+    parser.add_argument("--json", default=None, help="Path to Label Studio export JSON.")
+    parser.add_argument("--images", default=None, help="Folder with images.")
     parser.add_argument(
         "--inference-config",
         default=None,
@@ -1391,7 +1393,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optuna-segmentator-decode-center-fraction-max", type=float, default=None)
     parser.add_argument("--optuna-segmentator-decode-min-score-width-min", type=int, default=None)
     parser.add_argument("--optuna-segmentator-decode-min-score-width-max", type=int, default=None)
-    return parser.parse_args()
+    return parse_args_with_evaluation_config(
+        parser,
+        path_fields=(
+            "json",
+            "images",
+            "inference_config",
+            "checkpoint",
+            "out",
+            "baseline_detector_checkpoint",
+            "segmentator_checkpoint",
+            "optuna_trials_out",
+        ),
+        required_fields=("json", "images"),
+        argv=argv,
+    )
 
 
 def _first_defined(*values: Any) -> Any:
@@ -1668,15 +1684,25 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
     print(shlex.join(command))
 
 
-def main() -> None:
-    args = resolve_inference_args(parse_args())
+def run_evaluation(
+    args: argparse.Namespace,
+    *,
+    checkpoint_path: Path | None = None,
+    output_csv: Path | None = None,
+    trials_output: Path | None = None,
+    print_inference_command: bool = True,
+) -> dict[str, Any]:
+    checkpoint_path = checkpoint_path or Path(args.checkpoint)
+    output_csv = output_csv or Path(args.out)
+    if trials_output is None and args.optuna_trials_out:
+        trials_output = Path(args.optuna_trials_out)
     common_kwargs = _common_eval_kwargs(args)
     if args.optuna_trials > 0:
         metrics = optimize_preprocess(
             json_path=Path(args.json),
             images_dir=Path(args.images),
-            checkpoint_path=Path(args.checkpoint),
-            output_csv=Path(args.out),
+            checkpoint_path=checkpoint_path,
+            output_csv=output_csv,
             device=args.device,
             batch_size=args.batch_size,
             limit=args.limit,
@@ -1688,7 +1714,7 @@ def main() -> None:
             x_pad=args.x_pad,
             metric_name=args.optuna_metric,
             log_every=args.log_every,
-            trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
+            trials_output=trials_output,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
             progress=not args.no_optuna_progress,
@@ -1726,8 +1752,8 @@ def main() -> None:
         metrics = evaluate(
             json_path=Path(args.json),
             images_dir=Path(args.images),
-            checkpoint_path=Path(args.checkpoint),
-            output_csv=Path(args.out),
+            checkpoint_path=checkpoint_path,
+            output_csv=output_csv,
             device=args.device,
             scale_x=args.scale_x,
             y_pad=args.y_pad,
@@ -1737,7 +1763,14 @@ def main() -> None:
             log_every=args.log_every,
             **common_kwargs,
         )
-    _print_inference_command(args, metrics)
+    if print_inference_command:
+        _print_inference_command(args, metrics)
+    return metrics
+
+
+def main() -> None:
+    args = resolve_inference_args(parse_args())
+    run_evaluation(args)
 
 
 if __name__ == "__main__":

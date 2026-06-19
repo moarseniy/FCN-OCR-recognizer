@@ -45,8 +45,8 @@ architecture_params:
 
 Примеры конфигов:
 
-- `configs/eng_train_101_wide.yaml`
-- `configs/eng_train_101_highres.yaml`
-- `configs/eng_train_101_residual.yaml`
-- `configs/eng_train_101_cuts_residual.yaml`
-- `configs/eng_train_101_baselines.yaml`
+- `configs/train/eng_train_101_wide.yaml`
+- `configs/train/eng_train_101_highres.yaml`
+- `configs/train/eng_train_101_residual.yaml`
+- `configs/train/eng_train_101_cuts_residual.yaml`
+- `configs/train/eng_train_101_baselines.yaml`

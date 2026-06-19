@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 
 from fcn_ocr import BaselineDetector, InferenceConfig
+from fcn_ocr.evaluation_config import parse_args_with_evaluation_config
 from tool.evaluation import interpolate_polyline, polyline_x_bounds
 from tool.markup import annotated_items, load_document, safe_image_path
 from tool.optuna_progress import optimize_with_progress
@@ -329,9 +330,10 @@ def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], i
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate neural top/bottom baseline detection.")
-    parser.add_argument("--json", required=True, help="Manual markup JSON created by tool.annotation_server.")
+    parser.add_argument("--config", default=None, help="Evaluation YAML config.")
+    parser.add_argument("--json", default=None, help="Manual markup JSON created by tool.annotation_server.")
     parser.add_argument("--images", default=None, help="Override images directory stored in the markup JSON.")
-    parser.add_argument("--checkpoint", required=True, help="Baseline detector checkpoint.")
+    parser.add_argument("--checkpoint", default=None, help="Baseline detector checkpoint.")
     parser.add_argument("--out", default="output/baseline_metrics.csv")
     parser.add_argument("--device", default=None)
     parser.add_argument("--limit", type=int, default=None)
@@ -349,7 +351,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable the interactive Optuna progress bar.",
     )
-    return parser.parse_args()
+    return parse_args_with_evaluation_config(
+        parser,
+        path_fields=(
+            "json",
+            "images",
+            "checkpoint",
+            "out",
+            "inference_ocr_checkpoint",
+            "optuna_trials_out",
+        ),
+        required_fields=("json", "checkpoint"),
+    )
 
 
 def main() -> None:

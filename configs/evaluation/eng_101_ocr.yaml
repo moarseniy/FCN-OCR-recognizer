@@ -1,0 +1,78 @@
+# Set these two paths for the evaluation dataset or override them in CLI.
+json: null
+images: null
+
+inference_config: ../inference/eng_101.yaml
+checkpoint: null
+out: ../../output/ocr_metrics.csv
+device: cuda
+batch_size: 64
+limit: null
+log_every: 100
+
+# Fixed values are loaded from inference_config unless overridden here.
+scale_x: null
+y_pad: null
+x_pad: null
+baseline_crop: null
+baseline_deskew: null
+baseline_max_angle: null
+baseline_strict_lines: null
+baseline_line_pad: null
+baseline_line_pad_px: null
+baseline_detector_checkpoint: null
+baseline_detector_threshold: null
+segmentator_checkpoint: null
+decode_with_segmentator: null
+segmentator_scale_x: null
+segmentator_y_pad: null
+segmentator_x_pad: null
+segmentator_cut_threshold: null
+segmentator_cut_min_width: null
+segmentator_cut_max_width: null
+segmentator_cut_smooth_radius: null
+segmentator_decode_top_k: null
+segmentator_decode_center_fraction: null
+segmentator_decode_min_score_width: null
+
+optuna_trials: 200
+optuna_metric: global_char_accuracy
+optuna_scale_x_min: -0.25
+optuna_scale_x_max: 0.25
+optuna_y_pad_min: -0.40
+optuna_y_pad_max: 0.50
+optuna_x_pad_min: 0.0
+optuna_x_pad_max: 0.12
+
+# Baseline and segmentator stay fixed unless a corresponding range is set.
+optuna_tune_baseline_line_pad: false
+optuna_tune_baseline_line_pad_px: false
+optuna_baseline_detector_threshold_min: null
+optuna_baseline_detector_threshold_max: null
+optuna_baseline_line_pad_min: null
+optuna_baseline_line_pad_max: null
+optuna_baseline_line_pad_px_min: null
+optuna_baseline_line_pad_px_max: null
+optuna_segmentator_scale_x_min: null
+optuna_segmentator_scale_x_max: null
+optuna_segmentator_y_pad_min: null
+optuna_segmentator_y_pad_max: null
+optuna_segmentator_x_pad_min: null
+optuna_segmentator_x_pad_max: null
+optuna_segmentator_cut_threshold_min: null
+optuna_segmentator_cut_threshold_max: null
+optuna_segmentator_cut_min_width_min: null
+optuna_segmentator_cut_min_width_max: null
+optuna_segmentator_cut_max_width_min: null
+optuna_segmentator_cut_max_width_max: null
+optuna_segmentator_cut_smooth_radius_min: null
+optuna_segmentator_cut_smooth_radius_max: null
+optuna_segmentator_decode_center_fraction_min: null
+optuna_segmentator_decode_center_fraction_max: null
+optuna_segmentator_decode_min_score_width_min: null
+optuna_segmentator_decode_min_score_width_max: null
+
+optuna_trials_out: ../../output/ocr_trials.tsv
+optuna_storage: sqlite:///../../output/ocr_optuna.db
+optuna_study_name: eng_101_ocr_v1
+no_optuna_progress: false

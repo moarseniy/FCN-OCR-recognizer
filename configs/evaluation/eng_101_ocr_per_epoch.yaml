@@ -1,0 +1,15 @@
+# Fill these paths once for the manual/Label Studio validation dataset.
+json: null
+images: null
+
+inference_config: ../inference/eng_101.yaml
+out: ../../output/train_eval/ocr_metrics.csv
+device: cuda
+batch_size: 64
+limit: null
+log_every: 0
+
+# Keep per-epoch evaluation deterministic and inexpensive.
+optuna_trials: 0
+optuna_metric: global_char_accuracy
+no_optuna_progress: false

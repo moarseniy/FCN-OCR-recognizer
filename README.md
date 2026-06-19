@@ -40,7 +40,16 @@ baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где кана
 Старые минимальные примеры также остаются:
 
 - `synth_generators/line_generator/configs/eng_001.yaml` — генерация;
-- `configs/eng_train_001.yaml` — обучение.
+- `configs/train/eng_train_001.yaml` — обучение.
+
+Конфиги в корне проекта сгруппированы по назначению:
+
+- `configs/train/` — обучение моделей;
+- `configs/evaluation/` — evaluation, Optuna и совместный train/evaluation;
+- `configs/inference/` — полный пайплайн инференса.
+
+Все относительные пути внутри YAML считаются от папки самого конфига. Параметры,
+переданные в командной строке, переопределяют значения из evaluation-конфига.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -351,14 +360,14 @@ generation-конфиг под фиксированным именем `generati
 python synth_generators/line_generator/render_text.py \
   --chunks-dir data/eng_001 \
   --index 0 \
-  --config configs/eng_train_001.yaml \
+  --config configs/train/eng_train_001.yaml \
   --output output/render_chunk.png
 ```
 
 Запустить обучение на синтетике:
 
 ```bash
-python train.py --config configs/eng_train_001.yaml
+python train.py --config configs/train/eng_train_001.yaml
 ```
 
 FCN-архитектуры лежат в `fcn_architectures/`: одна архитектура - один файл.
@@ -413,10 +422,10 @@ architecture_params:
   `legacy_crop_right: 0`, `legacy_strict_width: true`; для cuts она также
   совместима с `cut_projection_strict_width: true`.
 
-Готовые примеры: `configs/eng_train_101_wide.yaml`,
-`configs/eng_train_101_highres.yaml`,
-`configs/eng_train_101_residual.yaml`,
-`configs/eng_train_101_cuts_residual.yaml`.
+Готовые примеры: `configs/train/eng_train_101_wide.yaml`,
+`configs/train/eng_train_101_highres.yaml`,
+`configs/train/eng_train_101_residual.yaml`,
+`configs/train/eng_train_101_cuts_residual.yaml`.
 
 Для обучения в старом плотном режиме на чанках с `dense_targets`:
 
@@ -448,7 +457,7 @@ cut_projection_loss: mse
 cut_projection_positive_weight: 4.0
 ```
 
-Пример конфига: `configs/eng_train_101_cuts.yaml`.
+Пример конфига: `configs/train/eng_train_101_cuts.yaml`.
 Соответствующий generation-конфиг: `synth_generators/line_generator/configs/eng_101_cuts.yaml`.
 Порог и параметры postprocess (`cut_threshold`, ограничения ширины и
 сглаживание) в обучении не участвуют. Они задаются при
@@ -463,7 +472,7 @@ baseline_heatmap_loss: bce
 baseline_heatmap_positive_weight: 6.0
 ```
 
-Пример конфига: `configs/eng_train_101_baselines.yaml`.
+Пример конфига: `configs/train/eng_train_101_baselines.yaml`.
 Соответствующий generation-конфиг:
 `synth_generators/line_generator/configs/eng_101_baselines.yaml`.
 
@@ -471,10 +480,10 @@ baseline_heatmap_positive_weight: 6.0
 
 ```bash
 python train_baselines_with_eval.py \
-  --config configs/eng_train_101_baselines_eval.yaml
+  --config configs/evaluation/eng_train_101_baselines_eval.yaml
 ```
 
-В `configs/eng_train_101_baselines_eval.yaml` задаются:
+В `configs/evaluation/eng_train_101_baselines_eval.yaml` задаются:
 
 - `train_config`: обычный training-конфиг с `loss_mode: baseline_heatmap`;
 - `markup_json`: разметка из `tool.annotation_server`;
@@ -505,30 +514,26 @@ scheduler обучения.
 
 ```bash
 python train_baselines_with_eval.py \
-  --config configs/eng_train_101_baselines_eval.yaml \
+  --config configs/evaluation/eng_train_101_baselines_eval.yaml \
   > output/baseline_training.log
 ```
 
-Для уже обученного cuts-чекпоинта эти параметры можно переопределять прямо в
-`inference.py`: `--segmentator-cut-threshold`,
-`--segmentator-peak-min-distance`, `--segmentator-cut-postprocess`,
-`--segmentator-cut-min-width`, `--segmentator-cut-max-width`,
-`--segmentator-cut-candidate-threshold` и `--segmentator-cut-smooth-radius`.
+Для уже обученного cuts-чекпоинта параметры `cut_threshold`, `cut_min_width`,
+`cut_max_width` и `cut_smooth_radius` задаются в разделе `segmentator`
+inference-конфига.
 
 Подобрать параметры вертикального сегментатора без OCR, сравнивая число
 предсказанных ячеек с длиной строки из Label Studio:
 
 ```bash
 python evaluate_segmentator.py \
+  --config configs/evaluation/eng_101_segmentator.yaml \
   --json labels.json \
-  --images images \
-  --checkpoint checkpoints/cut_segmentator/best_model.pth \
-  --out output/segmentator_lengths.csv \
-  --optuna-trials 100 \
-  --optuna-trials-out output/segmentator_trials.tsv \
-  --optuna-tune-baseline-crop \
-  --optuna-tune-baseline-params
+  --images images
 ```
+
+Все диапазоны Optuna и фиксированные параметры берутся из YAML. Любой
+переданный CLI-аргумент переопределяет соответствующее значение конфига.
 
 При наличии внешних границ `|A|B|C|` оцениваемая длина считается как
 `число cut-точек - 1`, поэтому пробел в разметке считается обычным символом.
@@ -570,17 +575,7 @@ python -m tool.annotation_server \
 
 ```bash
 python evaluate_segmentator.py \
-  --json output/manual_markup.json \
-  --checkpoint checkpoints/cut_segmentator/best_model.pth \
-  --device cuda \
-  --cut-tolerance-px 3 \
-  --optuna-trials 200 \
-  --optuna-metric cut_f1 \
-  --optuna-cut-threshold-min 0.15 \
-  --optuna-cut-threshold-max 0.85 \
-  --optuna-peak-min-distance-min 1 \
-  --optuna-peak-min-distance-max 8 \
-  --out output/segmentator_manual.csv
+  --config configs/evaluation/eng_101_segmentator.yaml
 ```
 
 Для `manual_markup.json` папка изображений автоматически берётся из поля
@@ -597,26 +592,15 @@ Label Studio JSON по-прежнему поддерживается для ст
 
 ```bash
 python evaluate_baselines.py \
-  --json output/manual_markup.json \
-  --images /path/to/images \
-  --checkpoint checkpoints/baseline_detector/best_model.pth \
-  --device cuda \
-  --threshold 0.35 \
-  --out output/baseline_metrics.csv
+  --config configs/evaluation/eng_101_baselines.yaml \
+  --optuna-trials 0
 ```
 
 Подбор threshold:
 
 ```bash
 python evaluate_baselines.py \
-  --json output/manual_markup.json \
-  --checkpoint checkpoints/baseline_detector/best_model.pth \
-  --device cuda \
-  --optuna-trials 200 \
-  --optuna-trials-out output/baseline_trials.tsv \
-  --optuna-storage sqlite:///output/baseline_optuna.db \
-  --optuna-study-name baseline_lines_v1 \
-  --out output/baseline_metrics.csv
+  --config configs/evaluation/eng_101_baselines.yaml
 ```
 
 `evaluate_baselines.py` считает MAE отдельно для верхней и нижней линии,
@@ -1028,42 +1012,19 @@ PYTHONPATH=/path/to/FCN-OCR-recognizer python my_script.py
 
 ```bash
 python evaluate_ocr.py \
+  --config configs/evaluation/eng_101_ocr.yaml \
   --json path/to/export.json \
   --images path/to/images \
-  --checkpoint checkpoints/best_model.pth \
-  --out output/ocr_metrics.csv \
-  --scale-x 0.0 \
-  --y-pad 0.0 \
-  --baseline-crop \
-  --batch-size 32
+  --optuna-trials 0
 ```
 
 Подбор inference-preprocessing через Optuna:
 
 ```bash
 python evaluate_ocr.py \
+  --config configs/evaluation/eng_101_ocr.yaml \
   --json path/to/export.json \
-  --images path/to/images \
-  --checkpoint checkpoints/best_model.pth \
-  --segmentator-checkpoint checkpoints/cut_segmentator/best_model.pth \
-  --decode-with-segmentator \
-  --out output/ocr_metrics.csv \
-  --optuna-trials 100 \
-  --optuna-scale-x-min -0.25 \
-  --optuna-scale-x-max 0.25 \
-  --optuna-y-pad-min -0.25 \
-  --optuna-y-pad-max 0.25 \
-  --optuna-x-pad-min 0.0 \
-  --optuna-x-pad-max 0.1 \
-  --optuna-segmentator-scale-x-min -0.25 \
-  --optuna-segmentator-scale-x-max 0.25 \
-  --optuna-segmentator-y-pad-min -0.25 \
-  --optuna-segmentator-y-pad-max 0.25 \
-  --optuna-segmentator-x-pad-min 0.0 \
-  --optuna-segmentator-x-pad-max 0.1 \
-  --optuna-metric global_char_accuracy \
-  --baseline-crop \
-  --optuna-trials-out output/optuna_trials.tsv
+  --images path/to/images
 ```
 
 `--scale-x`, `--y-pad`, `--x-pad` и соответствующие
@@ -1081,23 +1042,17 @@ GPU-батча: изображения автоматически группир
 decode logits обрезаются до реальной выходной ширины каждого изображения.
 Итоговый лог показывает фактический размер подбатчей и эффективность padding.
 
-Если baseline и вертикальный сегментатор уже настроены, удобнее передать
-готовый inference-конфиг и подбирать только OCR:
+`configs/evaluation/eng_101_ocr.yaml` использует готовый
+`configs/inference/eng_101.yaml`, поэтому baseline и вертикальный сегментатор
+остаются зафиксированными, а Optuna подбирает только OCR preprocessing.
+Эквивалентный запуск можно переопределять через CLI:
 
 ```bash
 python evaluate_ocr.py \
+  --config configs/evaluation/eng_101_ocr.yaml \
   --json path/to/export.json \
   --images path/to/images \
-  --inference-config configs/inference/eng_101.yaml \
-  --optuna-trials 200 \
-  --optuna-scale-x-min -0.25 \
-  --optuna-scale-x-max 0.25 \
-  --optuna-y-pad-min -0.4 \
-  --optuna-y-pad-max 0.5 \
-  --optuna-x-pad-min 0.0 \
-  --optuna-x-pad-max 0.12 \
-  --optuna-metric global_char_accuracy \
-  --out output/ocr_metrics.csv
+  --optuna-trials 500
 ```
 
 В этом режиме из YAML берутся OCR checkpoint, baseline detector, вертикальный
@@ -1121,25 +1076,25 @@ pip install optuna
 
 ```bash
 python train_with_eval.py \
-  --train-config configs/eng_train_101.yaml \
-  --eval-json path/to/export.json \
-  --eval-images path/to/images \
-  --eval-out-dir output/train_eval \
-  --eval-batch-size 32 \
-  --eval-log-every 0
+  --train-config configs/train/eng_train_101.yaml \
+  --evaluation-config configs/evaluation/eng_101_ocr_per_epoch.yaml
 ```
 
+Перед запуском достаточно один раз заполнить `json` и `images` в
+`eng_101_ocr_per_epoch.yaml`. Все параметры evaluation берутся из этого файла,
+а настройки моделей и preprocessing - из указанного в нём inference-конфига.
 После каждой эпохи сохраняется текущий чекпоинт, запускается `evaluate_ocr`,
-пишется per-epoch CSV и общий `eval_summary.tsv`. Для подбора `scale_x/y_pad`
-на каждой эпохе добавьте, например, `--optuna-trials 20`.
+пишется per-epoch CSV и общий `eval_summary.tsv`. Копия evaluation-конфига
+сохраняется рядом с чекпоинтами эксперимента. Для Optuna на каждой эпохе можно
+создать отдельный вариант этого YAML с ненулевым `optuna_trials` и нужными
+диапазонами.
 
-Выбранная `--optuna-metric` печатается как одно число в `stderr`, весь
+Выбранная в конфиге `optuna_metric` печатается как одно число в `stderr`, весь
 остальной лог идёт в `stdout`. Например:
 
 ```bash
 python train_with_eval.py \
-  --train-config configs/eng_train_101.yaml \
-  --eval-json path/to/export.json \
-  --eval-images path/to/images \
+  --train-config configs/train/eng_train_101.yaml \
+  --evaluation-config configs/evaluation/eng_101_ocr_per_epoch.yaml \
   > output/ocr_training.log
 ```

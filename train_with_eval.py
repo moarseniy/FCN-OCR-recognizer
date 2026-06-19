@@ -2,53 +2,30 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
 import sys
 
-from evaluate_ocr import evaluate, optimize_preprocess
+from evaluate_ocr import (
+    parse_args as parse_evaluation_args,
+    resolve_inference_args,
+    run_evaluation,
+)
 from train import load_training_config, resolve_checkpoint_dir, run_training
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train OCR and run evaluate_ocr after every epoch.")
     parser.add_argument("--train-config", required=True, help="Path to training YAML config.")
-    parser.add_argument("--eval-json", required=True, help="Path to Label Studio export JSON.")
-    parser.add_argument("--eval-images", required=True, help="Folder with evaluation images.")
+    parser.add_argument(
+        "--evaluation-config",
+        required=True,
+        help="Path to the same evaluation YAML accepted by evaluate_ocr.py.",
+    )
     parser.add_argument(
         "--eval-out-dir",
         default=None,
         help="Directory for per-epoch evaluation CSV/TSV files. Defaults to checkpoint_dir/evaluate_ocr.",
     )
-    parser.add_argument("--eval-device", default=None, help="Evaluation device: cuda, cpu, or empty for auto.")
-    parser.add_argument("--eval-batch-size", type=int, default=32)
-    parser.add_argument("--eval-limit", type=int, default=None)
-    parser.add_argument("--eval-log-every", type=int, default=0)
-    parser.add_argument("--scale-x", type=float, default=0.0)
-    parser.add_argument("--y-pad", type=float, default=0.0)
-    parser.add_argument("--x-pad", type=float, default=0.0)
-    parser.add_argument("--baseline-crop", action="store_true")
-    parser.add_argument("--no-baseline-deskew", action="store_true")
-    parser.add_argument("--baseline-max-angle", type=float, default=12.0)
-    parser.add_argument("--no-baseline-strict-lines", action="store_true")
-    parser.add_argument("--baseline-line-pad", type=float, default=0.08)
-    parser.add_argument("--baseline-line-pad-px", type=float, default=0.0)
-    parser.add_argument("--optuna-trials", type=int, default=0)
-    parser.add_argument("--optuna-scale-x-min", type=float, default=-0.25)
-    parser.add_argument("--optuna-scale-x-max", type=float, default=0.25)
-    parser.add_argument("--optuna-y-pad-min", type=float, default=-0.25)
-    parser.add_argument("--optuna-y-pad-max", type=float, default=0.25)
-    parser.add_argument(
-        "--optuna-metric",
-        default="global_char_accuracy",
-        choices=[
-            "line_accuracy",
-            "average_char_accuracy",
-            "global_char_accuracy",
-            "average_levenshtein",
-            "total_levenshtein",
-        ],
-    )
-    parser.add_argument("--optuna-study-name", default=None)
-    parser.add_argument("--optuna-storage", default=None)
     return parser.parse_args()
 
 
@@ -76,83 +53,59 @@ def append_eval_summary(log_path: Path, row: dict) -> None:
         )
 
 
-def evaluate_epoch(cli_args: argparse.Namespace, checkpoint_path: Path, epoch: int, eval_dir: Path) -> dict:
+def evaluate_epoch(
+    evaluation_args: argparse.Namespace,
+    checkpoint_path: Path,
+    epoch: int,
+    eval_dir: Path,
+) -> dict:
     epoch_number = epoch + 1
     output_csv = eval_dir / f"epoch_{epoch_number:04d}.csv"
     trials_output = eval_dir / f"epoch_{epoch_number:04d}_optuna_trials.tsv"
 
-    if cli_args.optuna_trials > 0:
-        metrics = optimize_preprocess(
-            json_path=Path(cli_args.eval_json),
-            images_dir=Path(cli_args.eval_images),
-            checkpoint_path=checkpoint_path,
-            output_csv=output_csv,
-            device=cli_args.eval_device,
-            batch_size=cli_args.eval_batch_size,
-            limit=cli_args.eval_limit,
-            trials=cli_args.optuna_trials,
-            scale_x_min=cli_args.optuna_scale_x_min,
-            scale_x_max=cli_args.optuna_scale_x_max,
-            y_pad_min=cli_args.optuna_y_pad_min,
-            y_pad_max=cli_args.optuna_y_pad_max,
-            x_pad=cli_args.x_pad,
-            metric_name=cli_args.optuna_metric,
-            log_every=cli_args.eval_log_every,
-            trials_output=trials_output,
-            study_name=cli_args.optuna_study_name,
-            storage=cli_args.optuna_storage,
-            baseline_crop=cli_args.baseline_crop,
-            baseline_deskew=not cli_args.no_baseline_deskew,
-            baseline_max_angle=cli_args.baseline_max_angle,
-            baseline_strict_lines=not cli_args.no_baseline_strict_lines,
-            baseline_line_pad=cli_args.baseline_line_pad,
-            baseline_line_pad_px=cli_args.baseline_line_pad_px,
-        )
-    else:
-        metrics = evaluate(
-            json_path=Path(cli_args.eval_json),
-            images_dir=Path(cli_args.eval_images),
-            checkpoint_path=checkpoint_path,
-            output_csv=output_csv,
-            device=cli_args.eval_device,
-            scale_x=cli_args.scale_x,
-            y_pad=cli_args.y_pad,
-            x_pad=cli_args.x_pad,
-            batch_size=cli_args.eval_batch_size,
-            limit=cli_args.eval_limit,
-            log_every=cli_args.eval_log_every,
-            baseline_crop=cli_args.baseline_crop,
-            baseline_deskew=not cli_args.no_baseline_deskew,
-            baseline_max_angle=cli_args.baseline_max_angle,
-            baseline_strict_lines=not cli_args.no_baseline_strict_lines,
-            baseline_line_pad=cli_args.baseline_line_pad,
-            baseline_line_pad_px=cli_args.baseline_line_pad_px,
-        )
+    metrics = run_evaluation(
+        evaluation_args,
+        checkpoint_path=checkpoint_path,
+        output_csv=output_csv,
+        trials_output=trials_output,
+        print_inference_command=False,
+    )
 
     metrics["csv"] = str(output_csv)
     metrics["checkpoint"] = str(checkpoint_path)
     metrics["epoch"] = epoch_number
+    metrics["optuna_trials"] = evaluation_args.optuna_trials
+    metrics["optuna_metric"] = evaluation_args.optuna_metric
     return metrics
 
 
 def main() -> None:
     cli_args = parse_args()
+    evaluation_args = resolve_inference_args(
+        parse_evaluation_args(["--config", cli_args.evaluation_config])
+    )
     train_config, _ = load_training_config(cli_args.train_config)
     checkpoint_dir = resolve_checkpoint_dir(
         train_config.checkpoint_dir,
         resume=train_config.resume,
     )
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_config_path = Path(cli_args.evaluation_config).expanduser().resolve()
+    evaluation_snapshot = checkpoint_dir / "evaluation_config.yaml"
+    if evaluation_config_path != evaluation_snapshot.resolve():
+        shutil.copy2(evaluation_config_path, evaluation_snapshot)
     eval_dir = Path(cli_args.eval_out_dir) if cli_args.eval_out_dir else checkpoint_dir / "evaluate_ocr"
     eval_dir.mkdir(parents=True, exist_ok=True)
     eval_summary_path = eval_dir / "eval_summary.tsv"
 
     print("START train_with_eval!")
+    print(f"Evaluation config: {evaluation_config_path}")
     print(f"Evaluation output: {eval_dir}")
 
     def after_epoch(context: dict) -> None:
         print("\nRunning OCR evaluation for this epoch...")
         eval_metrics = evaluate_epoch(
-            cli_args,
+            evaluation_args,
             Path(context["checkpoint_path"]),
             int(context["epoch"]),
             eval_dir,
@@ -160,7 +113,7 @@ def main() -> None:
         append_eval_summary(eval_summary_path, eval_metrics)
         print(f"Evaluation summary: {eval_summary_path}")
         print(
-            f"{float(eval_metrics[cli_args.optuna_metric]):.12g}",
+            f"{float(eval_metrics[evaluation_args.optuna_metric]):.12g}",
             file=sys.stderr,
             flush=True,
         )
