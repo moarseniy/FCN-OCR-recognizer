@@ -5,6 +5,44 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader,
+    node: MappingNode,
+    deep: bool = False,
+) -> dict:
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing an evaluation config",
+                node.start_mark,
+                f"duplicate key: {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def load_evaluation_yaml(file) -> dict:
+    data = yaml.load(file, Loader=_UniqueKeyLoader) or {}
+    if not isinstance(data, dict):
+        raise ValueError("evaluation config must contain a YAML mapping")
+    return data
 
 
 def expand_evaluation_parameters(
@@ -29,6 +67,14 @@ def expand_evaluation_parameters(
         raise ValueError("evaluation YAML must use parameters instead of optuna_ranges")
 
     parameters = expanded.pop("parameters", None)
+    misplaced_ranges = sorted(
+        str(field) for field, value in expanded.items() if isinstance(value, (list, tuple))
+    )
+    if misplaced_ranges:
+        raise ValueError(
+            "evaluation ranges must be placed inside parameters: "
+            + ", ".join(misplaced_ranges)
+        )
     if parameters is None:
         return expanded
     if not isinstance(parameters, dict):
@@ -97,9 +143,10 @@ def parse_args_with_evaluation_config(
         if not config_path.exists():
             parser.error(f"evaluation config does not exist: {config_path}")
         with config_path.open("r", encoding="utf-8") as file:
-            config_data = yaml.safe_load(file) or {}
-        if not isinstance(config_data, dict):
-            parser.error("evaluation config must contain a YAML mapping")
+            try:
+                config_data = load_evaluation_yaml(file)
+            except (ValueError, yaml.YAMLError) as error:
+                parser.error(str(error))
 
         valid_fields = {action.dest for action in parser._actions}
         try:

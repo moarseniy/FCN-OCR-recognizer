@@ -10,12 +10,11 @@ import sys
 from typing import Any, Literal
 
 import torch
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evaluate_baselines import build_jobs, evaluate_detector, optimize
 from fcn_ocr import BaselineDetector
-from fcn_ocr.evaluation_config import expand_evaluation_parameters
+from fcn_ocr.evaluation_config import expand_evaluation_parameters, load_evaluation_yaml
 from train import load_training_config, resolve_checkpoint_dir, run_training
 
 
@@ -78,7 +77,7 @@ class BaselineTrainEvalConfig(BaseModel):
     def load(cls, path: str | Path) -> "BaselineTrainEvalConfig":
         config_path = Path(path).expanduser().resolve()
         with config_path.open("r", encoding="utf-8") as file:
-            raw = yaml.safe_load(file) or {}
+            raw = load_evaluation_yaml(file)
         raw = expand_evaluation_parameters(raw, valid_fields=set(cls.model_fields))
         config_dir = config_path.parent
         for key in ("train_config", "markup_json", "images_dir", "output_dir"):
