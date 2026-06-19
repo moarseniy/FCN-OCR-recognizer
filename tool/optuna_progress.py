@@ -31,6 +31,8 @@ def optimize_with_progress(
             values: dict[str, str] = {}
             if trial.value is not None:
                 values["last"] = f"{float(trial.value):.6g}"
+            if "x_pad" in trial.params:
+                values["x_pad"] = f"{float(trial.params['x_pad']):.5f}"
             try:
                 values["best"] = f"{float(current_study.best_value):.6g}"
             except ValueError:

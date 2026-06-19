@@ -764,6 +764,10 @@ def optimize(
         storage=storage,
         load_if_exists=bool(storage and study_name),
     )
+    print(
+        "The segmentator summary above shows neutral initialization; "
+        "trial preprocessing is applied immediately before evaluation."
+    )
 
     def objective(trial) -> float:
         trial_baseline_crop = (
