@@ -383,8 +383,14 @@ python synth_generators/line_generator/render_text.py \
   --chunks-dir data/eng_001 \
   --index 0 \
   --config configs/train/eng_train_001.yaml \
+  --show-full-markup \
   --output output/render_chunk.png
 ```
+
+`render_text` преобразует `dense_targets` вместе с изображением и под полем
+`text` выводит поколоночную разметку как `␠[start:end]`. Крайние пробельные
+классы также показываются в самом поле `text`. `--show-full-markup` дополнительно
+рисует cut-линии зелёным, а верхнюю и нижнюю baseline — красным и синим.
 
 Запустить обучение на синтетике:
 

@@ -70,6 +70,15 @@ def target_to_float(target: torch.Tensor | None) -> torch.Tensor | None:
     return output.clamp(0.0, 1.0).contiguous()
 
 
+def dense_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
+    if target is None:
+        return None
+    output = target.detach().cpu().long()
+    if output.ndim != 1:
+        raise ValueError(f"dense target must have shape (W,), got {tuple(output.shape)}")
+    return output.contiguous()
+
+
 def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLineDatasetConfig:
     with config_path.open("r") as file:
         raw_config = yaml.safe_load(file) or {}
@@ -125,23 +134,32 @@ def apply_augmentations(
     config: SingleLineDatasetConfig,
     device: torch.device,
     enabled: bool,
+    dense_target: torch.Tensor | None = None,
     cut_projection_target: torch.Tensor | None = None,
     baseline_target: torch.Tensor | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor | None,
     torch.Tensor | None,
+    torch.Tensor | None,
     list[dict[str, Any]],
 ]:
     image = tensor_to_float_image(image)
+    dense_target = dense_target_to_long(dense_target)
     cut_projection_target = target_to_float(cut_projection_target)
     baseline_target = target_to_float(baseline_target)
     if not enabled:
-        return image, cut_projection_target, baseline_target, []
+        return image, dense_target, cut_projection_target, baseline_target, []
 
     augmenter = GpuTextAugmenter(config)
     batch = image.unsqueeze(0).to(device)
     augmented, metadata = augmenter.augment_with_metadata(batch)
+    if dense_target is not None:
+        dense_target = augmenter.apply_metadata_to_targets(
+            dense_target.unsqueeze(0).to(device),
+            "dense_symbols",
+            metadata,
+        )[0].detach().cpu().long()
     if cut_projection_target is not None:
         cut_projection_target = augmenter.apply_metadata_to_targets(
             cut_projection_target.unsqueeze(0).to(device),
@@ -156,6 +174,7 @@ def apply_augmentations(
         )[0].detach().cpu()
     return (
         augmented[0].detach().cpu(),
+        dense_target,
         cut_projection_target,
         baseline_target,
         metadata[0],
@@ -168,6 +187,7 @@ def load_chunk_sample(
 ) -> tuple[
     torch.Tensor,
     str,
+    torch.Tensor | None,
     torch.Tensor | None,
     torch.Tensor | None,
     dict[str, Any],
@@ -188,11 +208,13 @@ def load_chunk_sample(
         sample_count = int(images.shape[0])
         if offset <= index < offset + sample_count:
             local_index = index - offset
+            dense_targets = chunk.get("dense_targets")
             cut_targets = chunk.get("cut_projection_targets")
             baseline_targets = chunk.get("baseline_targets")
             return (
                 images[local_index],
                 str(texts[local_index]),
+                dense_targets[local_index] if dense_targets is not None else None,
                 cut_targets[local_index] if cut_targets is not None else None,
                 baseline_targets[local_index] if baseline_targets is not None else None,
                 {
@@ -272,6 +294,41 @@ def _projection_centerlines(projection: np.ndarray, height: int) -> np.ndarray:
     return line_mask
 
 
+def describe_dense_target(
+    dense_target: torch.Tensor | None,
+    alphabet: str,
+    space_char: str,
+) -> tuple[list[dict[str, Any]], bool, bool]:
+    dense = dense_target_to_long(dense_target)
+    if dense is None:
+        return [], False, False
+    dense_array = dense.numpy()
+    if dense_array.size and (dense_array.min() < 0 or dense_array.max() >= len(alphabet)):
+        raise ValueError("dense target contains a class index outside the configured alphabet")
+
+    runs: list[dict[str, Any]] = []
+    run_start = 0
+    for x in range(1, dense_array.size + 1):
+        if x < dense_array.size and dense_array[x] == dense_array[run_start]:
+            continue
+        class_index = int(dense_array[run_start])
+        char = alphabet[class_index]
+        runs.append(
+            {
+                "char": "␠" if char == space_char else char,
+                "class_index": class_index,
+                "start": run_start,
+                "end": x,
+            }
+        )
+        run_start = x
+
+    space_index = alphabet.index(space_char)
+    has_left_space = bool(dense_array.size and dense_array[0] == space_index)
+    has_right_space = bool(dense_array.size and dense_array[-1] == space_index)
+    return runs, has_left_space, has_right_space
+
+
 def overlay_full_markup(
     image: Image.Image,
     cut_projection_target: torch.Tensor | None,
@@ -337,10 +394,18 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     lines = [
         f"source: {metadata['source']}",
         f"text: {metadata['text']!r}",
+    ]
+    dense_runs = metadata.get("dense_runs")
+    if dense_runs:
+        run_text = " ".join(
+            f"{run['char']}[{run['start']}:{run['end']}]" for run in dense_runs
+        )
+        lines.append(f"dense: {run_text}")
+    lines.extend([
         f"image: {metadata['image_size'][0]}x{metadata['image_size'][1]}",
         f"seed: {metadata['seed']}",
         f"device: {metadata['device']}",
-    ]
+    ])
     if metadata["source"] == "chunk":
         lines.append(f"chunk: {metadata['chunk_file']}[{metadata['chunk_local_index']}]")
 
@@ -448,6 +513,7 @@ def main() -> None:
         (
             image_tensor,
             text,
+            dense_target,
             cut_projection_target,
             baseline_target,
             source_metadata,
@@ -455,6 +521,7 @@ def main() -> None:
         text = normalize_text(text, config)
         (
             image_tensor,
+            dense_target,
             cut_projection_target,
             baseline_target,
             augmentations,
@@ -463,6 +530,7 @@ def main() -> None:
             config,
             device,
             enabled=not args.no_augmentations,
+            dense_target=dense_target,
             cut_projection_target=cut_projection_target,
             baseline_target=baseline_target,
         )
@@ -472,8 +540,10 @@ def main() -> None:
             raise RuntimeError("dataset must be initialized for text rendering")
         sample = dataset.generate_text_sample(args.text, rng)
         text = sample.text
+        dense_target = sample.dense_target
         (
             image_tensor,
+            dense_target,
             cut_projection_target,
             baseline_target,
             augmentations,
@@ -482,10 +552,23 @@ def main() -> None:
             config,
             device,
             enabled=not args.no_augmentations,
+            dense_target=dense_target,
             cut_projection_target=sample.cut_projection_target,
             baseline_target=sample.baseline_target,
         )
         source = "text"
+    alphabet = config.alphabet or config.sample_alphabet
+    dense_runs, has_left_space, has_right_space = describe_dense_target(
+        dense_target,
+        alphabet,
+        config.space_char,
+    )
+    display_text = text
+    if has_left_space and not display_text.startswith(config.space_char):
+        display_text = config.space_char + display_text
+    if has_right_space and not display_text.endswith(config.space_char):
+        display_text += config.space_char
+
     image = tensor_to_image(image_tensor)
     full_markup = None
     if args.show_full_markup:
@@ -497,7 +580,8 @@ def main() -> None:
 
     metadata = {
         "source": source,
-        "text": text,
+        "text": display_text,
+        "dense_runs": dense_runs,
         "image_size": [image.width, image.height],
         "seed": args.seed,
         "config": str(config_path),
@@ -521,7 +605,15 @@ def main() -> None:
 
     print(f"Saved image: {output_path}")
     print(f"Saved metadata: {metadata_path}")
-    print(f"Text: {text!r}")
+    print(f"Text: {display_text!r}")
+    if dense_runs:
+        print(
+            "Dense: "
+            + " ".join(
+                f"{run['char']}[{run['start']}:{run['end']}]"
+                for run in dense_runs
+            )
+        )
     print(f"Image size: {image.width}x{image.height}")
     print(f"Output size: {output_image.width}x{output_image.height}")
     print(f"Augmentations: {len(augmentations)}")
