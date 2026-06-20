@@ -73,6 +73,23 @@ def target_to_float(target: torch.Tensor | None) -> torch.Tensor | None:
 def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLineDatasetConfig:
     with config_path.open("r") as file:
         raw_config = yaml.safe_load(file) or {}
+    if not isinstance(raw_config, dict):
+        raise ValueError(f"Config must contain a YAML mapping: {config_path}")
+
+    is_training_config = "chunks_dir" in raw_config or "loss_mode" in raw_config
+    if is_training_config:
+        if chunks_dir is None:
+            raise ValueError(
+                "A training config can be used only with --chunks-dir; "
+                "chunk metadata provides its alphabet and image dimensions"
+            )
+        from train import dataset_config_from_training_config, load_training_config
+
+        training_config, _ = load_training_config(config_path)
+        return dataset_config_from_training_config(
+            training_config,
+            load_chunk_metadata(chunks_dir),
+        )
 
     config_data = {}
     if chunks_dir is not None:
@@ -390,7 +407,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to line generator YAML config.",
+        help="Generation config, or training config when rendering from --chunks-dir.",
     )
     parser.add_argument("--output", default="rendered_text.png", help="Output image path.")
     parser.add_argument(
