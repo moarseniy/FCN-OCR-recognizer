@@ -1095,7 +1095,11 @@ class SingleLineDataset:
 
         dense_target = None
         if self.config.save_dense_targets:
-            dense_target = self._encode_dense_symbols(spans, image.width)
+            dense_target = self._encode_dense_symbols(
+                spans,
+                image.width,
+                ink_spans=cut_spans,
+            )
         cut_projection_target = None
         if self.config.save_cut_projection_targets:
             cut_projection_target = self._encode_cut_projection(cut_spans, image.width)
@@ -1130,16 +1134,20 @@ class SingleLineDataset:
         self,
         spans: list[tuple[str, float, float]],
         width: int,
+        ink_spans: list[tuple[str, float, float]] | None = None,
     ) -> torch.Tensor:
         if not spans:
             raise ValueError("cannot encode dense symbols for an empty span list")
+        if ink_spans is not None and len(ink_spans) != len(spans):
+            raise ValueError("logical and ink span counts must match")
 
         labels = torch.empty(width, dtype=torch.long)
         centers = [0.5 * (start + end) for _, start, end in spans]
         last_span_index = len(spans) - 1
         space_index = self.char_to_index[self.config.space_char]
-        left_text = spans[0][1]
-        right_text = spans[-1][2]
+        edge_spans = ink_spans if ink_spans is not None else spans
+        left_text = edge_spans[0][1]
+        right_text = edge_spans[-1][2]
 
         for x in range(width):
             position = x + 0.5

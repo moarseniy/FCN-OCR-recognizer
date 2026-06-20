@@ -158,6 +158,7 @@ def build_metadata(config: SingleLineDatasetConfig, chunks: list[dict]) -> dict:
         "ink_spacing_touch_gap_px": config.ink_spacing_touch_gap_px,
         "ink_spacing_touch_probability": config.ink_spacing_touch_probability,
         "dense_targets": config.save_dense_targets,
+        "dense_target_edge_bounds": "ink",
         "cut_projection_targets": config.save_cut_projection_targets,
         "cut_projection_peak_radius": config.cut_projection_peak_radius,
         "cut_projection_include_margins": config.cut_projection_include_margins,
