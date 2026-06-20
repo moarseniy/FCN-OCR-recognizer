@@ -157,7 +157,9 @@ augmentations:
   x_pad:
     pad_min: 0.02
     pad_max: 0.10
-    fillcolor: 255
+    pad_reference: content
+    fill_mode: side_median
+    resize_mode: bilinear
   rescale_quality:
     factor_min: 0.35
     factor_max: 0.75
@@ -206,7 +208,13 @@ augmentations:
 `baseline_line`, `morphology`, `unsharp_mask`, `brightness`, `contrast`, `invert`.
 `preprocess_geometry` повторяет смысл inference-параметров `scale_x/y_pad`.
 `x_pad` сжимает содержимое по X внутрь исходного размера тензора и заполняет
-поля `fillcolor`; для target-ов применяется такое же преобразование.
+края. `fill_mode: side_median` независимо использует медианный цвет левого и
+правого края исходной картинки и соответствует inference-preprocessing;
+`fill_mode: constant` использует `fillcolor`. Для target-ов применяется такое
+же геометрическое преобразование: новые области получают класс пробела для OCR
+и ноль для cut/baseline-разметки. `pad_reference: content` трактует долю padding
+от исходной ширины содержимого, как inference `x_pad`; legacy-вариант
+`pad_reference: output` считает её от фиксированной ширины выходного тензора.
 `crop_x` и `crop_y` обрезают края, а затем ресайзят результат обратно в
 исходный размер тензора.
 `rescale_quality` уменьшает картинку до доли `factor`, затем возвращает к

@@ -53,6 +53,7 @@ augmentation_probabilities:
   noise: 0.85
   projective: 0.25
   rotate: 0.85
+  x_pad: 0.50
   crop_x: 0.45
   crop_y: 0.15
   random_line: 0.22
@@ -108,6 +109,12 @@ augmentations:
   rotate:
     max_degrees: 8.0
     fillcolor: 255
+  x_pad:
+    pad_min: 0.03
+    pad_max: 0.25
+    pad_reference: content
+    fill_mode: side_median
+    resize_mode: bilinear
   crop_x:
     max_left: 6
     max_right: 6

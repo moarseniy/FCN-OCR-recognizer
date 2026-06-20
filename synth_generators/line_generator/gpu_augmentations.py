@@ -805,7 +805,28 @@ class GpuTextAugmenter:
         if width <= 1 or not self._x_pad_configured(params):
             return images, None
 
+        fill_mode = str(params.get("fill_mode", "constant")).lower()
+        if fill_mode not in {"constant", "side_median"}:
+            raise ValueError("x_pad fill_mode must be 'constant' or 'side_median'")
+
         output = torch.full_like(images, self._fill_value(params))
+        left_fills = None
+        right_fills = None
+        if fill_mode == "side_median":
+            band_width = max(1, min(width, max(3, int(round(width * 0.04)))))
+            batch_size, channels = images.shape[:2]
+            left_fills = (
+                images[:, :, :, :band_width]
+                .reshape(batch_size, channels, -1)
+                .median(dim=-1)
+                .values[:, :, None, None]
+            )
+            right_fills = (
+                images[:, :, :, width - band_width :]
+                .reshape(batch_size, channels, -1)
+                .median(dim=-1)
+                .values[:, :, None, None]
+            )
         logs: list[AugmentationParams] | None = [] if collect_metadata else None
         changed = False
         for index in range(images.size(0)):
@@ -822,15 +843,24 @@ class GpuTextAugmenter:
                 (height, inner_width),
                 str(params.get("resize_mode", "bilinear")).lower(),
             )
+            if fill_mode == "side_median":
+                if left > 0:
+                    output[index : index + 1, :, :, :left] = left_fills[index : index + 1]
+                if right > 0:
+                    output[index : index + 1, :, :, width - right :] = right_fills[index : index + 1]
             output[index : index + 1, :, :, left : left + inner_width] = content
             changed = True
             if logs is not None:
-                logs.append({
+                log: dict[str, Any] = {
                     "pad_left": left,
                     "pad_right": right,
                     "content_width": inner_width,
-                    "fillcolor": int(params.get("fillcolor", self.config.background)),
-                })
+                    "fill_mode": fill_mode,
+                    "pad_reference": str(params.get("pad_reference", "output")).lower(),
+                }
+                if fill_mode == "constant":
+                    log["fillcolor"] = int(params.get("fillcolor", self.config.background))
+                logs.append(log)
 
         if not changed:
             return images, None
@@ -1459,8 +1489,16 @@ class GpuTextAugmenter:
         pad_fraction = self._sample_range(params, "pad", 0.0)
         left_fraction = self._sample_range(params, "left", pad_fraction)
         right_fraction = self._sample_range(params, "right", pad_fraction)
-        left = int(round(width * left_fraction))
-        right = int(round(width * right_fraction))
+        pad_reference = str(params.get("pad_reference", "output")).lower()
+        if pad_reference == "content":
+            denominator = 1.0 + max(0.0, left_fraction) + max(0.0, right_fraction)
+            left = int(round(width * left_fraction / denominator))
+            right = int(round(width * right_fraction / denominator))
+        elif pad_reference == "output":
+            left = int(round(width * left_fraction))
+            right = int(round(width * right_fraction))
+        else:
+            raise ValueError("x_pad pad_reference must be 'content' or 'output'")
         return self._limit_x_padding(left, right, width)
 
     @staticmethod

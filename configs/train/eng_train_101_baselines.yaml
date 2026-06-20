@@ -113,7 +113,8 @@ augmentations:
   x_pad:
     pad_min: 0.02
     pad_max: 0.08
-    fillcolor: 255
+    pad_reference: content
+    fill_mode: side_median
     resize_mode: bilinear
   crop_x:
     max_left: 6
