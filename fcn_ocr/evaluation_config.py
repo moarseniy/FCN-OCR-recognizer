@@ -120,10 +120,18 @@ def expand_evaluation_parameters(
         expanded[name] = value
         if has_tune_flag:
             expanded[tune_field] = False
-        if has_numeric_range and isinstance(value, (int, float)) and not isinstance(value, bool):
-            expanded[min_field] = value
-            expanded[max_field] = value
     return expanded
+
+
+def evaluation_parameter_modes(config_data: dict) -> dict[str, str]:
+    parameters = config_data.get("parameters")
+    if not isinstance(parameters, dict):
+        return {}
+    modes: dict[str, str] = {}
+    for raw_name, value in parameters.items():
+        name = str(raw_name).strip().lower().replace("-", "_")
+        modes[name] = "range" if isinstance(value, (list, tuple)) else "fixed"
+    return modes
 
 
 def parse_args_with_evaluation_config(
@@ -148,6 +156,7 @@ def parse_args_with_evaluation_config(
             except (ValueError, yaml.YAMLError) as error:
                 parser.error(str(error))
 
+        parameter_modes = evaluation_parameter_modes(config_data)
         valid_fields = {action.dest for action in parser._actions}
         try:
             config_data = expand_evaluation_parameters(
@@ -193,4 +202,5 @@ def parse_args_with_evaluation_config(
             + ", ".join(missing)
         )
     args.evaluation_config_path = config_path
+    args.evaluation_parameter_modes = parameter_modes if config_path is not None else {}
     return args

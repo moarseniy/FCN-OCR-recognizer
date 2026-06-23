@@ -664,18 +664,24 @@ def optimize(
     metric_name: str,
     log_every: int,
     trials_output: Path | None,
-    cut_threshold_min: float,
-    cut_threshold_max: float,
-    cut_min_width_min: int,
-    cut_min_width_max: int,
-    cut_max_width_min: int,
-    cut_max_width_max: int,
-    cut_smooth_radius_min: int,
-    cut_smooth_radius_max: int,
-    scale_x_min: float,
-    scale_x_max: float,
-    y_pad_min: float,
-    y_pad_max: float,
+    cut_threshold: float | None,
+    cut_threshold_min: float | None,
+    cut_threshold_max: float | None,
+    cut_min_width: int | None,
+    cut_min_width_min: int | None,
+    cut_min_width_max: int | None,
+    cut_max_width: int | None,
+    cut_max_width_min: int | None,
+    cut_max_width_max: int | None,
+    cut_smooth_radius: int | None,
+    cut_smooth_radius_min: int | None,
+    cut_smooth_radius_max: int | None,
+    scale_x: float,
+    scale_x_min: float | None,
+    scale_x_max: float | None,
+    y_pad: float,
+    y_pad_min: float | None,
+    y_pad_max: float | None,
     x_pad: float,
     x_pad_min: float | None,
     x_pad_max: float | None,
@@ -713,18 +719,46 @@ def optimize(
 
     if trials < 1:
         raise ValueError("trials must be >= 1")
-    if not 0.0 < cut_threshold_min <= cut_threshold_max < 1.0:
-        raise ValueError("Optuna cut threshold bounds must satisfy 0 < min <= max < 1")
-    integer_ranges = (
-        ("cut_min_width", cut_min_width_min, cut_min_width_max, 1),
-        ("cut_max_width", cut_max_width_min, cut_max_width_max, 0),
-        ("cut_smooth_radius", cut_smooth_radius_min, cut_smooth_radius_max, 0),
-    )
-    for name, minimum, maximum, lower_bound in integer_ranges:
-        if minimum < lower_bound or maximum < minimum:
-            raise ValueError(
-                f"Optuna {name} bounds must satisfy {lower_bound} <= min <= max"
-            )
+
+    def validate_float_range(
+        name: str,
+        minimum: float | None,
+        maximum: float | None,
+        *,
+        lower: float | None = None,
+        upper: float | None = None,
+    ) -> None:
+        if (minimum is None) != (maximum is None):
+            raise ValueError(f"{name} tuning requires both min and max")
+        if minimum is None or maximum is None:
+            return
+        if minimum > maximum:
+            raise ValueError(f"{name} tuning requires min <= max")
+        if lower is not None and minimum < lower:
+            raise ValueError(f"{name} tuning minimum must be >= {lower}")
+        if upper is not None and maximum > upper:
+            raise ValueError(f"{name} tuning maximum must be <= {upper}")
+
+    def validate_int_range(
+        name: str,
+        minimum: int | None,
+        maximum: int | None,
+        *,
+        lower: int,
+    ) -> None:
+        if (minimum is None) != (maximum is None):
+            raise ValueError(f"{name} tuning requires both min and max")
+        if minimum is None or maximum is None:
+            return
+        if minimum < lower or maximum < minimum:
+            raise ValueError(f"{name} bounds must satisfy {lower} <= min <= max")
+
+    validate_float_range("cut_threshold", cut_threshold_min, cut_threshold_max, lower=0.0, upper=1.0)
+    validate_int_range("cut_min_width", cut_min_width_min, cut_min_width_max, lower=1)
+    validate_int_range("cut_max_width", cut_max_width_min, cut_max_width_max, lower=0)
+    validate_int_range("cut_smooth_radius", cut_smooth_radius_min, cut_smooth_radius_max, lower=0)
+    validate_float_range("scale_x", scale_x_min, scale_x_max)
+    validate_float_range("y_pad", y_pad_min, y_pad_max)
     if (x_pad_min is None) != (x_pad_max is None):
         raise ValueError("x_pad tuning requires both --optuna-x-pad-min and --optuna-x-pad-max")
     if x_pad_min is not None and x_pad_max is not None:
@@ -732,6 +766,61 @@ def optimize(
             raise ValueError("x_pad tuning bounds must be >= 0")
         if x_pad_min > x_pad_max:
             raise ValueError("--optuna-x-pad-min must be <= --optuna-x-pad-max")
+
+    def suggest_float_or_fixed(
+        trial,
+        name: str,
+        fixed: float | None,
+        minimum: float | None,
+        maximum: float | None,
+    ) -> float:
+        if minimum is not None and maximum is not None:
+            return float(trial.suggest_float(name, minimum, maximum))
+        if fixed is None or isinstance(fixed, bool):
+            raise ValueError(f"{name} must be fixed or have an Optuna range")
+        return float(fixed)
+
+    def suggest_int_or_fixed(
+        trial,
+        name: str,
+        fixed: int | None,
+        minimum: int | None,
+        maximum: int | None,
+    ) -> int:
+        if minimum is not None and maximum is not None:
+            return int(trial.suggest_int(name, minimum, maximum))
+        if fixed is None or isinstance(fixed, bool):
+            raise ValueError(f"{name} must be fixed or have an Optuna range")
+        return int(fixed)
+
+    fixed_params: dict[str, Any] = {}
+    if cut_threshold_min is None:
+        fixed_params["cut_threshold"] = cut_threshold
+    if cut_min_width_min is None:
+        fixed_params["cut_min_width"] = cut_min_width
+    if cut_max_width_min is None:
+        fixed_params["cut_max_width"] = cut_max_width
+    if cut_smooth_radius_min is None:
+        fixed_params["cut_smooth_radius"] = cut_smooth_radius
+    if scale_x_min is None:
+        fixed_params["scale_x"] = scale_x
+    if y_pad_min is None:
+        fixed_params["y_pad"] = y_pad
+    if x_pad_min is None:
+        fixed_params["x_pad"] = x_pad
+    if not tune_baseline_crop:
+        fixed_params["baseline_crop"] = baseline_crop
+    fixed_params["baseline_strict_lines"] = baseline_strict_lines
+    if not tune_baseline_line_pad:
+        fixed_params["baseline_line_pad"] = baseline_line_pad
+    if not tune_baseline_line_pad_px:
+        fixed_params["baseline_line_pad_px"] = baseline_line_pad_px
+    if not tune_baseline_deskew:
+        fixed_params["baseline_deskew"] = baseline_deskew
+    if not tune_baseline_max_angle:
+        fixed_params["baseline_max_angle"] = baseline_max_angle
+    if baseline_detector_threshold_min is None:
+        fixed_params["baseline_detector_threshold"] = baseline_detector_threshold
 
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     has_manual_cuts = any(bool(row.get("gt_cuts")) for row in base_rows)
@@ -816,27 +905,45 @@ def optimize(
             if bool(trial_baseline_crop) and tune_baseline_deskew
             else baseline_deskew
         )
-        if x_pad_min is not None and x_pad_max is not None:
-            trial_x_pad = float(trial.suggest_float("x_pad", x_pad_min, x_pad_max))
-        else:
-            if not isinstance(x_pad, (int, float)) or isinstance(x_pad, bool):
-                raise TypeError(
-                    "fixed x_pad must be a number; put [min, max] inside "
-                    "parameters.x_pad to tune it"
-                )
-            trial_x_pad = float(x_pad)
+        trial_cut_threshold = suggest_float_or_fixed(
+            trial,
+            "cut_threshold",
+            cut_threshold,
+            cut_threshold_min,
+            cut_threshold_max,
+        )
+        trial_cut_min_width = suggest_int_or_fixed(
+            trial,
+            "cut_min_width",
+            cut_min_width,
+            cut_min_width_min,
+            cut_min_width_max,
+        )
+        trial_cut_max_width = suggest_int_or_fixed(
+            trial,
+            "cut_max_width",
+            cut_max_width,
+            cut_max_width_min,
+            cut_max_width_max,
+        )
+        trial_cut_smooth_radius = suggest_int_or_fixed(
+            trial,
+            "cut_smooth_radius",
+            cut_smooth_radius,
+            cut_smooth_radius_min,
+            cut_smooth_radius_max,
+        )
+        trial_scale_x = suggest_float_or_fixed(trial, "scale_x", scale_x, scale_x_min, scale_x_max)
+        trial_y_pad = suggest_float_or_fixed(trial, "y_pad", y_pad, y_pad_min, y_pad_max)
+        trial_x_pad = suggest_float_or_fixed(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
         configure_segmentator(
             segmentator,
-            cut_threshold=trial.suggest_float("cut_threshold", cut_threshold_min, cut_threshold_max),
-            cut_min_width=trial.suggest_int("cut_min_width", cut_min_width_min, cut_min_width_max),
-            cut_max_width=trial.suggest_int("cut_max_width", cut_max_width_min, cut_max_width_max),
-            cut_smooth_radius=trial.suggest_int(
-                "cut_smooth_radius",
-                cut_smooth_radius_min,
-                cut_smooth_radius_max,
-            ),
-            scale_x=trial.suggest_float("scale_x", scale_x_min, scale_x_max),
-            y_pad=trial.suggest_float("y_pad", y_pad_min, y_pad_max),
+            cut_threshold=trial_cut_threshold,
+            cut_min_width=trial_cut_min_width,
+            cut_max_width=trial_cut_max_width,
+            cut_smooth_radius=trial_cut_smooth_radius,
+            scale_x=trial_scale_x,
+            y_pad=trial_y_pad,
             x_pad=trial_x_pad,
             baseline_crop=bool(trial_baseline_crop),
             baseline_strict_lines=baseline_strict_lines,
@@ -866,11 +973,12 @@ def optimize(
     print(
         "Optuna segmentator search: "
         f"trials={trials}, metric={metric_name}, "
-        f"cut_threshold=[{cut_threshold_min}, {cut_threshold_max}], "
-        f"cut_min_width=[{cut_min_width_min}, {cut_min_width_max}], "
-        f"cut_max_width=[{cut_max_width_min}, {cut_max_width_max}], "
-        f"cut_smooth_radius=[{cut_smooth_radius_min}, {cut_smooth_radius_max}], "
-        f"scale_x=[{scale_x_min}, {scale_x_max}], y_pad=[{y_pad_min}, {y_pad_max}], "
+        f"cut_threshold={cut_threshold if cut_threshold_min is None else f'[{cut_threshold_min}, {cut_threshold_max}]'}, "
+        f"cut_min_width={cut_min_width if cut_min_width_min is None else f'[{cut_min_width_min}, {cut_min_width_max}]'}, "
+        f"cut_max_width={cut_max_width if cut_max_width_min is None else f'[{cut_max_width_min}, {cut_max_width_max}]'}, "
+        f"cut_smooth_radius={cut_smooth_radius if cut_smooth_radius_min is None else f'[{cut_smooth_radius_min}, {cut_smooth_radius_max}]'}, "
+        f"scale_x={scale_x if scale_x_min is None else f'[{scale_x_min}, {scale_x_max}]'}, "
+        f"y_pad={y_pad if y_pad_min is None else f'[{y_pad_min}, {y_pad_max}]'}, "
         f"x_pad={x_pad if x_pad_min is None else f'[{x_pad_min}, {x_pad_max}]'}, "
         f"baseline_detector={baseline_detector_checkpoint}, "
         f"tune_baseline_crop={tune_baseline_crop}, "
@@ -887,24 +995,45 @@ def optimize(
         enabled=progress,
     )
 
-    best_params = dict(study.best_params)
-    if "baseline_crop" not in best_params:
-        best_params["baseline_crop"] = baseline_crop
-    if "baseline_strict_lines" not in best_params:
-        best_params["baseline_strict_lines"] = baseline_strict_lines
-    if "baseline_line_pad" not in best_params:
-        best_params["baseline_line_pad"] = baseline_line_pad
-    if "baseline_line_pad_px" not in best_params:
-        best_params["baseline_line_pad_px"] = baseline_line_pad_px
-    if "baseline_deskew" not in best_params:
-        best_params["baseline_deskew"] = baseline_deskew
-    if "baseline_max_angle" not in best_params:
-        best_params["baseline_max_angle"] = baseline_max_angle
-    if "baseline_detector_threshold" not in best_params:
-        best_params["baseline_detector_threshold"] = baseline_detector_threshold
-    if "x_pad" not in best_params:
-        best_params["x_pad"] = x_pad
-    print(f"Best params: {best_params}, {metric_name}={study.best_value:.8f}")
+    def compatible_with_fixed_params(trial) -> bool:
+        if trial.value is None:
+            return False
+        for name, fixed in fixed_params.items():
+            if fixed is None or name not in trial.params:
+                continue
+            trial_value = trial.params[name]
+            if isinstance(fixed, bool):
+                if bool(trial_value) != fixed:
+                    return False
+            elif isinstance(fixed, (int, float)) and not isinstance(fixed, bool):
+                if abs(float(trial_value) - float(fixed)) > 1e-12:
+                    return False
+            elif trial_value != fixed:
+                return False
+        return True
+
+    compatible_trials = [
+        trial
+        for trial in study.trials
+        if trial.state.is_finished() and compatible_with_fixed_params(trial)
+    ]
+    if not compatible_trials:
+        raise RuntimeError(
+            "No completed Optuna trials are compatible with the fixed parameters "
+            "from the current evaluation config. Use a new optuna_study_name or "
+            "remove optuna_storage."
+        )
+    best_trial = (
+        max(compatible_trials, key=lambda trial: float(trial.value))
+        if direction == "maximize"
+        else min(compatible_trials, key=lambda trial: float(trial.value))
+    )
+    best_params = dict(best_trial.params)
+    for name, fixed in fixed_params.items():
+        if fixed is not None:
+            best_params[name] = fixed
+    best_value = float(best_trial.value)
+    print(f"Best params: {best_params}, {metric_name}={best_value:.8f}")
 
     configure_segmentator(
         segmentator,
@@ -935,7 +1064,7 @@ def optimize(
     )
     final_metrics["optuna_trials"] = trials
     final_metrics["optuna_metric"] = metric_name
-    final_metrics["optuna_best_value"] = float(study.best_value)
+    final_metrics["optuna_best_value"] = best_value
     return final_metrics
 
 
@@ -1202,6 +1331,11 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
 def main() -> None:
     args = parse_args()
     images_dir = Path(args.images) if args.images else None
+    parameter_modes = getattr(args, "evaluation_parameter_modes", {})
+
+    def optuna_range_value(parameter_name: str, value: Any) -> Any:
+        return None if parameter_modes.get(parameter_name) == "fixed" else value
+
     if args.optuna_trials > 0:
         metrics = optimize(
             json_path=Path(args.json),
@@ -1215,21 +1349,27 @@ def main() -> None:
             metric_name=args.optuna_metric,
             log_every=args.log_every,
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
-            cut_threshold_min=args.optuna_cut_threshold_min,
-            cut_threshold_max=args.optuna_cut_threshold_max,
-            cut_min_width_min=args.optuna_cut_min_width_min,
-            cut_min_width_max=args.optuna_cut_min_width_max,
-            cut_max_width_min=args.optuna_cut_max_width_min,
-            cut_max_width_max=args.optuna_cut_max_width_max,
-            cut_smooth_radius_min=args.optuna_cut_smooth_radius_min,
-            cut_smooth_radius_max=args.optuna_cut_smooth_radius_max,
-            scale_x_min=args.optuna_scale_x_min,
-            scale_x_max=args.optuna_scale_x_max,
-            y_pad_min=args.optuna_y_pad_min,
-            y_pad_max=args.optuna_y_pad_max,
+            cut_threshold=args.cut_threshold,
+            cut_threshold_min=optuna_range_value("cut_threshold", args.optuna_cut_threshold_min),
+            cut_threshold_max=optuna_range_value("cut_threshold", args.optuna_cut_threshold_max),
+            cut_min_width=args.cut_min_width,
+            cut_min_width_min=optuna_range_value("cut_min_width", args.optuna_cut_min_width_min),
+            cut_min_width_max=optuna_range_value("cut_min_width", args.optuna_cut_min_width_max),
+            cut_max_width=args.cut_max_width,
+            cut_max_width_min=optuna_range_value("cut_max_width", args.optuna_cut_max_width_min),
+            cut_max_width_max=optuna_range_value("cut_max_width", args.optuna_cut_max_width_max),
+            cut_smooth_radius=args.cut_smooth_radius,
+            cut_smooth_radius_min=optuna_range_value("cut_smooth_radius", args.optuna_cut_smooth_radius_min),
+            cut_smooth_radius_max=optuna_range_value("cut_smooth_radius", args.optuna_cut_smooth_radius_max),
+            scale_x=args.scale_x,
+            scale_x_min=optuna_range_value("scale_x", args.optuna_scale_x_min),
+            scale_x_max=optuna_range_value("scale_x", args.optuna_scale_x_max),
+            y_pad=args.y_pad,
+            y_pad_min=optuna_range_value("y_pad", args.optuna_y_pad_min),
+            y_pad_max=optuna_range_value("y_pad", args.optuna_y_pad_max),
             x_pad=args.x_pad,
-            x_pad_min=args.optuna_x_pad_min,
-            x_pad_max=args.optuna_x_pad_max,
+            x_pad_min=optuna_range_value("x_pad", args.optuna_x_pad_min),
+            x_pad_max=optuna_range_value("x_pad", args.optuna_x_pad_max),
             tune_baseline_crop=args.optuna_tune_baseline_crop,
             tune_baseline_line_pad=args.optuna_tune_baseline_line_pad,
             tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
