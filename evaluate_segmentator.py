@@ -821,6 +821,33 @@ def optimize(
         fixed_params["baseline_max_angle"] = baseline_max_angle
     if baseline_detector_threshold_min is None:
         fixed_params["baseline_detector_threshold"] = baseline_detector_threshold
+    required_trial_params: set[str] = set()
+    if cut_threshold_min is not None:
+        required_trial_params.add("cut_threshold")
+    if cut_min_width_min is not None:
+        required_trial_params.add("cut_min_width")
+    if cut_max_width_min is not None:
+        required_trial_params.add("cut_max_width")
+    if cut_smooth_radius_min is not None:
+        required_trial_params.add("cut_smooth_radius")
+    if scale_x_min is not None:
+        required_trial_params.add("scale_x")
+    if y_pad_min is not None:
+        required_trial_params.add("y_pad")
+    if x_pad_min is not None:
+        required_trial_params.add("x_pad")
+    if tune_baseline_crop:
+        required_trial_params.add("baseline_crop")
+    if baseline_crop and tune_baseline_line_pad:
+        required_trial_params.add("baseline_line_pad")
+    if baseline_crop and tune_baseline_line_pad_px:
+        required_trial_params.add("baseline_line_pad_px")
+    if baseline_crop and tune_baseline_max_angle:
+        required_trial_params.add("baseline_max_angle")
+    if baseline_crop and tune_baseline_deskew:
+        required_trial_params.add("baseline_deskew")
+    if baseline_crop and baseline_detector_threshold_min is not None:
+        required_trial_params.add("baseline_detector_threshold")
 
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     has_manual_cuts = any(bool(row.get("gt_cuts")) for row in base_rows)
@@ -997,6 +1024,8 @@ def optimize(
 
     def compatible_with_fixed_params(trial) -> bool:
         if trial.value is None:
+            return False
+        if any(name not in trial.params for name in required_trial_params):
             return False
         for name, fixed in fixed_params.items():
             if fixed is None or name not in trial.params:
