@@ -19,9 +19,13 @@ ocr:
     x_pad: 0.03
   decode:
     enabled: true
+    method: dp
     top_k: 8
     center_fraction: 0.6
     min_score_width: 1
+    cut_weight: 1.0
+    ocr_weight: 1.0
+    width_weight: 0.05
 
 segmentator:
   checkpoint: ../../checkpoints/cut_segmentator/best_model.pth

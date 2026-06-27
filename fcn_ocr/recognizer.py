@@ -1574,6 +1574,86 @@ class TextRecognizer:
         score_end = score_start + score_width
         return int(score_start), int(score_end)
 
+    def _map_segmentator_cuts_to_ocr_boundaries(
+        self,
+        raw_cuts: list[int],
+        *,
+        segmentator_width: int,
+        input_width: int,
+        ocr_width: int,
+        ocr_source_x: np.ndarray | None,
+        segmentator_source_x: np.ndarray | None,
+    ) -> list[int]:
+        boundaries = []
+        use_coordinate_maps = ocr_source_x is not None and segmentator_source_x is not None
+        for cut_index, position in enumerate(raw_cuts):
+            input_position: float
+            if use_coordinate_maps:
+                source_position = self._source_x_for_timestep(
+                    position,
+                    segmentator_width,
+                    segmentator_source_x,
+                )
+                edge = "left" if cut_index == 0 else "right" if cut_index == len(raw_cuts) - 1 else None
+                mapped_input = (
+                    self._input_x_for_source_x(source_position, ocr_source_x, edge=edge)
+                    if source_position is not None
+                    else None
+                )
+                if mapped_input is not None:
+                    input_position = mapped_input
+                else:
+                    input_position = (
+                        (float(position) + 0.5) * float(input_width) / float(segmentator_width)
+                        if segmentator_width > 0
+                        else 0.0
+                    )
+            elif segmentator_width > 0:
+                input_position = int(round((float(position) + 0.5) * float(input_width) / float(segmentator_width)))
+            else:
+                input_position = 0
+            boundaries.append(self._map_input_boundary_to_ocr(input_position, input_width, ocr_width))
+        return boundaries
+
+    @staticmethod
+    def _candidate_cut_positions_from_scores(
+        segmentation_result: VerticalSegmentationResult,
+    ) -> list[int]:
+        scores = segmentation_result.cut_scores
+        if not scores:
+            return []
+
+        threshold = float(segmentation_result.cut_threshold)
+        candidates = {
+            int(position)
+            for position in (segmentation_result.cut_positions or [])
+            if 0 <= int(position) < len(scores)
+        }
+        last_index = len(scores) - 1
+        for index, score in enumerate(scores):
+            if float(score) < threshold:
+                continue
+            left = scores[index - 1] if index > 0 else float("-inf")
+            right = scores[index + 1] if index < last_index else float("-inf")
+            if float(score) >= float(left) and float(score) >= float(right):
+                candidates.add(index)
+        return sorted(candidates)
+
+    @staticmethod
+    def _width_prior_score(width: int, min_width: int, max_width: int) -> float:
+        if max_width <= min_width:
+            return 0.0
+        midpoint = 0.5 * float(min_width + max_width)
+        half_range = max(1.0, 0.5 * float(max_width - min_width))
+        return max(0.0, 1.0 - abs(float(width) - midpoint) / half_range)
+
+    @staticmethod
+    def _safe_cut_score(scores: list[float], position: int) -> float:
+        if not scores:
+            return 0.0
+        position = max(0, min(len(scores) - 1, int(position)))
+        return float(scores[position])
+
     def decode_legacy_with_cuts(
         self,
         logits: torch.Tensor,
@@ -1617,35 +1697,15 @@ class TextRecognizer:
             if 0 <= position < max(0, segmentator_width)
         })
         # Cut lines are explicit cell boundaries: only consecutive pairs are decoded.
-        boundaries = []
+        boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
+            raw_cuts,
+            segmentator_width=segmentator_width,
+            input_width=input_width,
+            ocr_width=ocr_width,
+            ocr_source_x=ocr_source_x,
+            segmentator_source_x=segmentator_source_x,
+        )
         use_coordinate_maps = ocr_source_x is not None and segmentator_source_x is not None
-        for cut_index, position in enumerate(raw_cuts):
-            input_position: float
-            if use_coordinate_maps:
-                source_position = self._source_x_for_timestep(
-                    position,
-                    segmentator_width,
-                    segmentator_source_x,
-                )
-                edge = "left" if cut_index == 0 else "right" if cut_index == len(raw_cuts) - 1 else None
-                mapped_input = (
-                    self._input_x_for_source_x(source_position, ocr_source_x, edge=edge)
-                    if source_position is not None
-                    else None
-                )
-                if mapped_input is not None:
-                    input_position = mapped_input
-                else:
-                    input_position = (
-                        (float(position) + 0.5) * float(input_width) / float(segmentator_width)
-                        if segmentator_width > 0
-                        else 0.0
-                    )
-            elif segmentator_width > 0:
-                input_position = int(round((float(position) + 0.5) * float(input_width) / float(segmentator_width)))
-            else:
-                input_position = 0
-            boundaries.append(self._map_input_boundary_to_ocr(input_position, input_width, ocr_width))
         intervals = list(zip(boundaries, boundaries[1:]))
         source_intervals = list(zip(raw_cuts, raw_cuts[1:]))
         top_k = max(1, min(int(top_k), probs.size(0)))
@@ -1734,6 +1794,270 @@ class TextRecognizer:
             input_width=input_width,
             ocr_width=ocr_width,
             segmentator_width=segmentator_width,
+            decode_method="cells",
+        )
+
+    def decode_legacy_with_cuts_dp(
+        self,
+        logits: torch.Tensor,
+        segmentation_result: VerticalSegmentationResult,
+        input_width: int | None = None,
+        top_k: int = 8,
+        center_fraction: float = 0.6,
+        min_score_width: int = 1,
+        ocr_source_x: np.ndarray | None = None,
+        segmentator_source_x: np.ndarray | None = None,
+        cut_weight: float = 1.0,
+        ocr_weight: float = 1.0,
+        width_weight: float = 0.05,
+    ) -> CutDecodingResult:
+        if self.loss_mode not in {"legacy", "legacy_logreg"}:
+            raise ValueError(
+                "legacy+cuts DP decoding expects a legacy OCR checkpoint; "
+                f"got loss_mode={self.loss_mode!r}"
+            )
+        if logits.dim() != 3 or logits.size(0) != 1:
+            raise ValueError(f"legacy+cuts DP decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
+        if not 0.0 < center_fraction <= 1.0:
+            raise ValueError("center_fraction must be in (0, 1]")
+        if min_score_width < 1:
+            raise ValueError("min_score_width must be >= 1")
+        if cut_weight < 0.0 or ocr_weight < 0.0 or width_weight < 0.0:
+            raise ValueError("DP decode weights must be non-negative")
+
+        probs = torch.softmax(logits, dim=1)[0]
+        ocr_width = int(probs.size(1))
+        segmentator_width = len(segmentation_result.raw_indices)
+        input_width = int(input_width if input_width is not None else segmentation_result.input_shape[-1])
+        if ocr_width <= 0 or segmentator_width <= 0:
+            return CutDecodingResult(
+                text="",
+                symbols=[],
+                cuts=[],
+                boundaries=[],
+                input_width=input_width,
+                ocr_width=ocr_width,
+                segmentator_width=segmentator_width,
+                decode_method="dp",
+                path_score=None,
+            )
+
+        candidate_cuts = self._candidate_cut_positions_from_scores(segmentation_result)
+        if len(candidate_cuts) < 2:
+            fallback = self.decode_legacy_with_cuts(
+                logits,
+                segmentation_result,
+                input_width=input_width,
+                top_k=top_k,
+                center_fraction=center_fraction,
+                min_score_width=min_score_width,
+                ocr_source_x=ocr_source_x,
+                segmentator_source_x=segmentator_source_x,
+            )
+            return CutDecodingResult(
+                text=fallback.text,
+                symbols=fallback.symbols,
+                cuts=fallback.cuts,
+                boundaries=fallback.boundaries,
+                input_width=fallback.input_width,
+                ocr_width=fallback.ocr_width,
+                segmentator_width=fallback.segmentator_width,
+                decode_method="dp_fallback_cells",
+                path_score=fallback.path_score,
+            )
+
+        boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
+            candidate_cuts,
+            segmentator_width=segmentator_width,
+            input_width=input_width,
+            ocr_width=ocr_width,
+            ocr_source_x=ocr_source_x,
+            segmentator_source_x=segmentator_source_x,
+        )
+        boundary_by_index = {
+            index: boundary for index, boundary in enumerate(boundaries)
+        }
+        top_k = max(1, min(int(top_k), probs.size(0)))
+        min_width = max(1, int(segmentation_result.cut_min_width or 1))
+        max_width = max(0, int(segmentation_result.cut_max_width or 0))
+
+        if max_width > 0:
+            start_window = max_width
+            end_window = max_width
+            start_indices = [
+                index for index, cut in enumerate(candidate_cuts)
+                if cut <= start_window
+            ]
+            end_indices = [
+                index for index, cut in enumerate(candidate_cuts)
+                if cut >= segmentator_width - 1 - end_window
+            ]
+        else:
+            start_indices = [0]
+            end_indices = [len(candidate_cuts) - 1]
+        if not start_indices:
+            start_indices = [0]
+        if not end_indices:
+            end_indices = [len(candidate_cuts) - 1]
+        end_index_set = set(end_indices)
+
+        edge_cache: dict[tuple[int, int], tuple[float, CutDecodedSymbol]] = {}
+
+        def score_edge(left_index: int, right_index: int) -> tuple[float, CutDecodedSymbol] | None:
+            key = (left_index, right_index)
+            if key in edge_cache:
+                return edge_cache[key]
+            source_start = int(candidate_cuts[left_index])
+            source_end = int(candidate_cuts[right_index])
+            width = source_end - source_start
+            if width < min_width:
+                return None
+            if max_width > 0 and width > max_width:
+                return None
+
+            start = int(boundary_by_index[left_index])
+            end = int(boundary_by_index[right_index])
+            if end > start:
+                score_start, score_end = self._central_decode_span(
+                    start,
+                    end,
+                    center_fraction=center_fraction,
+                    min_width=min_score_width,
+                )
+            else:
+                center = max(0, min(ocr_width - 1, int(round((start + end) * 0.5))))
+                score_start, score_end = center, center + 1
+            if score_end <= score_start:
+                return None
+
+            class_scores = probs[:, score_start:score_end].mean(dim=1)
+            top_confidences, top_indices = class_scores.topk(top_k)
+            class_index = int(top_indices[0].detach().cpu().item())
+            char = self.idx_to_char.get(class_index)
+            if char is None:
+                raise ValueError(
+                    f"OCR class index {class_index} is not present in the checkpoint alphabet"
+                )
+
+            candidates: list[ClassConfidence] = []
+            for rank in range(top_k):
+                candidate_index = int(top_indices[rank].detach().cpu().item())
+                candidates.append(
+                    ClassConfidence(
+                        label=self.class_label(candidate_index),
+                        confidence=float(top_confidences[rank].detach().cpu().item()),
+                        class_index=candidate_index,
+                    )
+                )
+
+            left_cut_score = self._safe_cut_score(segmentation_result.cut_scores, source_start)
+            right_cut_score = self._safe_cut_score(segmentation_result.cut_scores, source_end)
+            cut_score = 0.5 * (left_cut_score + right_cut_score)
+            ocr_score = float(class_scores[class_index].detach().cpu().item())
+            width_score = self._width_prior_score(width, min_width, max_width)
+            edge_score = (
+                float(cut_weight) * cut_score
+                + float(ocr_weight) * ocr_score
+                + float(width_weight) * width_score
+            )
+            symbol = CutDecodedSymbol(
+                char=char,
+                confidence=ocr_score,
+                class_index=class_index,
+                start=start,
+                end=end,
+                source_start=source_start,
+                source_end=source_end,
+                candidates=candidates,
+                score_start=int(score_start),
+                score_end=int(score_end),
+            )
+            edge_cache[key] = (edge_score, symbol)
+            return edge_cache[key]
+
+        states: dict[tuple[int, int], tuple[float, tuple[int, int] | None, CutDecodedSymbol | None]] = {
+            (index, 0): (0.0, None, None) for index in start_indices
+        }
+        candidate_count = len(candidate_cuts)
+        for right_index in range(candidate_count):
+            for left_index in range(right_index):
+                scored = score_edge(left_index, right_index)
+                if scored is None:
+                    continue
+                edge_score, symbol = scored
+                previous_states = [
+                    (count, value)
+                    for (state_index, count), value in states.items()
+                    if state_index == left_index
+                ]
+                for count, (previous_score, _, _) in previous_states:
+                    next_key = (right_index, count + 1)
+                    next_score = previous_score + edge_score
+                    if next_key not in states or next_score > states[next_key][0]:
+                        states[next_key] = (
+                            next_score,
+                            (left_index, count),
+                            symbol,
+                        )
+
+        final_items = [
+            (key, value)
+            for key, value in states.items()
+            if key[0] in end_index_set and key[1] > 0
+        ]
+        if not final_items:
+            fallback = self.decode_legacy_with_cuts(
+                logits,
+                segmentation_result,
+                input_width=input_width,
+                top_k=top_k,
+                center_fraction=center_fraction,
+                min_score_width=min_score_width,
+                ocr_source_x=ocr_source_x,
+                segmentator_source_x=segmentator_source_x,
+            )
+            return CutDecodingResult(
+                text=fallback.text,
+                symbols=fallback.symbols,
+                cuts=fallback.cuts,
+                boundaries=fallback.boundaries,
+                input_width=fallback.input_width,
+                ocr_width=fallback.ocr_width,
+                segmentator_width=fallback.segmentator_width,
+                decode_method="dp_fallback_cells",
+                path_score=fallback.path_score,
+            )
+
+        best_key, (best_score, _, _) = max(
+            final_items,
+            key=lambda item: (item[1][0] / float(item[0][1]), item[1][0]),
+        )
+        path_score = best_score / float(best_key[1])
+        symbols_reversed: list[CutDecodedSymbol] = []
+        cut_indices_reversed: list[int] = [best_key[0]]
+        current_key: tuple[int, int] | None = best_key
+        while current_key is not None:
+            _, previous_key, symbol = states[current_key]
+            if symbol is not None:
+                symbols_reversed.append(symbol)
+            if previous_key is not None:
+                cut_indices_reversed.append(previous_key[0])
+            current_key = previous_key
+        symbols = list(reversed(symbols_reversed))
+        path_cut_indices = list(reversed(cut_indices_reversed))
+        path_cuts = [candidate_cuts[index] for index in path_cut_indices]
+        path_boundaries = [boundaries[index] for index in path_cut_indices]
+
+        return CutDecodingResult(
+            text="".join(symbol.char for symbol in symbols),
+            symbols=symbols,
+            cuts=path_cuts,
+            boundaries=path_boundaries,
+            input_width=input_width,
+            ocr_width=ocr_width,
+            segmentator_width=segmentator_width,
+            decode_method="dp",
+            path_score=float(path_score),
         )
 
     @torch.no_grad()

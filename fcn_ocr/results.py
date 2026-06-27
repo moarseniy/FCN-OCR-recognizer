@@ -48,6 +48,8 @@ class CutDecodingResult:
     input_width: int
     ocr_width: int
     segmentator_width: int
+    decode_method: str = "cells"
+    path_score: float | None = None
 
 
 @dataclass(frozen=True)

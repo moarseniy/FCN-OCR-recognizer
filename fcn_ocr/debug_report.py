@@ -465,7 +465,10 @@ def save_debug_image(
         cut_color = (30, 80, 120)
         if expected_text is not None and expected_text != cut_decoding_result.text:
             cut_color = (150, 30, 30)
-        result_texts.append((f"final OCR with cuts: {cut_decoding_result.text!r}", cut_color))
+        result_texts.append((
+            f"final OCR with cuts/{cut_decoding_result.decode_method}: {cut_decoding_result.text!r}",
+            cut_color,
+        ))
     if expected_text is not None:
         result_texts.append((f"expected: {expected_text!r}", (120, 70, 20)))
     if not result_texts:
@@ -591,7 +594,7 @@ def save_debug_image(
             y,
             width,
             padding,
-            "Final OCR symbols; one class per interval between neighboring cuts",
+            f"Final OCR symbols ({cut_decoding_result.decode_method}); one class per selected cut interval",
             ["#", "answer", "ocr span", "conf", "ordered candidates"],
             cut_rows,
             "no intervals decoded from segmentator cuts",

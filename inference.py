@@ -156,6 +156,8 @@ def _debug_metadata(
         metadata.update(
             {
                 "legacy_cuts_text": result.cut_decoding.text,
+                "legacy_cuts_decode_method": result.cut_decoding.decode_method,
+                "legacy_cuts_path_score": result.cut_decoding.path_score,
                 "legacy_cuts_symbols": len(result.cut_decoding.symbols),
                 "legacy_cuts_raw_cuts": len(result.cut_decoding.cuts),
                 "legacy_cuts_decode_center_fraction": config.ocr.decode.center_fraction,
@@ -181,7 +183,10 @@ def main() -> None:
             f"{len(result.segmentation.raw_indices)} timesteps"
         )
     if result.cut_decoding is not None:
-        print(f"Recognized text (legacy+cuts): '{result.cut_decoding.text}'")
+        print(
+            f"Recognized text (legacy+cuts/{result.cut_decoding.decode_method}): "
+            f"'{result.cut_decoding.text}'"
+        )
     if result.recognition is not None:
         print(f"Recognized text (raw OCR): '{result.recognition.text}'")
     else:

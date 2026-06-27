@@ -126,7 +126,10 @@ class OCRPipeline:
             "  Vertical segmentator stage: "
             f"{'enabled; receives shared baseline output' if self.segmentator is not None else 'disabled'}"
         )
-        print(f"  Decode with segmentator: {bool(self.decode and self.decode.enabled)}")
+        if self.decode is not None and self.decode.enabled:
+            print(f"  Decode with segmentator: enabled ({self.decode.method})")
+        else:
+            print("  Decode with segmentator: disabled")
 
     def recognize_path(
         self,
@@ -203,16 +206,29 @@ class OCRPipeline:
                 or segmentator_source_x is None
             ):
                 raise RuntimeError("decode stage requires completed OCR and segmentator stages")
-            cut_decoding = self.recognizer.decode_legacy_with_cuts(
-                ocr_logits,
-                segmentation,
-                input_width=int(ocr_input.shape[-1]),
-                top_k=self.decode.top_k,
-                center_fraction=self.decode.center_fraction,
-                min_score_width=self.decode.min_score_width,
-                ocr_source_x=ocr_source_x,
-                segmentator_source_x=segmentator_source_x,
-            )
+            decode_kwargs = {
+                "input_width": int(ocr_input.shape[-1]),
+                "top_k": self.decode.top_k,
+                "center_fraction": self.decode.center_fraction,
+                "min_score_width": self.decode.min_score_width,
+                "ocr_source_x": ocr_source_x,
+                "segmentator_source_x": segmentator_source_x,
+            }
+            if self.decode.method == "dp":
+                cut_decoding = self.recognizer.decode_legacy_with_cuts_dp(
+                    ocr_logits,
+                    segmentation,
+                    cut_weight=self.decode.cut_weight,
+                    ocr_weight=self.decode.ocr_weight,
+                    width_weight=self.decode.width_weight,
+                    **decode_kwargs,
+                )
+            else:
+                cut_decoding = self.recognizer.decode_legacy_with_cuts(
+                    ocr_logits,
+                    segmentation,
+                    **decode_kwargs,
+                )
 
         return OCRPipelineResult(
             recognition=recognition,
