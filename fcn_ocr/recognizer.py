@@ -1654,16 +1654,138 @@ class TextRecognizer:
         position = max(0, min(len(scores) - 1, int(position)))
         return float(scores[position])
 
+    @staticmethod
+    def _glyph_prior_field(config: dict[str, Any] | Any | None, name: str, default: Any) -> Any:
+        if config is None:
+            return default
+        if isinstance(config, dict):
+            return config.get(name, default)
+        return getattr(config, name, default)
+
+    def _glyph_width_prior_is_active(self, config: dict[str, Any] | Any | None) -> bool:
+        if config is None:
+            return False
+        ranges = self._glyph_prior_field(config, "ranges", {})
+        weight = float(self._glyph_prior_field(config, "weight", 0.0) or 0.0)
+        return bool(self._glyph_prior_field(config, "enabled", False)) and weight > 0.0 and bool(ranges)
+
+    def _glyph_width_bounds_for_char(
+        self,
+        char: str,
+        config: dict[str, Any] | Any | None,
+    ) -> tuple[float, float] | None:
+        ranges = self._glyph_prior_field(config, "ranges", {}) or {}
+        fallback = None
+        for group, bounds in ranges.items():
+            if group == "~":
+                fallback = bounds
+                continue
+            if char in str(group):
+                low, high = bounds
+                return float(low), float(high)
+        if fallback is None:
+            return None
+        low, high = fallback
+        return float(low), float(high)
+
+    def _glyph_width_prior_adjustment(
+        self,
+        class_index: int,
+        cell_width: float,
+        input_height: int,
+        config: dict[str, Any] | Any | None,
+    ) -> tuple[float, float | None]:
+        if not self._glyph_width_prior_is_active(config):
+            return 0.0, None
+        char = self.idx_to_char.get(int(class_index))
+        if char is None:
+            return 0.0, None
+        bounds = self._glyph_width_bounds_for_char(char, config)
+        if bounds is None:
+            return 0.0, None
+
+        low, high = bounds
+        denominator = max(1.0, float(input_height))
+        ratio = max(0.0, float(cell_width)) / denominator
+        if low <= ratio <= high:
+            return 0.0, ratio
+
+        span = max(1e-6, high - low)
+        distance = (low - ratio) / span if ratio < low else (ratio - high) / span
+        penalty = min(4.0, distance * distance)
+        weight = float(self._glyph_prior_field(config, "weight", 0.0) or 0.0)
+        return -weight * penalty, ratio
+
+    @staticmethod
+    def _cell_width_in_input_pixels(
+        start: int,
+        end: int,
+        *,
+        input_width: int,
+        ocr_width: int,
+        source_start: int,
+        source_end: int,
+        segmentator_width: int,
+    ) -> float:
+        if end > start and ocr_width > 0:
+            return max(0.0, float(end - start) * float(input_width) / float(ocr_width))
+        if segmentator_width > 0:
+            return max(0.0, float(source_end - source_start) * float(input_width) / float(segmentator_width))
+        return 0.0
+
+    def _rank_class_scores(
+        self,
+        class_scores: torch.Tensor,
+        *,
+        cell_width: float,
+        input_height: int,
+        glyph_width_prior: dict[str, Any] | Any | None,
+        top_k: int,
+        ocr_weight: float = 1.0,
+    ) -> tuple[int, float, float, float | None, list[ClassConfidence]]:
+        raw_scores = class_scores.detach().cpu().float().tolist()
+        prior_active = self._glyph_width_prior_is_active(glyph_width_prior)
+        ranked: list[tuple[float, float, int, float, float | None]] = []
+        for class_index, raw_score in enumerate(raw_scores):
+            if class_index not in self.idx_to_char:
+                continue
+            prior_score, ratio = self._glyph_width_prior_adjustment(
+                class_index,
+                cell_width,
+                input_height,
+                glyph_width_prior,
+            )
+            total_score = float(ocr_weight) * float(raw_score) + prior_score
+            ranked.append((total_score, float(raw_score), class_index, prior_score, ratio))
+
+        if not ranked:
+            raise ValueError("No OCR classes are available for decoding")
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        top_k = max(1, min(int(top_k), len(ranked)))
+        candidates = [
+            ClassConfidence(
+                label=self.class_label(class_index),
+                confidence=raw_score,
+                class_index=class_index,
+                score=total_score if prior_active else None,
+            )
+            for total_score, raw_score, class_index, _, _ in ranked[:top_k]
+        ]
+        total_score, raw_score, class_index, prior_score, ratio = ranked[0]
+        return class_index, raw_score, prior_score, ratio, candidates
+
     def decode_legacy_with_cuts(
         self,
         logits: torch.Tensor,
         segmentation_result: VerticalSegmentationResult,
         input_width: int | None = None,
+        input_height: int | None = None,
         top_k: int = 8,
         center_fraction: float = 0.6,
         min_score_width: int = 1,
         ocr_source_x: np.ndarray | None = None,
         segmentator_source_x: np.ndarray | None = None,
+        glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -1681,6 +1803,7 @@ class TextRecognizer:
         ocr_width = int(probs.size(1))
         segmentator_width = len(segmentation_result.raw_indices)
         input_width = int(input_width if input_width is not None else segmentation_result.input_shape[-1])
+        input_height = int(input_height if input_height is not None else segmentation_result.input_shape[-2])
         if ocr_width <= 0:
             return CutDecodingResult(
                 text="",
@@ -1752,29 +1875,32 @@ class TextRecognizer:
             if score_end <= score_start:
                 continue
             scores = probs[:, score_start:score_end].mean(dim=1)
-            top_confidences, top_indices = scores.topk(top_k)
-            class_index = int(top_indices[0].detach().cpu().item())
+            cell_width = self._cell_width_in_input_pixels(
+                start,
+                end,
+                input_width=input_width,
+                ocr_width=ocr_width,
+                source_start=source_start,
+                source_end=source_end,
+                segmentator_width=segmentator_width,
+            )
+            class_index, raw_score, glyph_width_score, glyph_width_ratio, candidates = self._rank_class_scores(
+                scores,
+                cell_width=cell_width,
+                input_height=input_height,
+                glyph_width_prior=glyph_width_prior,
+                top_k=top_k,
+            )
             char = self.idx_to_char.get(class_index)
             if char is None:
                 raise ValueError(
                     f"OCR class index {class_index} is not present in the checkpoint alphabet"
                 )
 
-            candidates: list[ClassConfidence] = []
-            for rank in range(top_k):
-                candidate_index = int(top_indices[rank].detach().cpu().item())
-                candidates.append(
-                    ClassConfidence(
-                        label=self.class_label(candidate_index),
-                        confidence=float(top_confidences[rank].detach().cpu().item()),
-                        class_index=candidate_index,
-                    )
-                )
-
             symbols.append(
                 CutDecodedSymbol(
                     char=char,
-                    confidence=float(scores[class_index].detach().cpu().item()),
+                    confidence=raw_score,
                     class_index=class_index,
                     start=int(start),
                     end=int(end),
@@ -1783,6 +1909,8 @@ class TextRecognizer:
                     candidates=candidates,
                     score_start=int(score_start),
                     score_end=int(score_end),
+                    glyph_width_ratio=glyph_width_ratio,
+                    glyph_width_score=glyph_width_score,
                 )
             )
 
@@ -1802,6 +1930,7 @@ class TextRecognizer:
         logits: torch.Tensor,
         segmentation_result: VerticalSegmentationResult,
         input_width: int | None = None,
+        input_height: int | None = None,
         top_k: int = 8,
         center_fraction: float = 0.6,
         min_score_width: int = 1,
@@ -1811,6 +1940,7 @@ class TextRecognizer:
         ocr_weight: float = 1.0,
         width_weight: float = 0.05,
         skip_cut_penalty: float = 0.35,
+        glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -1835,6 +1965,7 @@ class TextRecognizer:
         ocr_width = int(probs.size(1))
         segmentator_width = len(segmentation_result.raw_indices)
         input_width = int(input_width if input_width is not None else segmentation_result.input_shape[-1])
+        input_height = int(input_height if input_height is not None else segmentation_result.input_shape[-2])
         if ocr_width <= 0 or segmentator_width <= 0:
             return CutDecodingResult(
                 text="",
@@ -1854,11 +1985,13 @@ class TextRecognizer:
                 logits,
                 segmentation_result,
                 input_width=input_width,
+                input_height=input_height,
                 top_k=top_k,
                 center_fraction=center_fraction,
                 min_score_width=min_score_width,
                 ocr_source_x=ocr_source_x,
                 segmentator_source_x=segmentator_source_x,
+                glyph_width_prior=glyph_width_prior,
             )
             return CutDecodingResult(
                 text=fallback.text,
@@ -1937,35 +2070,39 @@ class TextRecognizer:
                 return None
 
             class_scores = probs[:, score_start:score_end].mean(dim=1)
-            top_confidences, top_indices = class_scores.topk(top_k)
-            class_index = int(top_indices[0].detach().cpu().item())
+            cell_width = self._cell_width_in_input_pixels(
+                start,
+                end,
+                input_width=input_width,
+                ocr_width=ocr_width,
+                source_start=source_start,
+                source_end=source_end,
+                segmentator_width=segmentator_width,
+            )
+            class_index, ocr_score, glyph_width_score, glyph_width_ratio, candidates = self._rank_class_scores(
+                class_scores,
+                cell_width=cell_width,
+                input_height=input_height,
+                glyph_width_prior=glyph_width_prior,
+                top_k=top_k,
+                ocr_weight=ocr_weight,
+            )
             char = self.idx_to_char.get(class_index)
             if char is None:
                 raise ValueError(
                     f"OCR class index {class_index} is not present in the checkpoint alphabet"
                 )
 
-            candidates: list[ClassConfidence] = []
-            for rank in range(top_k):
-                candidate_index = int(top_indices[rank].detach().cpu().item())
-                candidates.append(
-                    ClassConfidence(
-                        label=self.class_label(candidate_index),
-                        confidence=float(top_confidences[rank].detach().cpu().item()),
-                        class_index=candidate_index,
-                    )
-                )
-
             left_cut_score = self._safe_cut_score(segmentation_result.cut_scores, source_start)
             right_cut_score = self._safe_cut_score(segmentation_result.cut_scores, source_end)
             cut_score = 0.5 * (left_cut_score + right_cut_score)
-            ocr_score = float(class_scores[class_index].detach().cpu().item())
             width_score = self._width_prior_score(width, min_width, max_width)
             skipped_cut_count = max(0, right_index - left_index - 1)
             edge_score = (
                 float(cut_weight) * cut_score
                 + float(ocr_weight) * ocr_score
                 + float(width_weight) * width_score
+                + float(glyph_width_score)
                 - float(skip_cut_penalty) * float(skipped_cut_count)
             )
             symbol = CutDecodedSymbol(
@@ -1979,6 +2116,8 @@ class TextRecognizer:
                 candidates=candidates,
                 score_start=int(score_start),
                 score_end=int(score_end),
+                glyph_width_ratio=glyph_width_ratio,
+                glyph_width_score=glyph_width_score,
             )
             edge_cache[key] = (edge_score, symbol)
             return edge_cache[key]
@@ -2018,11 +2157,13 @@ class TextRecognizer:
                 logits,
                 segmentation_result,
                 input_width=input_width,
+                input_height=input_height,
                 top_k=top_k,
                 center_fraction=center_fraction,
                 min_score_width=min_score_width,
                 ocr_source_x=ocr_source_x,
                 segmentator_source_x=segmentator_source_x,
+                glyph_width_prior=glyph_width_prior,
             )
             return CutDecodingResult(
                 text=fallback.text,

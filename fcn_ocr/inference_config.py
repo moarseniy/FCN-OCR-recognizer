@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
 
 
@@ -28,6 +28,28 @@ class BaselineInferenceConfig(BaseModel):
     line_pad_px: float = Field(default=0.0, ge=0.0)
 
 
+class GlyphWidthPriorConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    weight: float = Field(default=0.0, ge=0.0)
+    normalize_by: Literal["input_height"] = "input_height"
+    ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
+
+    @field_validator("ranges")
+    @classmethod
+    def ranges_must_be_valid(cls, value: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
+        for group, bounds in value.items():
+            if not isinstance(group, str) or group == "":
+                raise ValueError("glyph_width_prior range keys must be non-empty strings")
+            low, high = bounds
+            if low < 0.0 or high < 0.0:
+                raise ValueError("glyph_width_prior ranges must be non-negative")
+            if high < low:
+                raise ValueError("glyph_width_prior range upper bound must be >= lower bound")
+        return value
+
+
 class OCRDecodeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,6 +62,7 @@ class OCRDecodeConfig(BaseModel):
     ocr_weight: float = Field(default=1.0, ge=0.0)
     width_weight: float = Field(default=0.05, ge=0.0)
     skip_cut_penalty: float = Field(default=0.35, ge=0.0)
+    glyph_width_prior: GlyphWidthPriorConfig = Field(default_factory=GlyphWidthPriorConfig)
 
 
 class OCRInferenceConfig(BaseModel):

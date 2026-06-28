@@ -27,6 +27,16 @@ ocr:
     ocr_weight: 1.0
     width_weight: 0.05
     skip_cut_penalty: 0.35
+    glyph_width_prior:
+      enabled: true
+      weight: 0.08
+      normalize_by: input_height
+      ranges:
+        " ": [0.25, 1.40]
+        "1I": [0.12, 0.70]
+        "MW": [0.35, 1.45]
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ": [0.16, 1.25]
+        "~": [0.12, 1.45]
 
 segmentator:
   checkpoint: ../../checkpoints/cut_segmentator/best_model.pth

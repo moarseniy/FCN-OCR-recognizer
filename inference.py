@@ -163,6 +163,7 @@ def _debug_metadata(
                 "legacy_cuts_decode_center_fraction": config.ocr.decode.center_fraction,
                 "legacy_cuts_decode_min_score_width": config.ocr.decode.min_score_width,
                 "legacy_cuts_decode_skip_cut_penalty": config.ocr.decode.skip_cut_penalty,
+                "legacy_cuts_decode_glyph_width_prior": config.ocr.decode.glyph_width_prior.model_dump(),
             }
         )
     return metadata

@@ -116,6 +116,7 @@ def recognize_images_with_segmentator(
     segmentator_decode_ocr_weight: float,
     segmentator_decode_width_weight: float,
     segmentator_decode_skip_cut_penalty: float,
+    segmentator_decode_glyph_width_prior: dict[str, Any] | None,
 ) -> tuple[dict[int, str], dict[int, str], dict[str, float | int]]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
@@ -236,11 +237,13 @@ def recognize_images_with_segmentator(
                         ocr_input = item["ocr_input"]
                         decode_kwargs = {
                             "input_width": int(ocr_input.shape[-1]),
+                            "input_height": int(ocr_input.shape[-2]),
                             "top_k": segmentator_decode_top_k,
                             "center_fraction": segmentator_decode_center_fraction,
                             "min_score_width": segmentator_decode_min_score_width,
                             "ocr_source_x": item["ocr_source_x"],
                             "segmentator_source_x": item["segmentator_source_x"],
+                            "glyph_width_prior": segmentator_decode_glyph_width_prior,
                         }
                         if segmentator_decode_method == "dp":
                             cut_decoding_result = recognizer.decode_legacy_with_cuts_dp(
@@ -534,6 +537,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
             print(f"Decode OCR weight:          {metrics['segmentator_decode_ocr_weight']:.5f}")
             print(f"Decode width weight:        {metrics['segmentator_decode_width_weight']:.5f}")
             print(f"Decode skip cut penalty:    {metrics['segmentator_decode_skip_cut_penalty']:.5f}")
+            glyph_width_prior = metrics.get("segmentator_decode_glyph_width_prior") or {}
+            print(f"Decode glyph width prior:   {bool(glyph_width_prior.get('enabled'))}")
     if output_csv is not None:
         print(f"CSV saved to:               {output_csv}")
 
@@ -575,6 +580,7 @@ def evaluate_prepared(
     segmentator_decode_ocr_weight: float = 1.0,
     segmentator_decode_width_weight: float = 0.05,
     segmentator_decode_skip_cut_penalty: float = 0.35,
+    segmentator_decode_glyph_width_prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
@@ -631,6 +637,7 @@ def evaluate_prepared(
             segmentator_decode_ocr_weight=segmentator_decode_ocr_weight,
             segmentator_decode_width_weight=segmentator_decode_width_weight,
             segmentator_decode_skip_cut_penalty=segmentator_decode_skip_cut_penalty,
+            segmentator_decode_glyph_width_prior=segmentator_decode_glyph_width_prior,
         )
     else:
         predictions, errors = recognize_images(recognizer, jobs, batch_size=batch_size, log_every=log_every)
@@ -667,6 +674,7 @@ def evaluate_prepared(
     metrics["segmentator_decode_ocr_weight"] = float(segmentator_decode_ocr_weight)
     metrics["segmentator_decode_width_weight"] = float(segmentator_decode_width_weight)
     metrics["segmentator_decode_skip_cut_penalty"] = float(segmentator_decode_skip_cut_penalty)
+    metrics["segmentator_decode_glyph_width_prior"] = segmentator_decode_glyph_width_prior or {}
     if segmentator is not None:
         metrics["segmentator_cut_threshold"] = float(segmentator.cut_threshold)
         metrics["segmentator_cut_min_width"] = int(segmentator.cut_min_width)
@@ -819,6 +827,7 @@ def optimize_preprocess(
     segmentator_decode_ocr_weight: float = 1.0,
     segmentator_decode_width_weight: float = 0.05,
     segmentator_decode_skip_cut_penalty: float = 0.35,
+    segmentator_decode_glyph_width_prior: dict[str, Any] | None = None,
     x_pad_min: float | None = None,
     x_pad_max: float | None = None,
     segmentator_scale_x_min: float | None = None,
@@ -1050,6 +1059,7 @@ def optimize_preprocess(
             segmentator_decode_ocr_weight=segmentator_decode_ocr_weight,
             segmentator_decode_width_weight=segmentator_decode_width_weight,
             segmentator_decode_skip_cut_penalty=segmentator_decode_skip_cut_penalty,
+            segmentator_decode_glyph_width_prior=segmentator_decode_glyph_width_prior,
         )
         for key, value in metrics.items():
             if isinstance(value, (int, float, bool, str)):
@@ -1155,6 +1165,7 @@ def optimize_preprocess(
         segmentator_decode_ocr_weight=segmentator_decode_ocr_weight,
         segmentator_decode_width_weight=segmentator_decode_width_weight,
         segmentator_decode_skip_cut_penalty=segmentator_decode_skip_cut_penalty,
+        segmentator_decode_glyph_width_prior=segmentator_decode_glyph_width_prior,
     )
     final_metrics["optuna_trials"] = trials
     final_metrics["optuna_metric"] = metric_name
@@ -1201,6 +1212,7 @@ def evaluate(
     segmentator_decode_ocr_weight: float = 1.0,
     segmentator_decode_width_weight: float = 0.05,
     segmentator_decode_skip_cut_penalty: float = 0.35,
+    segmentator_decode_glyph_width_prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     return evaluate_prepared(
@@ -1240,6 +1252,7 @@ def evaluate(
         segmentator_decode_ocr_weight=segmentator_decode_ocr_weight,
         segmentator_decode_width_weight=segmentator_decode_width_weight,
         segmentator_decode_skip_cut_penalty=segmentator_decode_skip_cut_penalty,
+        segmentator_decode_glyph_width_prior=segmentator_decode_glyph_width_prior,
     )
 
 
@@ -1692,6 +1705,9 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
             0.35,
         )
     )
+    args.segmentator_decode_glyph_width_prior = (
+        decode.glyph_width_prior.model_dump() if decode is not None else None
+    )
     if args.decode_with_segmentator and args.segmentator_checkpoint is None:
         raise ValueError(
             "Segmentator decoding requires segmentator.checkpoint in --inference-config "
@@ -1728,6 +1744,7 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "segmentator_decode_ocr_weight": args.segmentator_decode_ocr_weight,
         "segmentator_decode_width_weight": args.segmentator_decode_width_weight,
         "segmentator_decode_skip_cut_penalty": args.segmentator_decode_skip_cut_penalty,
+        "segmentator_decode_glyph_width_prior": args.segmentator_decode_glyph_width_prior,
     }
 
 
@@ -1768,6 +1785,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 "ocr_weight": metrics["segmentator_decode_ocr_weight"],
                 "width_weight": metrics["segmentator_decode_width_weight"],
                 "skip_cut_penalty": metrics["segmentator_decode_skip_cut_penalty"],
+                "glyph_width_prior": metrics.get("segmentator_decode_glyph_width_prior", {}),
             },
         },
         "debug": {

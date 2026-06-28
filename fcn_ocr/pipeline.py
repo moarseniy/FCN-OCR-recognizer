@@ -128,6 +128,11 @@ class OCRPipeline:
         )
         if self.decode is not None and self.decode.enabled:
             print(f"  Decode with segmentator: enabled ({self.decode.method})")
+            if self.decode.glyph_width_prior.enabled:
+                print(
+                    "  Glyph width prior: "
+                    f"enabled weight={self.decode.glyph_width_prior.weight:g}"
+                )
         else:
             print("  Decode with segmentator: disabled")
 
@@ -208,11 +213,13 @@ class OCRPipeline:
                 raise RuntimeError("decode stage requires completed OCR and segmentator stages")
             decode_kwargs = {
                 "input_width": int(ocr_input.shape[-1]),
+                "input_height": int(ocr_input.shape[-2]),
                 "top_k": self.decode.top_k,
                 "center_fraction": self.decode.center_fraction,
                 "min_score_width": self.decode.min_score_width,
                 "ocr_source_x": ocr_source_x,
                 "segmentator_source_x": segmentator_source_x,
+                "glyph_width_prior": self.decode.glyph_width_prior.model_dump(),
             }
             if self.decode.method == "dp":
                 cut_decoding = self.recognizer.decode_legacy_with_cuts_dp(

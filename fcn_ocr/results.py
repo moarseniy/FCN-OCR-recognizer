@@ -14,6 +14,7 @@ class ClassConfidence:
     label: str
     confidence: float
     class_index: int
+    score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,8 @@ class CutDecodedSymbol:
     candidates: list[ClassConfidence]
     score_start: int | None = None
     score_end: int | None = None
+    glyph_width_ratio: float | None = None
+    glyph_width_score: float | None = None
 
 
 @dataclass(frozen=True)
