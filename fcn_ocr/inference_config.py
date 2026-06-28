@@ -39,6 +39,7 @@ class OCRDecodeConfig(BaseModel):
     cut_weight: float = Field(default=1.0, ge=0.0)
     ocr_weight: float = Field(default=1.0, ge=0.0)
     width_weight: float = Field(default=0.05, ge=0.0)
+    skip_cut_penalty: float = Field(default=0.35, ge=0.0)
 
 
 class OCRInferenceConfig(BaseModel):

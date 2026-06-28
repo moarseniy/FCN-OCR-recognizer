@@ -1810,6 +1810,7 @@ class TextRecognizer:
         cut_weight: float = 1.0,
         ocr_weight: float = 1.0,
         width_weight: float = 0.05,
+        skip_cut_penalty: float = 0.35,
     ) -> CutDecodingResult:
         if self.loss_mode not in {"legacy", "legacy_logreg"}:
             raise ValueError(
@@ -1822,7 +1823,12 @@ class TextRecognizer:
             raise ValueError("center_fraction must be in (0, 1]")
         if min_score_width < 1:
             raise ValueError("min_score_width must be >= 1")
-        if cut_weight < 0.0 or ocr_weight < 0.0 or width_weight < 0.0:
+        if (
+            cut_weight < 0.0
+            or ocr_weight < 0.0
+            or width_weight < 0.0
+            or skip_cut_penalty < 0.0
+        ):
             raise ValueError("DP decode weights must be non-negative")
 
         probs = torch.softmax(logits, dim=1)[0]
@@ -1955,10 +1961,12 @@ class TextRecognizer:
             cut_score = 0.5 * (left_cut_score + right_cut_score)
             ocr_score = float(class_scores[class_index].detach().cpu().item())
             width_score = self._width_prior_score(width, min_width, max_width)
+            skipped_cut_count = max(0, right_index - left_index - 1)
             edge_score = (
                 float(cut_weight) * cut_score
                 + float(ocr_weight) * ocr_score
                 + float(width_weight) * width_score
+                - float(skip_cut_penalty) * float(skipped_cut_count)
             )
             symbol = CutDecodedSymbol(
                 char=char,
@@ -2030,7 +2038,7 @@ class TextRecognizer:
 
         best_key, (best_score, _, _) = max(
             final_items,
-            key=lambda item: (item[1][0] / float(item[0][1]), item[1][0]),
+            key=lambda item: (item[1][0], item[0][1]),
         )
         path_score = best_score / float(best_key[1])
         symbols_reversed: list[CutDecodedSymbol] = []

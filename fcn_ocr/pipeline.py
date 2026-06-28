@@ -221,6 +221,7 @@ class OCRPipeline:
                     cut_weight=self.decode.cut_weight,
                     ocr_weight=self.decode.ocr_weight,
                     width_weight=self.decode.width_weight,
+                    skip_cut_penalty=self.decode.skip_cut_penalty,
                     **decode_kwargs,
                 )
             else:

@@ -26,6 +26,7 @@ ocr:
     cut_weight: 1.0
     ocr_weight: 1.0
     width_weight: 0.05
+    skip_cut_penalty: 0.35
 
 segmentator:
   checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
