@@ -33,7 +33,7 @@ class GlyphWidthPriorConfig(BaseModel):
 
     enabled: bool = False
     weight: float = Field(default=0.0, ge=0.0)
-    normalize_by: Literal["input_height"] = "input_height"
+    normalize_by: Literal["input_height", "median_cell_width"] = "input_height"
     ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
 
     @field_validator("ranges")

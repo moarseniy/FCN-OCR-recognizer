@@ -30,13 +30,11 @@ ocr:
     glyph_width_prior:
       enabled: true
       weight: 0.08
-      normalize_by: input_height
+      normalize_by: median_cell_width
       ranges:
-        " ": [0.25, 1.40]
-        "1I": [0.12, 0.70]
-        "MW": [0.35, 1.45]
-        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ": [0.16, 1.25]
-        "~": [0.12, 1.45]
+        " ": [0.70, 3.00]
+        "0123456789": [0.65, 1.35]
+        "~": [0.55, 1.60]
 
 segmentator:
   checkpoint: ../../checkpoints/cut_segmentator/best_model.pth

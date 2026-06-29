@@ -1692,7 +1692,7 @@ class TextRecognizer:
         self,
         class_index: int,
         cell_width: float,
-        input_height: int,
+        denominator: float,
         config: dict[str, Any] | Any | None,
     ) -> tuple[float, float | None]:
         if not self._glyph_width_prior_is_active(config):
@@ -1705,7 +1705,7 @@ class TextRecognizer:
             return 0.0, None
 
         low, high = bounds
-        denominator = max(1.0, float(input_height))
+        denominator = max(1e-6, float(denominator))
         ratio = max(0.0, float(cell_width)) / denominator
         if low <= ratio <= high:
             return 0.0, ratio
@@ -1733,18 +1733,73 @@ class TextRecognizer:
             return max(0.0, float(source_end - source_start) * float(input_width) / float(segmentator_width))
         return 0.0
 
+    def _median_cell_width_in_input_pixels(
+        self,
+        cuts: list[int],
+        boundaries: list[int],
+        *,
+        input_width: int,
+        ocr_width: int,
+        segmentator_width: int,
+    ) -> float | None:
+        widths = [
+            self._cell_width_in_input_pixels(
+                start,
+                end,
+                input_width=input_width,
+                ocr_width=ocr_width,
+                source_start=source_start,
+                source_end=source_end,
+                segmentator_width=segmentator_width,
+            )
+            for (start, end), (source_start, source_end) in zip(
+                zip(boundaries, boundaries[1:]),
+                zip(cuts, cuts[1:]),
+            )
+        ]
+        positive_widths = [width for width in widths if width > 0.0]
+        if not positive_widths:
+            return None
+        return float(np.median(np.asarray(positive_widths, dtype=np.float64)))
+
+    def _glyph_width_denominator(
+        self,
+        config: dict[str, Any] | Any | None,
+        *,
+        input_height: int,
+        median_cell_width: float | None,
+    ) -> float:
+        normalize_by = str(self._glyph_prior_field(config, "normalize_by", "input_height")).lower()
+        if normalize_by == "input_height":
+            return max(1.0, float(input_height))
+        if normalize_by == "median_cell_width":
+            return max(1e-6, float(median_cell_width if median_cell_width is not None else input_height))
+        raise ValueError(
+            "glyph_width_prior.normalize_by must be 'input_height' or 'median_cell_width'"
+        )
+
     def _rank_class_scores(
         self,
         class_scores: torch.Tensor,
         *,
         cell_width: float,
         input_height: int,
+        median_cell_width: float | None,
         glyph_width_prior: dict[str, Any] | Any | None,
         top_k: int,
         ocr_weight: float = 1.0,
     ) -> tuple[int, float, float, float | None, list[ClassConfidence]]:
         raw_scores = class_scores.detach().cpu().float().tolist()
         prior_active = self._glyph_width_prior_is_active(glyph_width_prior)
+        denominator = (
+            self._glyph_width_denominator(
+                glyph_width_prior,
+                input_height=input_height,
+                median_cell_width=median_cell_width,
+            )
+            if prior_active
+            else max(1.0, float(input_height))
+        )
         ranked: list[tuple[float, float, int, float, float | None]] = []
         for class_index, raw_score in enumerate(raw_scores):
             if class_index not in self.idx_to_char:
@@ -1752,7 +1807,7 @@ class TextRecognizer:
             prior_score, ratio = self._glyph_width_prior_adjustment(
                 class_index,
                 cell_width,
-                input_height,
+                denominator,
                 glyph_width_prior,
             )
             total_score = float(ocr_weight) * float(raw_score) + prior_score
@@ -1831,6 +1886,13 @@ class TextRecognizer:
         use_coordinate_maps = ocr_source_x is not None and segmentator_source_x is not None
         intervals = list(zip(boundaries, boundaries[1:]))
         source_intervals = list(zip(raw_cuts, raw_cuts[1:]))
+        median_cell_width = self._median_cell_width_in_input_pixels(
+            raw_cuts,
+            boundaries,
+            input_width=input_width,
+            ocr_width=ocr_width,
+            segmentator_width=segmentator_width,
+        )
         top_k = max(1, min(int(top_k), probs.size(0)))
 
         symbols: list[CutDecodedSymbol] = []
@@ -1888,6 +1950,7 @@ class TextRecognizer:
                 scores,
                 cell_width=cell_width,
                 input_height=input_height,
+                median_cell_width=median_cell_width,
                 glyph_width_prior=glyph_width_prior,
                 top_k=top_k,
             )
@@ -2019,6 +2082,29 @@ class TextRecognizer:
         top_k = max(1, min(int(top_k), probs.size(0)))
         min_width = max(1, int(segmentation_result.cut_min_width or 1))
         max_width = max(0, int(segmentation_result.cut_max_width or 0))
+        median_cuts = sorted({
+            position for position in self._segmentation_cut_positions(segmentation_result)
+            if 0 <= position < max(0, segmentator_width)
+        })
+        if len(median_cuts) < 2:
+            median_cuts = candidate_cuts
+            median_boundaries = boundaries
+        else:
+            median_boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
+                median_cuts,
+                segmentator_width=segmentator_width,
+                input_width=input_width,
+                ocr_width=ocr_width,
+                ocr_source_x=ocr_source_x,
+                segmentator_source_x=segmentator_source_x,
+            )
+        median_cell_width = self._median_cell_width_in_input_pixels(
+            median_cuts,
+            median_boundaries,
+            input_width=input_width,
+            ocr_width=ocr_width,
+            segmentator_width=segmentator_width,
+        )
 
         if max_width > 0:
             start_window = max_width
@@ -2083,6 +2169,7 @@ class TextRecognizer:
                 class_scores,
                 cell_width=cell_width,
                 input_height=input_height,
+                median_cell_width=median_cell_width,
                 glyph_width_prior=glyph_width_prior,
                 top_k=top_k,
                 ocr_weight=ocr_weight,
