@@ -72,6 +72,15 @@ def format_candidate_row(candidates: list[ClassConfidence]) -> str:
     return "    ".join(format_confidence_pair(candidate) for candidate in candidates)
 
 
+def format_glyph_width(symbol) -> str:
+    if symbol.glyph_width_ratio is None:
+        return "-"
+    value = f"r={symbol.glyph_width_ratio:.3f}"
+    if symbol.glyph_width_score is not None:
+        value += f" p={symbol.glyph_width_score:+.3f}"
+    return value
+
+
 def raw_timestep_summary(result: RecognitionResult) -> str:
     if not result.raw_indices:
         return "<empty>"
@@ -586,6 +595,7 @@ def save_debug_image(
                     display_char(symbol.char),
                     span,
                     f"{symbol.confidence:.4f}",
+                    format_glyph_width(symbol),
                     format_candidate_row(symbol.candidates),
                 ]
             )
@@ -595,7 +605,7 @@ def save_debug_image(
             width,
             padding,
             f"Final OCR symbols ({cut_decoding_result.decode_method}); one class per selected cut interval",
-            ["#", "answer", "ocr span", "conf", "ordered candidates"],
+            ["#", "answer", "ocr span", "conf", "glyph width", "ordered candidates"],
             cut_rows,
             "no intervals decoded from segmentator cuts",
             font,
