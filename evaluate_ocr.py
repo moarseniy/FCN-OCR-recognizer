@@ -1003,7 +1003,7 @@ def optimize_preprocess(
         current_segmentator_decode_center_fraction = (
             _suggest_float_or_fixed(
                 trial,
-                "segmentator_decode_center_fraction",
+                "center_fraction",
                 segmentator_decode_center_fraction,
                 segmentator_decode_center_fraction_min,
                 segmentator_decode_center_fraction_max,
@@ -1014,7 +1014,7 @@ def optimize_preprocess(
         current_segmentator_decode_min_score_width = (
             _suggest_int_or_fixed(
                 trial,
-                "segmentator_decode_min_score_width",
+                "min_score_width",
                 segmentator_decode_min_score_width,
                 segmentator_decode_min_score_width_min,
                 segmentator_decode_min_score_width_max,
@@ -1077,6 +1077,8 @@ def optimize_preprocess(
         f"segmentator_scale_x=[{segmentator_scale_x_min}, {segmentator_scale_x_max}], "
         f"segmentator_y_pad=[{segmentator_y_pad_min}, {segmentator_y_pad_max}], "
         f"segmentator_x_pad=[{segmentator_x_pad_min}, {segmentator_x_pad_max}], "
+        f"center_fraction=[{segmentator_decode_center_fraction_min}, {segmentator_decode_center_fraction_max}], "
+        f"min_score_width=[{segmentator_decode_min_score_width_min}, {segmentator_decode_min_score_width_max}], "
         f"tune_baseline_line_pad={optuna_tune_baseline_line_pad}, "
         f"tune_baseline_line_pad_px={optuna_tune_baseline_line_pad_px}"
     )
@@ -1150,14 +1152,14 @@ def optimize_preprocess(
         segmentator_decode_center_fraction=float(
             _best_or_fixed(
                 best_params,
-                "segmentator_decode_center_fraction",
+                "center_fraction",
                 segmentator_decode_center_fraction,
             )
         ),
         segmentator_decode_min_score_width=int(
             _best_or_fixed(
                 best_params,
-                "segmentator_decode_min_score_width",
+                "min_score_width",
                 segmentator_decode_min_score_width,
             )
         ),
@@ -1364,8 +1366,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--segmentator-cut-smooth-radius", type=int, default=None)
     parser.add_argument("--segmentator-decode-method", choices=["cells", "dp"], default=None)
     parser.add_argument("--segmentator-decode-top-k", type=int, default=None)
-    parser.add_argument("--segmentator-decode-center-fraction", type=float, default=None)
-    parser.add_argument("--segmentator-decode-min-score-width", type=int, default=None)
+    parser.add_argument("--center-fraction", type=float, default=None)
+    parser.add_argument("--min-score-width", type=int, default=None)
     parser.add_argument("--segmentator-decode-cut-weight", type=float, default=None)
     parser.add_argument("--segmentator-decode-ocr-weight", type=float, default=None)
     parser.add_argument("--segmentator-decode-width-weight", type=float, default=None)
@@ -1478,10 +1480,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--optuna-segmentator-cut-max-width-max", type=int, default=None)
     parser.add_argument("--optuna-segmentator-cut-smooth-radius-min", type=int, default=None)
     parser.add_argument("--optuna-segmentator-cut-smooth-radius-max", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-decode-center-fraction-min", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-decode-center-fraction-max", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-decode-min-score-width-min", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-decode-min-score-width-max", type=int, default=None)
+    parser.add_argument("--optuna-center-fraction-min", type=float, default=None)
+    parser.add_argument("--optuna-center-fraction-max", type=float, default=None)
+    parser.add_argument("--optuna-min-score-width-min", type=int, default=None)
+    parser.add_argument("--optuna-min-score-width-max", type=int, default=None)
     return parse_args_with_evaluation_config(
         parser,
         path_fields=(
@@ -1665,14 +1667,14 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
     )
     args.segmentator_decode_center_fraction = float(
         _first_defined(
-            args.segmentator_decode_center_fraction,
+            args.center_fraction,
             decode.center_fraction if decode is not None else None,
             0.6,
         )
     )
     args.segmentator_decode_min_score_width = int(
         _first_defined(
-            args.segmentator_decode_min_score_width,
+            args.min_score_width,
             decode.min_score_width if decode is not None else None,
             1,
         )
@@ -1881,10 +1883,10 @@ def run_evaluation(
             segmentator_cut_max_width_max=args.optuna_segmentator_cut_max_width_max,
             segmentator_cut_smooth_radius_min=args.optuna_segmentator_cut_smooth_radius_min,
             segmentator_cut_smooth_radius_max=args.optuna_segmentator_cut_smooth_radius_max,
-            segmentator_decode_center_fraction_min=args.optuna_segmentator_decode_center_fraction_min,
-            segmentator_decode_center_fraction_max=args.optuna_segmentator_decode_center_fraction_max,
-            segmentator_decode_min_score_width_min=args.optuna_segmentator_decode_min_score_width_min,
-            segmentator_decode_min_score_width_max=args.optuna_segmentator_decode_min_score_width_max,
+            segmentator_decode_center_fraction_min=args.optuna_center_fraction_min,
+            segmentator_decode_center_fraction_max=args.optuna_center_fraction_max,
+            segmentator_decode_min_score_width_min=args.optuna_min_score_width_min,
+            segmentator_decode_min_score_width_max=args.optuna_min_score_width_max,
             **common_kwargs,
         )
     else:
