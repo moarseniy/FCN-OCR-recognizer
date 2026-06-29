@@ -392,8 +392,31 @@ def _draw_table(
     draw.text((padding, y), title, fill=(20, 20, 20), font=font)
     y += text_height(draw, font) + 10
     table_width = width - padding * 2
-    fixed_widths = [56, 96, 180, 118]
-    column_widths = fixed_widths + [table_width - sum(fixed_widths)]
+    fixed_width_by_header = {
+        "#": 48,
+        "answer": 78,
+        "time": 70,
+        "ocr span": 190,
+        "conf": 82,
+        "score": 82,
+        "glyph width": 150,
+    }
+    flexible_headers = {"ordered candidates"}
+    fixed_total = sum(
+        fixed_width_by_header.get(header, 110)
+        for header in headers
+        if header not in flexible_headers
+    )
+    flexible_count = sum(1 for header in headers if header in flexible_headers)
+    flexible_width = (
+        max(180, table_width - fixed_total) // max(1, flexible_count)
+        if flexible_count
+        else 0
+    )
+    column_widths = [
+        flexible_width if header in flexible_headers else fixed_width_by_header.get(header, 110)
+        for header in headers
+    ]
     row_height = text_height(draw, font) + 12
 
     x = padding
@@ -407,11 +430,17 @@ def _draw_table(
         x += column_width
     y += row_height
 
-    table_rows = rows or [["-", "<empty>", "-", "-", empty_message]]
+    empty_row = ["-"] * len(headers)
+    if len(empty_row) >= 2:
+        empty_row[1] = "<empty>"
+    if empty_row:
+        empty_row[-1] = empty_message
+    table_rows = rows or [empty_row]
     for row_index, row in enumerate(table_rows):
         x = padding
         fill = (255, 255, 255) if row_index % 2 == 0 else (248, 250, 252)
-        for value, column_width in zip(row, column_widths):
+        for column_index, column_width in enumerate(column_widths):
+            value = row[column_index] if column_index < len(row) else ""
             draw.rectangle(
                 (x, y, x + column_width, y + row_height),
                 fill=fill,
