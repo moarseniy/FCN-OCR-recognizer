@@ -40,6 +40,7 @@ class CutDecodedSymbol:
     score_end: int | None = None
     glyph_width_ratio: float | None = None
     glyph_width_score: float | None = None
+    adjusted_score: float | None = None
 
 
 @dataclass(frozen=True)

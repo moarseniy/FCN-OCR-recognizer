@@ -1788,7 +1788,7 @@ class TextRecognizer:
         glyph_width_prior: dict[str, Any] | Any | None,
         top_k: int,
         ocr_weight: float = 1.0,
-    ) -> tuple[int, float, float, float | None, list[ClassConfidence]]:
+    ) -> tuple[int, float, float, float | None, float, list[ClassConfidence]]:
         raw_scores = class_scores.detach().cpu().float().tolist()
         prior_active = self._glyph_width_prior_is_active(glyph_width_prior)
         denominator = (
@@ -1827,7 +1827,7 @@ class TextRecognizer:
             for total_score, raw_score, class_index, _, _ in ranked[:top_k]
         ]
         total_score, raw_score, class_index, prior_score, ratio = ranked[0]
-        return class_index, raw_score, prior_score, ratio, candidates
+        return class_index, raw_score, prior_score, ratio, total_score, candidates
 
     def decode_legacy_with_cuts(
         self,
@@ -1946,7 +1946,14 @@ class TextRecognizer:
                 source_end=source_end,
                 segmentator_width=segmentator_width,
             )
-            class_index, raw_score, glyph_width_score, glyph_width_ratio, candidates = self._rank_class_scores(
+            (
+                class_index,
+                raw_score,
+                glyph_width_score,
+                glyph_width_ratio,
+                adjusted_score,
+                candidates,
+            ) = self._rank_class_scores(
                 scores,
                 cell_width=cell_width,
                 input_height=input_height,
@@ -1974,6 +1981,7 @@ class TextRecognizer:
                     score_end=int(score_end),
                     glyph_width_ratio=glyph_width_ratio,
                     glyph_width_score=glyph_width_score,
+                    adjusted_score=adjusted_score,
                 )
             )
 
@@ -2165,7 +2173,14 @@ class TextRecognizer:
                 source_end=source_end,
                 segmentator_width=segmentator_width,
             )
-            class_index, ocr_score, glyph_width_score, glyph_width_ratio, candidates = self._rank_class_scores(
+            (
+                class_index,
+                ocr_score,
+                glyph_width_score,
+                glyph_width_ratio,
+                adjusted_score,
+                candidates,
+            ) = self._rank_class_scores(
                 class_scores,
                 cell_width=cell_width,
                 input_height=input_height,
@@ -2205,6 +2220,7 @@ class TextRecognizer:
                 score_end=int(score_end),
                 glyph_width_ratio=glyph_width_ratio,
                 glyph_width_score=glyph_width_score,
+                adjusted_score=adjusted_score,
             )
             edge_cache[key] = (edge_score, symbol)
             return edge_cache[key]

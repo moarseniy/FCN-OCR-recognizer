@@ -65,7 +65,10 @@ def resize_debug_image(image: Image.Image, max_width: int) -> Image.Image:
 
 
 def format_confidence_pair(candidate: ClassConfidence) -> str:
-    return f"{candidate.label} {candidate.confidence:.3f}"
+    value = f"{candidate.label} {candidate.confidence:.3f}"
+    if candidate.score is not None:
+        value += f" s={candidate.score:.3f}"
+    return value
 
 
 def format_candidate_row(candidates: list[ClassConfidence]) -> str:
@@ -595,6 +598,7 @@ def save_debug_image(
                     display_char(symbol.char),
                     span,
                     f"{symbol.confidence:.4f}",
+                    "-" if symbol.adjusted_score is None else f"{symbol.adjusted_score:.4f}",
                     format_glyph_width(symbol),
                     format_candidate_row(symbol.candidates),
                 ]
@@ -605,7 +609,7 @@ def save_debug_image(
             width,
             padding,
             f"Final OCR symbols ({cut_decoding_result.decode_method}); one class per selected cut interval",
-            ["#", "answer", "ocr span", "conf", "glyph width", "ordered candidates"],
+            ["#", "answer", "ocr span", "conf", "score", "glyph width", "ordered candidates"],
             cut_rows,
             "no intervals decoded from segmentator cuts",
             font,
