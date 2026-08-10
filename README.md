@@ -3,6 +3,19 @@
 Полносверточный распознаватель строк и простой синтетический генератор строк
 для обучения без ручной разметки.
 
+## Tests
+
+Установка зависимостей для разработки и запуск characterization-тестов:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Набор фиксирует текущие контракты dense-разметки, краевых пробелов,
+геометрических аугментаций и targets, baseline crop, вертикальных cuts,
+cells/DP-декодирования и соответствия inference/evaluation.
+
 ## Synthetic line generator
 
 Генератор находится в `synth_generators/line_generator`.
