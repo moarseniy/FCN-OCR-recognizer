@@ -16,6 +16,17 @@ python -m pytest
 геометрических аугментаций и targets, baseline crop, вертикальных cuts,
 cells/DP-декодирования и соответствия inference/evaluation.
 
+## Dataset metadata
+
+`metadata.yaml` является обязательным контрактом офлайн-датасета. В нём
+зафиксированы точный порядок алфавита, размеры и dtype тензоров, доступные
+targets, manifest чанков и статистика классов. Конфиг обучения не может
+переопределять эти значения.
+
+Поддерживается только текущая версия metadata. Старые датасеты намеренно не
+мигрируются: их нужно заново создать через `generate_dataset`, чтобы чанки и
+контракт гарантированно соответствовали одному и тому же коду генератора.
+
 ## Synthetic line generator
 
 Генератор находится в `synth_generators/line_generator`.
@@ -244,7 +255,7 @@ augmentations:
 Сохранить один пример изображения по указанному тексту:
 
 ```bash
-python synth_generators/line_generator/render_text.py \
+python -m synth_generators.line_generator.render_text \
   --text "ABC 123" \
   --config synth_generators/line_generator/configs/eng_001.yaml \
   --output synthetic_line_preview.png
@@ -655,10 +666,10 @@ workers, checkpoint path, preview-настройки и GPU-аугментаци
 во время обучения удалена: данные нужно сначала сохранить чанками через
 `synth_generators.line_generator.generate_dataset`.
 Алфавит, размеры картинок, число каналов и `max_text_length` берутся из
-`metadata.yaml` в папке чанков. При необходимости эти поля можно явно указать в
-training-конфиге как override. При старте обучения
-`train.py` читает `texts` из датасета, сравнивает символы с effective-алфавитом
-и сохраняет статистику в:
+`metadata.yaml` в папке чанков и не могут переопределяться training-конфигом.
+При старте обучения `train.py` проверяет точный порядок классов и берёт
+статистику текста и dense-разметки из metadata, не перечитывая для этого все
+чанки. Отчёт сохраняется в:
 
 ```text
 checkpoints/alphabet_stats.tsv

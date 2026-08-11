@@ -1,13 +1,15 @@
 # train.py
 from synth_generators.line_generator.chunk_dataset import (
-    CHUNK_METADATA_FILENAME,
-    GENERATION_CONFIG_FILENAME,
     ChunkedLineDataset,
     load_chunk_metadata,
 )
+from synth_generators.line_generator.chunk_metadata import (
+    CHUNK_METADATA_FILENAME,
+    GENERATION_CONFIG_FILENAME,
+    ChunkMetadata,
+)
 from synth_generators.line_generator.dataset import (
     SUPPORTED_AUGMENTATIONS,
-    SingleLineDataset,
     SingleLineDatasetConfig,
 )
 from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
@@ -17,7 +19,6 @@ from synth_generators.line_generator.run_directories import (
     timestamped_directory,
 )
 import argparse
-from collections import Counter
 import math
 import shutil
 import time
@@ -26,7 +27,11 @@ from typing import Any, Callable
 from torch.utils.data import DataLoader, Sampler, Subset, random_split
 
 import torch
-from fcn_architectures import available_architectures, create_model, normalize_architecture_name
+from fcn_architectures import (
+    available_architectures,
+    create_model,
+    normalize_architecture_name,
+)
 from loss import baseline_heatmap_loss, cut_projection_loss, legacy_logreg_loss
 
 from datetime import datetime
@@ -46,16 +51,11 @@ SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 TRAINING_CONFIG_FILENAME = "training_config.yaml"
+
+
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    alphabet: str | None = None
-    space_char: str | None = None
-    max_text_length: int | None = Field(default=None, ge=1)
-    channels: int | None = Field(default=None, ge=1, le=3)
-    image_height: int | None = Field(default=None, ge=16)
-    image_width: int | None = Field(default=None, ge=32)
-    background: int | None = Field(default=None, ge=0, le=255)
     architecture: str = "legacy_fcn"
     architecture_params: dict[str, Any] = Field(default_factory=dict)
 
@@ -125,7 +125,9 @@ class TrainingConfig(BaseModel):
     augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     @classmethod
-    def model_validate_with_paths(cls, data: Any, config_path: str | Path) -> "TrainingConfig":
+    def model_validate_with_paths(
+        cls, data: Any, config_path: str | Path
+    ) -> "TrainingConfig":
         data = dict(data)
         config_dir = Path(config_path).resolve().parent
         for key in ("chunks_dir", "checkpoint_dir", "preview_dir"):
@@ -136,17 +138,6 @@ class TrainingConfig(BaseModel):
                     path = config_dir / path
                 data[key] = str(path.resolve())
         return cls.model_validate(data)
-
-    @field_validator("alphabet")
-    @classmethod
-    def alphabet_must_be_unique(cls, value: str | None) -> str | None:
-        if value is None:
-            return value
-        if not value:
-            raise ValueError("alphabet must not be empty")
-        if len(set(value)) != len(value):
-            raise ValueError("alphabet must contain unique characters")
-        return value
 
     @field_validator("scheduler")
     @classmethod
@@ -185,7 +176,9 @@ class TrainingConfig(BaseModel):
     def legacy_target_mode_must_be_supported(cls, value: str) -> str:
         value = value.lower()
         if value not in SUPPORTED_LEGACY_TARGET_MODES:
-            raise ValueError(f"legacy_target_mode must be one of {SUPPORTED_LEGACY_TARGET_MODES}")
+            raise ValueError(
+                f"legacy_target_mode must be one of {SUPPORTED_LEGACY_TARGET_MODES}"
+            )
         return value
 
     @field_validator("legacy_label_align")
@@ -193,7 +186,9 @@ class TrainingConfig(BaseModel):
     def legacy_label_align_must_be_supported(cls, value: str) -> str:
         value = value.lower()
         if value not in SUPPORTED_LEGACY_LABEL_ALIGNS:
-            raise ValueError(f"legacy_label_align must be one of {SUPPORTED_LEGACY_LABEL_ALIGNS}")
+            raise ValueError(
+                f"legacy_label_align must be one of {SUPPORTED_LEGACY_LABEL_ALIGNS}"
+            )
         return value
 
     @field_validator("cut_projection_loss")
@@ -201,7 +196,9 @@ class TrainingConfig(BaseModel):
     def cut_projection_loss_must_be_supported(cls, value: str) -> str:
         value = value.lower()
         if value not in SUPPORTED_CUT_PROJECTION_LOSSES:
-            raise ValueError(f"cut_projection_loss must be one of {SUPPORTED_CUT_PROJECTION_LOSSES}")
+            raise ValueError(
+                f"cut_projection_loss must be one of {SUPPORTED_CUT_PROJECTION_LOSSES}"
+            )
         return value
 
     @field_validator("baseline_heatmap_loss")
@@ -209,12 +206,16 @@ class TrainingConfig(BaseModel):
     def baseline_heatmap_loss_must_be_supported(cls, value: str) -> str:
         value = value.lower()
         if value not in SUPPORTED_BASELINE_HEATMAP_LOSSES:
-            raise ValueError(f"baseline_heatmap_loss must be one of {SUPPORTED_BASELINE_HEATMAP_LOSSES}")
+            raise ValueError(
+                f"baseline_heatmap_loss must be one of {SUPPORTED_BASELINE_HEATMAP_LOSSES}"
+            )
         return value
 
     @field_validator("augmentation_probabilities")
     @classmethod
-    def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
+    def augmentation_probabilities_must_be_valid(
+        cls, value: dict[str, float]
+    ) -> dict[str, float]:
         unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
         if unknown:
             raise ValueError(f"unknown augmentations: {unknown}")
@@ -225,14 +226,18 @@ class TrainingConfig(BaseModel):
 
     @field_validator("augmentations")
     @classmethod
-    def augmentations_must_be_known(cls, value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    def augmentations_must_be_known(
+        cls, value: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
         unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
         if unknown:
             raise ValueError(f"unknown augmentation configs: {unknown}")
         return value
 
 
-def model_num_classes(alphabet: str, loss_mode: str, legacy_target_mode: str = "dense_symbols") -> int:
+def model_num_classes(
+    alphabet: str, loss_mode: str, legacy_target_mode: str = "dense_symbols"
+) -> int:
     loss_mode = loss_mode.lower()
     if loss_mode == "cut_projection":
         return 1
@@ -260,7 +265,9 @@ def save_checkpoint(
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}_{timestamp}.pth')
+    checkpoint_path = os.path.join(
+        checkpoint_dir, f"checkpoint_epoch_{epoch}_{timestamp}.pth"
+    )
 
     checkpoint = build_checkpoint(
         model,
@@ -279,7 +286,7 @@ def save_checkpoint(
     print(f"Checkpoint saved to {checkpoint_path}")
 
     # Сохраняем также последнюю модель
-    latest_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+    latest_path = os.path.join(checkpoint_dir, "latest_checkpoint.pth")
     torch.save(checkpoint, latest_path)
     print(f"Latest checkpoint saved to {latest_path}")
 
@@ -300,7 +307,9 @@ def build_checkpoint(
 ):
     loss_mode = str(config.get("loss_mode", "legacy_logreg")).lower()
     legacy_target_mode = str(config.get("legacy_target_mode", "dense_symbols")).lower()
-    architecture = normalize_architecture_name(str(config.get("architecture", "legacy_fcn")))
+    architecture = normalize_architecture_name(
+        str(config.get("architecture", "legacy_fcn"))
+    )
     architecture_params = dict(config.get("architecture_params") or {})
     if loss_mode == "cut_projection":
         target_format = "cut_projection"
@@ -309,27 +318,29 @@ def build_checkpoint(
     else:
         target_format = legacy_target_mode
     return {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-        'loss': loss,
-        'val_loss': val_loss,
-        'alphabet': alphabet,
-        'config': config,
-        'model_config': {
-            'architecture': architecture,
-            'architecture_params': architecture_params,
-            'in_channels': config.get('channels', 3),
-            'num_classes': model_num_classes(alphabet, loss_mode, legacy_target_mode),
-            'loss_mode': loss_mode,
-            'legacy_target_mode': legacy_target_mode,
-            'target_format': target_format,
-            'cut_projection_loss': config.get('cut_projection_loss', 'mse'),
-            'baseline_heatmap_loss': config.get('baseline_heatmap_loss', 'bce'),
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict()
+        if scheduler is not None
+        else None,
+        "loss": loss,
+        "val_loss": val_loss,
+        "alphabet": alphabet,
+        "config": config,
+        "model_config": {
+            "architecture": architecture,
+            "architecture_params": architecture_params,
+            "in_channels": config.get("channels", 3),
+            "num_classes": model_num_classes(alphabet, loss_mode, legacy_target_mode),
+            "loss_mode": loss_mode,
+            "legacy_target_mode": legacy_target_mode,
+            "target_format": target_format,
+            "cut_projection_loss": config.get("cut_projection_loss", "mse"),
+            "baseline_heatmap_loss": config.get("baseline_heatmap_loss", "bce"),
         },
-        'train_losses': train_losses,
-        'val_losses': val_losses,
+        "train_losses": train_losses,
+        "val_losses": val_losses,
     }
 
 
@@ -455,7 +466,9 @@ def current_lr(optimizer) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
 
-def step_scheduler(scheduler, config: TrainingConfig, val_loss: float, optimizer) -> tuple[float, float]:
+def step_scheduler(
+    scheduler, config: TrainingConfig, val_loss: float, optimizer
+) -> tuple[float, float]:
     old_lr = current_lr(optimizer)
     if scheduler is None:
         return old_lr, old_lr
@@ -479,17 +492,28 @@ def output_width_for_model(model, width: int) -> int:
         stride = module.stride[1]
         padding = module.padding[1]
         dilation = module.dilation[1]
-        output_width = (output_width + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
+        output_width = (
+            output_width + 2 * padding - dilation * (kernel - 1) - 1
+        ) // stride + 1
     return output_width
 
 
-def validate_model_target_width(model, config: TrainingConfig, dataset_config: SingleLineDatasetConfig) -> None:
+def validate_model_target_width(
+    model, config: TrainingConfig, dataset_config: SingleLineDatasetConfig
+) -> None:
     output_width = output_width_for_model(model, dataset_config.image_width)
-    print(f"Model output width: {output_width} for input width {dataset_config.image_width}")
+    print(
+        f"Model output width: {output_width} for input width {dataset_config.image_width}"
+    )
 
     if config.loss_mode == "baseline_heatmap":
-        print(f"Baseline heatmap target shape: 2x{dataset_config.image_height}x{dataset_config.image_width}")
-        if config.baseline_heatmap_strict_size and output_width != dataset_config.image_width:
+        print(
+            f"Baseline heatmap target shape: 2x{dataset_config.image_height}x{dataset_config.image_width}"
+        )
+        if (
+            config.baseline_heatmap_strict_size
+            and output_width != dataset_config.image_width
+        ):
             raise ValueError(
                 "baseline_heatmap_strict_size requires model output width to match image width, "
                 f"but architecture={config.architecture!r} gives T={output_width} while "
@@ -531,7 +555,11 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
         return
 
     if config.loss_mode == "cut_projection":
-        target_width = dataset_config.image_width - config.cut_projection_crop_left - config.cut_projection_crop_right
+        target_width = (
+            dataset_config.image_width
+            - config.cut_projection_crop_left
+            - config.cut_projection_crop_right
+        )
         if target_width <= 0:
             raise ValueError(
                 "Cut projection target crop is empty: "
@@ -554,7 +582,9 @@ def validate_model_target_width(model, config: TrainingConfig, dataset_config: S
     if config.legacy_target_mode != "dense_symbols":
         return
 
-    target_width = dataset_config.image_width - config.legacy_crop_left - config.legacy_crop_right
+    target_width = (
+        dataset_config.image_width - config.legacy_crop_left - config.legacy_crop_right
+    )
     if target_width <= 0:
         raise ValueError(
             "Legacy target crop is empty: "
@@ -688,18 +718,24 @@ def validate(
     started_at = time.perf_counter()
 
     with torch.no_grad():
-        total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
+        total_batches = (
+            min(max_batches, len(loader)) if max_batches is not None else len(loader)
+        )
         for batch_idx, (imgs, targets) in enumerate(loader, start=1):
             if max_batches is not None and batches >= max_batches:
                 break
 
             imgs, targets = prepare_batch(imgs, targets, device)
             if augmenter is not None:
-                target_format = augmentation_target_format(loss_mode, legacy_target_mode)
+                target_format = augmentation_target_format(
+                    loss_mode, legacy_target_mode
+                )
                 if target_format is None:
                     imgs = augmenter(imgs)
                 else:
-                    imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
+                    imgs, targets = augmenter.augment_batch(
+                        imgs, targets, target_format
+                    )
 
             if preview_saver is not None:
                 preview_saver.save_batch(imgs, targets)
@@ -750,6 +786,7 @@ def validate(
         "seconds": time.perf_counter() - started_at,
     }
 
+
 def train_one_epoch(
     model,
     loader,
@@ -783,7 +820,9 @@ def train_one_epoch(
     samples = 0
     started_at = time.perf_counter()
 
-    total_batches = min(max_batches, len(loader)) if max_batches is not None else len(loader)
+    total_batches = (
+        min(max_batches, len(loader)) if max_batches is not None else len(loader)
+    )
     for batch_idx, (imgs, targets) in enumerate(loader, start=1):
         if max_batches is not None and batches >= max_batches:
             break
@@ -850,6 +889,7 @@ def train_one_epoch(
         "seconds": time.perf_counter() - started_at,
     }
 
+
 def tensor_to_pil(image_tensor):
     image = image_tensor.detach().cpu().float().clamp(0.0, 1.0)
     if image.dim() == 4:
@@ -862,17 +902,23 @@ def tensor_to_pil(image_tensor):
     array = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     return Image.fromarray(array, mode="RGB")
 
+
 def describe_target_for_preview(target):
     if torch.is_floating_point(target):
         if target.dim() == 3 and target.size(0) == 2:
             top_y = int(target[0].amax(dim=1).argmax().item()) if target.numel() else -1
-            bottom_y = int(target[1].amax(dim=1).argmax().item()) if target.numel() else -1
+            bottom_y = (
+                int(target[1].amax(dim=1).argmax().item()) if target.numel() else -1
+            )
             max_value = float(target.max().item()) if target.numel() else 0.0
             return f"<baseline_heatmap top_y={top_y} bottom_y={bottom_y} max={max_value:.3f}>"
         peak_count = int((target > 0.5).sum().item())
         max_value = float(target.max().item()) if target.numel() else 0.0
-        return f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
+        return (
+            f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
+        )
     return "<dense_symbols>"
+
 
 class InputPreviewSaver:
     def __init__(self, output_dir, count):
@@ -906,6 +952,7 @@ class InputPreviewSaver:
             self.labels_file.close()
             self.labels_file = None
             print(f"Saved {self.saved} input previews to {self.output_path}")
+
 
 def append_training_log(log_path, row):
     is_new_file = not log_path.exists()
@@ -954,7 +1001,16 @@ class RandomFixedBatchSampler(Sampler):
 
 
 class ChunkBatchSampler(Sampler):
-    def __init__(self, subset, base_dataset, batch_size, drop_last, shuffle, seed=0, batch_count=None):
+    def __init__(
+        self,
+        subset,
+        base_dataset,
+        batch_size,
+        drop_last,
+        shuffle,
+        seed=0,
+        batch_count=None,
+    ):
         self.subset = subset
         self.base_dataset = base_dataset
         self.batch_size = batch_size
@@ -990,7 +1046,9 @@ class ChunkBatchSampler(Sampler):
         for chunk_id in chunk_ids:
             positions = list(self.groups[chunk_id])
             if self.shuffle:
-                permutation = torch.randperm(len(positions), generator=generator).tolist()
+                permutation = torch.randperm(
+                    len(positions), generator=generator
+                ).tolist()
                 positions = [positions[index] for index in permutation]
 
             for start in range(0, len(positions), self.batch_size):
@@ -1041,7 +1099,9 @@ class ChunkBatchSampler(Sampler):
                     generator=generator,
                     dtype=torch.long,
                 ).tolist()
-            yield [positions[position_index] for position_index in sampled_position_indices]
+            yield [
+                positions[position_index] for position_index in sampled_position_indices
+            ]
 
     def _sample_index(self, subset_position):
         if isinstance(self.subset, Subset):
@@ -1050,7 +1110,9 @@ class ChunkBatchSampler(Sampler):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train the FCN OCR recognizer on synthetic lines.")
+    parser = argparse.ArgumentParser(
+        description="Train the FCN OCR recognizer on synthetic lines."
+    )
     parser.add_argument("--config", required=True, help="Path to training YAML config.")
     return parser.parse_args()
 
@@ -1058,35 +1120,16 @@ def parse_args():
 def load_training_config(config_path: str | Path) -> tuple[TrainingConfig, dict]:
     with Path(config_path).open("r") as file:
         config_data = yaml.safe_load(file)
-    return TrainingConfig.model_validate_with_paths(config_data, config_path), config_data
+    return TrainingConfig.model_validate_with_paths(
+        config_data, config_path
+    ), config_data
 
 
-DATASET_CONFIG_OVERRIDE_FIELDS = (
-    "alphabet",
-    "space_char",
-    "max_text_length",
-    "channels",
-    "image_height",
-    "image_width",
-    "background",
-)
-
-
-def dataset_config_from_training_config(
+def dataset_config_from_chunk_metadata(
     config: TrainingConfig,
-    base_data: dict[str, Any] | None = None,
+    metadata: ChunkMetadata,
 ) -> SingleLineDatasetConfig:
-    data = {
-        key: value
-        for key, value in (base_data or {}).items()
-        if key in SingleLineDatasetConfig.model_fields
-    }
-
-    for field_name in DATASET_CONFIG_OVERRIDE_FIELDS:
-        value = getattr(config, field_name)
-        if field_name in config.model_fields_set and value is not None:
-            data[field_name] = value
-
+    data = metadata.dataset_config_data()
     data.update(
         {
             "seed": config.seed,
@@ -1095,13 +1138,12 @@ def dataset_config_from_training_config(
         }
     )
 
-    dataset_config = SingleLineDatasetConfig.model_validate(data)
-    if dataset_config.alphabet is None:
-        dataset_config = dataset_config.model_copy(update={"alphabet": dataset_config.sample_alphabet})
-    return dataset_config
+    return SingleLineDatasetConfig.model_validate(data)
 
 
-def effective_training_config_data(config: TrainingConfig, dataset_config: SingleLineDatasetConfig) -> dict:
+def effective_training_config_data(
+    config: TrainingConfig, dataset_config: SingleLineDatasetConfig
+) -> dict:
     data = config.model_dump()
     data.update(
         {
@@ -1118,7 +1160,9 @@ def effective_training_config_data(config: TrainingConfig, dataset_config: Singl
     return data
 
 
-def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
+def load_dataset_from_config(
+    config: TrainingConfig,
+) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
     if config.loss_mode == "cut_projection":
         target_format = "cut_projection"
     elif config.loss_mode == "baseline_heatmap":
@@ -1137,22 +1181,8 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
     chunks_dir = resolve_chunks_dir(config.chunks_dir)
     config.chunks_dir = str(chunks_dir)
     metadata = load_chunk_metadata(chunks_dir)
-    dataset_config = dataset_config_from_training_config(config, metadata)
-    if target_format == "dense_symbols" and not metadata.get("dense_targets", False):
-        raise ValueError(
-            "Training config requests legacy_target_mode=dense_symbols, but chunk metadata says "
-            "dense_targets are absent. Regenerate the dataset with save_dense_targets: true."
-        )
-    if target_format == "cut_projection" and not metadata.get("cut_projection_targets", False):
-        raise ValueError(
-            "Training config requests loss_mode=cut_projection, but chunk metadata says "
-            "cut_projection_targets are absent. Regenerate the dataset with save_cut_projection_targets: true."
-        )
-    if target_format == "baseline_heatmap" and not metadata.get("baseline_targets", False):
-        raise ValueError(
-            "Training config requests loss_mode=baseline_heatmap, but chunk metadata says "
-            "baseline_targets are absent. Regenerate the dataset with save_baseline_targets: true."
-        )
+    metadata.require_target(target_format)
+    dataset_config = dataset_config_from_chunk_metadata(config, metadata)
     dataset = ChunkedLineDataset(
         chunks_dir,
         cache_size=config.chunk_cache_size,
@@ -1160,10 +1190,10 @@ def load_dataset_from_config(config: TrainingConfig) -> tuple[torch.utils.data.D
         target_format=target_format,
     )
     print(f"Dataset source: chunks ({chunks_dir})")
-    if metadata:
-        print(f"Dataset metadata: {chunks_dir / CHUNK_METADATA_FILENAME}")
-    else:
-        print("Dataset metadata: not found; using training config/defaults")
+    print(
+        f"Dataset metadata: {chunks_dir / CHUNK_METADATA_FILENAME} "
+        f"(format={metadata.format}, version={metadata.version})"
+    )
     return dataset, dataset_config
 
 
@@ -1222,63 +1252,59 @@ def printable_char(char: str) -> str:
     return char
 
 
-def iter_dataset_texts(dataset):
-    if hasattr(dataset, "iter_texts"):
-        yield from dataset.iter_texts()
-        return
-
-    if isinstance(dataset, SingleLineDataset):
-        for index in range(len(dataset)):
-            yield dataset.generate_sample_from_index(index).text
-        return
-
-    raise TypeError("Dataset does not expose texts for alphabet validation")
-
-
-def validate_and_log_alphabet(dataset, alphabet: str, max_text_length: int, checkpoint_dir: str | Path) -> None:
-    counts = Counter()
-    sample_count = 0
-    max_observed_length = 0
-
-    for text in iter_dataset_texts(dataset):
-        sample_count += 1
-        max_observed_length = max(max_observed_length, len(text))
-        counts.update(text)
-
-    alphabet_set = set(alphabet)
-    data_chars = set(counts)
-    missing_chars = sorted(data_chars - alphabet_set)
-    unused_chars = [char for char in alphabet if char not in data_chars]
+def validate_and_log_alphabet(
+    dataset: ChunkedLineDataset,
+    alphabet: str,
+    max_text_length: int,
+    checkpoint_dir: str | Path,
+) -> None:
+    metadata = dataset.metadata
+    if alphabet != metadata.alphabet:
+        raise ValueError(
+            "Training alphabet order differs from chunk metadata; class indices would be corrupted"
+        )
+    text_counts = metadata.text_char_counts
+    if text_counts is None or metadata.max_observed_text_length is None:
+        raise ValueError("Current metadata must contain text statistics")
+    dense_counts = metadata.dense_class_counts
+    unused_chars = [char for char in alphabet if text_counts.get(char, 0) == 0]
 
     stats_path = Path(checkpoint_dir) / "alphabet_stats.tsv"
     with stats_path.open("w") as file:
-        file.write("char\tcount\tin_training_alphabet\n")
-        for char in alphabet:
-            file.write(f"{printable_char(char)}\t{counts.get(char, 0)}\t1\n")
-        for char in missing_chars:
-            file.write(f"{printable_char(char)}\t{counts[char]}\t0\n")
+        file.write("class_index\tchar\ttext_count\tdense_target_count\n")
+        for class_index, char in enumerate(alphabet):
+            dense_count = "" if dense_counts is None else str(dense_counts[class_index])
+            file.write(
+                f"{class_index}\t{printable_char(char)}\t{text_counts.get(char, 0)}\t{dense_count}\n"
+            )
 
     print("\nAlphabet/data check:")
-    print(f"  Samples scanned:        {sample_count}")
-    print(f"  Unique chars in data:   {len(data_chars)}")
-    print(f"  Max text length:        {max_observed_length}")
+    print(f"  Metadata samples:       {metadata.samples}")
+    print("  Alphabet order:         exact metadata order")
+    print(
+        f"  Unique chars in text:   {sum(count > 0 for count in text_counts.values())}"
+    )
+    print(f"  Max text length:        {metadata.max_observed_text_length}")
     print(f"  Stats file:             {stats_path}")
     print("  Per-char counts:")
-    for char in alphabet:
-        print(f"    {printable_char(char):>9}: {counts.get(char, 0)}")
+    for class_index, char in enumerate(alphabet):
+        dense_suffix = (
+            "" if dense_counts is None else f", dense={dense_counts[class_index]}"
+        )
+        print(
+            f"    [{class_index:>3}] {printable_char(char):>9}: "
+            f"text={text_counts.get(char, 0)}{dense_suffix}"
+        )
 
     if unused_chars:
         printable = ", ".join(printable_char(char) for char in unused_chars)
         print(f"  Alphabet chars absent in data: {printable}")
 
-    if max_observed_length > max_text_length:
+    if metadata.max_observed_text_length > max_text_length:
         raise ValueError(
-            f"Data contains text length {max_observed_length}, "
+            f"Data contains text length {metadata.max_observed_text_length}, "
             f"but training max_text_length is {max_text_length}"
         )
-    if missing_chars:
-        printable = ", ".join(printable_char(char) for char in missing_chars)
-        raise ValueError(f"Training alphabet is missing data chars: {printable}")
 
 
 EpochCallback = Callable[[dict[str, Any]], None]
@@ -1334,7 +1360,9 @@ def save_experiment_config_snapshots(
     print(f"Training config saved to {training_snapshot}")
 
     if chunks_dir is None:
-        print("Warning: generation config snapshot cannot be saved because chunks_dir is not set")
+        print(
+            "Warning: generation config snapshot cannot be saved because chunks_dir is not set"
+        )
         return training_snapshot, None
 
     chunks_dir = Path(chunks_dir)
@@ -1376,10 +1404,12 @@ def run_training(
 
     if args.chunks_dir is not None:
         args.chunks_dir = str(resolve_chunks_dir(args.chunks_dir))
-    training_config_snapshot, generation_config_snapshot = save_experiment_config_snapshots(
-        config_path,
-        args.chunks_dir,
-        checkpoint_dir,
+    training_config_snapshot, generation_config_snapshot = (
+        save_experiment_config_snapshots(
+            config_path,
+            args.chunks_dir,
+            checkpoint_dir,
+        )
     )
 
     dataset, dataset_config = load_dataset_from_config(args)
@@ -1387,7 +1417,9 @@ def run_training(
     print(f"Dataset ready! Total samples: {len(dataset)}")
 
     log_path = checkpoint_dir / "training_log.tsv"
-    validate_and_log_alphabet(dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir)
+    validate_and_log_alphabet(
+        dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir
+    )
 
     if not 0.0 < args.val_fraction < 1.0:
         raise ValueError("val_fraction must be between 0 and 1")
@@ -1438,7 +1470,9 @@ def run_training(
     else:
         print("Legacy target mode: ", args.legacy_target_mode)
         if args.legacy_target_mode == "dense_symbols":
-            print(f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]")
+            print(
+                f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]"
+            )
             print(
                 f"Legacy label align: {args.legacy_label_align} "
                 f"min_majority={args.legacy_label_min_majority:g}"
@@ -1485,9 +1519,13 @@ def run_training(
     print(f"  Train batches:   {train_batches}")
     print(f"  Val batches:     {val_batches}")
     if args.max_train_batches is not None:
-        print(f"  Train limit:     {min(args.max_train_batches, train_batches)} batches/epoch")
+        print(
+            f"  Train limit:     {min(args.max_train_batches, train_batches)} batches/epoch"
+        )
     if args.max_val_batches is not None:
-        print(f"  Val limit:       {min(args.max_val_batches, val_batches)} batches/epoch")
+        print(
+            f"  Val limit:       {min(args.max_val_batches, val_batches)} batches/epoch"
+        )
 
     train_preview_saver = None
     val_preview_saver = None
@@ -1503,7 +1541,9 @@ def run_training(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device ", device)
-    train_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augmentations else None
+    train_augmenter = (
+        GpuTextAugmenter(dataset_config) if args.gpu_augmentations else None
+    )
     val_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augment_val else None
     print("GPU augmentations: ", "train" if train_augmenter is not None else "off")
     if val_augmenter is not None:
@@ -1656,7 +1696,9 @@ def run_training(
                 f"  val   loss={val_loss:.6f} "
                 f"({val_stats['batches']} batches, {val_stats['samples']} samples, {val_stats['seconds']:.1f}s)"
             )
-            print(f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s")
+            print(
+                f"  diff={abs(train_loss - val_loss):.6f} lr={lr:.3g} epoch_time={epoch_seconds:.1f}s"
+            )
             if lr != old_lr:
                 print(f"  scheduler changed lr: {old_lr:.3g} -> {lr:.3g}")
 

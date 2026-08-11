@@ -12,16 +12,11 @@ from PIL import Image, ImageDraw, ImageFont
 import torch
 import yaml
 
-try:
-    from .chunk_dataset import load_chunk_metadata
-    from .dataset import SingleLineDataset, SingleLineDatasetConfig
-    from .gpu_augmentations import GpuTextAugmenter
-    from .run_directories import is_timestamped_directory, latest_timestamped_directory
-except ImportError:
-    from chunk_dataset import load_chunk_metadata
-    from dataset import SingleLineDataset, SingleLineDatasetConfig
-    from gpu_augmentations import GpuTextAugmenter
-    from run_directories import is_timestamped_directory, latest_timestamped_directory
+from .chunk_dataset import load_torch_chunk, validate_chunk_payload
+from .chunk_metadata import load_chunk_metadata
+from .dataset import SingleLineDataset, SingleLineDatasetConfig
+from .gpu_augmentations import GpuTextAugmenter
+from .run_directories import is_timestamped_directory, latest_timestamped_directory
 
 
 def tensor_to_image(sample_tensor: torch.Tensor) -> Image.Image:
@@ -34,7 +29,9 @@ def tensor_to_image(sample_tensor: torch.Tensor) -> Image.Image:
             if array.shape[2] == 1:
                 array = array[:, :, 0]
         else:
-            raise ValueError(f"Unsupported uint8 image tensor shape: {tuple(tensor.shape)}")
+            raise ValueError(
+                f"Unsupported uint8 image tensor shape: {tuple(tensor.shape)}"
+            )
         return Image.fromarray(array)
 
     if tensor.ndim != 3:
@@ -75,11 +72,15 @@ def dense_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
         return None
     output = target.detach().cpu().long()
     if output.ndim != 1:
-        raise ValueError(f"dense target must have shape (W,), got {tuple(output.shape)}")
+        raise ValueError(
+            f"dense target must have shape (W,), got {tuple(output.shape)}"
+        )
     return output.contiguous()
 
 
-def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLineDatasetConfig:
+def load_config(
+    config_path: Path, chunks_dir: Path | None = None
+) -> SingleLineDatasetConfig:
     with config_path.open("r") as file:
         raw_config = yaml.safe_load(file) or {}
     if not isinstance(raw_config, dict):
@@ -92,28 +93,53 @@ def load_config(config_path: Path, chunks_dir: Path | None = None) -> SingleLine
                 "A training config can be used only with --chunks-dir; "
                 "chunk metadata provides its alphabet and image dimensions"
             )
-        from train import dataset_config_from_training_config, load_training_config
+        from train import dataset_config_from_chunk_metadata, load_training_config
 
         training_config, _ = load_training_config(config_path)
-        return dataset_config_from_training_config(
+        return dataset_config_from_chunk_metadata(
             training_config,
             load_chunk_metadata(chunks_dir),
         )
 
-    config_data = {}
-    if chunks_dir is not None:
-        config_data.update(
-            {
-                key: value
-                for key, value in load_chunk_metadata(chunks_dir).items()
-                if key in SingleLineDatasetConfig.model_fields
-            }
+    supplied_config = SingleLineDatasetConfig.model_validate_with_paths(
+        raw_config, config_path
+    )
+    if chunks_dir is None:
+        return supplied_config
+
+    metadata = load_chunk_metadata(chunks_dir)
+    immutable_fields = (
+        "alphabet",
+        "sample_alphabet",
+        "space_char",
+        "image_height",
+        "image_width",
+        "channels",
+        "background",
+    )
+    mismatches = []
+    for field_name in immutable_fields:
+        supplied_value = getattr(supplied_config, field_name)
+        metadata_value = getattr(metadata, field_name)
+        if supplied_value != metadata_value:
+            mismatches.append(
+                f"{field_name}: config={supplied_value!r}, metadata={metadata_value!r}"
+            )
+    if mismatches:
+        raise ValueError(
+            "Generation config does not match the chunk contract: "
+            + "; ".join(mismatches)
         )
-    config_data.update(raw_config)
-    config = SingleLineDatasetConfig.model_validate_with_paths(config_data, config_path)
-    if config.alphabet is None:
-        config = config.model_copy(update={"alphabet": config.sample_alphabet})
-    return config
+
+    config_data = metadata.dataset_config_data()
+    config_data.update(
+        {
+            "seed": supplied_config.seed,
+            "augmentation_probabilities": supplied_config.augmentation_probabilities,
+            "augmentations": supplied_config.augmentations,
+        }
+    )
+    return SingleLineDatasetConfig.model_validate(config_data)
 
 
 def resolve_chunks_dir(chunks_dir: Path) -> Path:
@@ -155,23 +181,36 @@ def apply_augmentations(
     batch = image.unsqueeze(0).to(device)
     augmented, metadata = augmenter.augment_with_metadata(batch)
     if dense_target is not None:
-        dense_target = augmenter.apply_metadata_to_targets(
-            dense_target.unsqueeze(0).to(device),
-            "dense_symbols",
-            metadata,
-        )[0].detach().cpu().long()
+        dense_target = (
+            augmenter.apply_metadata_to_targets(
+                dense_target.unsqueeze(0).to(device),
+                "dense_symbols",
+                metadata,
+            )[0]
+            .detach()
+            .cpu()
+            .long()
+        )
     if cut_projection_target is not None:
-        cut_projection_target = augmenter.apply_metadata_to_targets(
-            cut_projection_target.unsqueeze(0).to(device),
-            "cut_projection",
-            metadata,
-        )[0].detach().cpu()
+        cut_projection_target = (
+            augmenter.apply_metadata_to_targets(
+                cut_projection_target.unsqueeze(0).to(device),
+                "cut_projection",
+                metadata,
+            )[0]
+            .detach()
+            .cpu()
+        )
     if baseline_target is not None:
-        baseline_target = augmenter.apply_metadata_to_targets(
-            baseline_target.unsqueeze(0).to(device),
-            "baseline_heatmap",
-            metadata,
-        )[0].detach().cpu()
+        baseline_target = (
+            augmenter.apply_metadata_to_targets(
+                baseline_target.unsqueeze(0).to(device),
+                "baseline_heatmap",
+                metadata,
+            )[0]
+            .detach()
+            .cpu()
+        )
     return (
         augmented[0].detach().cpu(),
         dense_target,
@@ -192,55 +231,47 @@ def load_chunk_sample(
     torch.Tensor | None,
     dict[str, Any],
 ]:
-    chunk_paths = sorted(chunks_dir.glob("chunk_*.pt"))
-    if not chunk_paths:
-        raise FileNotFoundError(f"No chunk_*.pt files found in {chunks_dir}")
+    metadata = load_chunk_metadata(chunks_dir)
 
     if index < 0:
-        total = sum(read_chunk_size(path) for path in chunk_paths)
-        index += total
+        index += metadata.samples
+    if index < 0 or index >= metadata.samples:
+        raise IndexError(f"Chunk sample index out of range: {index}")
 
     offset = 0
-    for path in chunk_paths:
+    for entry in metadata.chunks:
+        path = chunks_dir / entry.file
+        if not offset <= index < offset + entry.samples:
+            offset += entry.samples
+            continue
         chunk = load_torch_chunk(path)
+        validate_chunk_payload(chunk, path, metadata, entry)
         images = chunk["images"]
         texts = chunk["texts"]
-        sample_count = int(images.shape[0])
-        if offset <= index < offset + sample_count:
-            local_index = index - offset
-            dense_targets = chunk.get("dense_targets")
-            cut_targets = chunk.get("cut_projection_targets")
-            baseline_targets = chunk.get("baseline_targets")
-            return (
-                images[local_index],
-                str(texts[local_index]),
-                dense_targets[local_index] if dense_targets is not None else None,
-                cut_targets[local_index] if cut_targets is not None else None,
-                baseline_targets[local_index] if baseline_targets is not None else None,
-                {
-                    "chunk_file": str(path),
-                    "chunk_local_index": local_index,
-                    "global_index": index,
-                },
-            )
-        offset += sample_count
+        local_index = index - offset
+        dense_targets = chunk.get("dense_targets")
+        cut_targets = chunk.get("cut_projection_targets")
+        baseline_targets = chunk.get("baseline_targets")
+        return (
+            images[local_index],
+            str(texts[local_index]),
+            dense_targets[local_index] if dense_targets is not None else None,
+            cut_targets[local_index] if cut_targets is not None else None,
+            baseline_targets[local_index] if baseline_targets is not None else None,
+            {
+                "chunk_file": str(path),
+                "chunk_local_index": local_index,
+                "global_index": index,
+            },
+        )
 
     raise IndexError(f"Chunk sample index out of range: {index}")
 
 
-def read_chunk_size(path: Path) -> int:
-    return int(load_torch_chunk(path)["images"].shape[0])
-
-
-def load_torch_chunk(path: Path) -> dict[str, Any]:
-    try:
-        return torch.load(path, map_location="cpu", weights_only=False, mmap=True)
-    except (RuntimeError, TypeError):
-        return torch.load(path, map_location="cpu", weights_only=False)
-
-
 def normalize_text(text: str, config: SingleLineDatasetConfig) -> str:
-    return config.space_char.join(part for part in text.split(config.space_char) if part)
+    return config.space_char.join(
+        part for part in text.split(config.space_char) if part
+    )
 
 
 def _blend_line_mask(
@@ -283,7 +314,9 @@ def _projection_centerlines(projection: np.ndarray, height: int) -> np.ndarray:
     run_start = 0
     while run_start < indices.size:
         run_end = run_start
-        while run_end + 1 < indices.size and indices[run_end + 1] == indices[run_end] + 1:
+        while (
+            run_end + 1 < indices.size and indices[run_end + 1] == indices[run_end] + 1
+        ):
             run_end += 1
         run = indices[run_start : run_end + 1]
         values = projection[run]
@@ -303,8 +336,12 @@ def describe_dense_target(
     if dense is None:
         return [], False, False
     dense_array = dense.numpy()
-    if dense_array.size and (dense_array.min() < 0 or dense_array.max() >= len(alphabet)):
-        raise ValueError("dense target contains a class index outside the configured alphabet")
+    if dense_array.size and (
+        dense_array.min() < 0 or dense_array.max() >= len(alphabet)
+    ):
+        raise ValueError(
+            "dense target contains a class index outside the configured alphabet"
+        )
 
     runs: list[dict[str, Any]] = []
     run_start = 0
@@ -387,7 +424,9 @@ def overlay_full_markup(
         cut_lines = _projection_centerlines(cut_projection.numpy(), height)
         _blend_line_mask(image_array, cut_lines, (30, 230, 80), opacity=0.92)
 
-    return Image.fromarray(np.clip(image_array, 0, 255).astype(np.uint8)), markup_metadata
+    return Image.fromarray(
+        np.clip(image_array, 0, 255).astype(np.uint8)
+    ), markup_metadata
 
 
 def annotation_lines(metadata: dict[str, Any]) -> list[str]:
@@ -401,13 +440,17 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
             f"{run['char']}[{run['start']}:{run['end']}]" for run in dense_runs
         )
         lines.append(f"dense: {run_text}")
-    lines.extend([
-        f"image: {metadata['image_size'][0]}x{metadata['image_size'][1]}",
-        f"seed: {metadata['seed']}",
-        f"device: {metadata['device']}",
-    ])
+    lines.extend(
+        [
+            f"image: {metadata['image_size'][0]}x{metadata['image_size'][1]}",
+            f"seed: {metadata['seed']}",
+            f"device: {metadata['device']}",
+        ]
+    )
     if metadata["source"] == "chunk":
-        lines.append(f"chunk: {metadata['chunk_file']}[{metadata['chunk_local_index']}]")
+        lines.append(
+            f"chunk: {metadata['chunk_file']}[{metadata['chunk_local_index']}]"
+        )
 
     markup = metadata.get("full_markup")
     if markup is not None:
@@ -430,7 +473,9 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     return lines
 
 
-def annotate_image(image: Image.Image, metadata: dict[str, Any], canvas_width: int) -> Image.Image:
+def annotate_image(
+    image: Image.Image, metadata: dict[str, Any], canvas_width: int
+) -> Image.Image:
     font = ImageFont.load_default()
     draw_probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     padding = 12
@@ -440,7 +485,9 @@ def annotate_image(image: Image.Image, metadata: dict[str, Any], canvas_width: i
     max_chars = max(24, (canvas_width - padding * 2) // char_width)
     wrapped_lines: list[str] = []
     for line in annotation_lines(metadata):
-        wrapped = textwrap.wrap(line, width=max_chars, subsequent_indent="    ") or [line]
+        wrapped = textwrap.wrap(line, width=max_chars, subsequent_indent="    ") or [
+            line
+        ]
         wrapped_lines.extend(wrapped)
 
     text_bbox = draw_probe.textbbox((0, 0), "Ag", font=font)
@@ -448,14 +495,19 @@ def annotate_image(image: Image.Image, metadata: dict[str, Any], canvas_width: i
     image_band_height = image.height + padding * 2
     panel_height = padding * 2 + line_height * len(wrapped_lines)
 
-    canvas = Image.new("RGB", (canvas_width, image_band_height + panel_height), color=(245, 245, 245))
+    canvas = Image.new(
+        "RGB", (canvas_width, image_band_height + panel_height), color=(245, 245, 245)
+    )
     canvas.paste(image.convert("RGB"), (padding, padding))
     draw = ImageDraw.Draw(canvas)
     draw.rectangle(
         (padding - 1, padding - 1, padding + image.width, padding + image.height),
         outline=(180, 180, 180),
     )
-    draw.rectangle((0, image_band_height, canvas_width, image_band_height + panel_height), fill=(245, 245, 245))
+    draw.rectangle(
+        (0, image_band_height, canvas_width, image_band_height + panel_height),
+        fill=(245, 245, 245),
+    )
 
     y = image_band_height + padding
     for line in wrapped_lines:
@@ -465,29 +517,56 @@ def annotate_image(image: Image.Image, metadata: dict[str, Any], canvas_width: i
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render an OCR line from text or from an offline chunk sample.")
-    parser.add_argument("--text", help="Text to render. Mutually exclusive with --chunks-dir.")
+    parser = argparse.ArgumentParser(
+        description="Render an OCR line from text or from an offline chunk sample."
+    )
+    parser.add_argument(
+        "--text", help="Text to render. Mutually exclusive with --chunks-dir."
+    )
     parser.add_argument("--chunks-dir", help="Directory with offline chunk_*.pt files.")
-    parser.add_argument("--index", type=int, default=0, help="Sample index for --chunks-dir.")
+    parser.add_argument(
+        "--index", type=int, default=0, help="Sample index for --chunks-dir."
+    )
     parser.add_argument(
         "--config",
         required=True,
         help="Generation config, or training config when rendering from --chunks-dir.",
     )
-    parser.add_argument("--output", default="rendered_text.png", help="Output image path.")
+    parser.add_argument(
+        "--output", default="rendered_text.png", help="Output image path."
+    )
     parser.add_argument(
         "--metadata-output",
         default=None,
         help="Output JSON path. Defaults to the output image path with .json suffix.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="Optional random seed for render/augmentation sampling.")
-    parser.add_argument("--device", default="auto", help="Augmentation device: auto, cpu, cuda, cuda:0, ...")
-    parser.add_argument("--canvas-width", type=int, default=900, help="Annotated output width without scaling the source crop.")
-    parser.add_argument("--annotate", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--no-augmentations", action="store_true", help="Disable render-time augmentations.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for render/augmentation sampling.",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Augmentation device: auto, cpu, cuda, cuda:0, ...",
+    )
+    parser.add_argument(
+        "--canvas-width",
+        type=int,
+        default=900,
+        help="Annotated output width without scaling the source crop.",
+    )
+    parser.add_argument(
+        "--annotate", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--no-augmentations",
+        action="store_true",
+        help="Disable render-time augmentations.",
+    )
     parser.add_argument(
         "--show-full-markup",
-        "--show-full--markup",
         action="store_true",
         help="Overlay available cut-projection and top/bottom baseline targets on the rendered image.",
     )
@@ -594,11 +673,17 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_image = annotate_image(image, metadata, args.canvas_width) if args.annotate else image
+    output_image = (
+        annotate_image(image, metadata, args.canvas_width) if args.annotate else image
+    )
     metadata["output_size"] = [output_image.width, output_image.height]
     output_image.save(output_path)
 
-    metadata_path = Path(args.metadata_output) if args.metadata_output else output_path.with_suffix(".json")
+    metadata_path = (
+        Path(args.metadata_output)
+        if args.metadata_output
+        else output_path.with_suffix(".json")
+    )
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     with metadata_path.open("w") as file:
         json.dump(metadata, file, ensure_ascii=False, indent=2)
@@ -610,8 +695,7 @@ def main() -> None:
         print(
             "Dense: "
             + " ".join(
-                f"{run['char']}[{run['start']}:{run['end']}]"
-                for run in dense_runs
+                f"{run['char']}[{run['start']}:{run['end']}]" for run in dense_runs
             )
         )
     print(f"Image size: {image.width}x{image.height}")
