@@ -2,57 +2,30 @@ import torch
 import torch.nn.functional as F
 
 
-def legacy_dense_symbols_to_labels(
-    symbols: torch.Tensor,
+def fcn_ocr_targets_to_labels(
+    targets: torch.Tensor,
     crop_left: int = 6,
     crop_right: int = 5,
 ) -> torch.Tensor:
     """
-    Recreates the label side of the old graph:
-
-      syms -> max_pool2d(kernel=(4, 1), stride=(4, 1), padding=(1, 0))
-           -> cropX([crop_left, -crop_right])
-
-    Expected input is a dense symbol target with class indices:
-      - (B, W) already reduced over height
-      - (B, 1, H, W) or (B, H, W)
+    Crops per-input-column OCR class targets before temporal alignment.
 
     The returned tensor has shape (B, T_labels).
     """
     if crop_left < 0 or crop_right < 0:
         raise ValueError("crop_left and crop_right must be non-negative")
 
-    if symbols.dim() == 2:
-        labels = symbols.long()
-    else:
-        if symbols.dim() == 3:
-            symbols = symbols.unsqueeze(1)
-        if symbols.dim() != 4:
-            raise ValueError(
-                "dense symbol targets must have shape (B, W), (B, H, W), or (B, 1, H, W), "
-                f"got {tuple(symbols.shape)}"
-            )
-        if symbols.size(1) != 1:
-            raise ValueError(
-                "dense symbol targets must contain one channel with class indices; "
-                f"got {symbols.size(1)} channels"
-            )
-
-        pooled = F.max_pool2d(
-            symbols.float(),
-            kernel_size=(4, 1),
-            stride=(4, 1),
-            padding=(1, 0),
+    if targets.dim() != 2:
+        raise ValueError(
+            f"FCN OCR targets must have shape (B, W), got {tuple(targets.shape)}"
         )
-        labels = pooled.squeeze(1)
-        if labels.dim() == 3:
-            labels = labels.max(dim=1).values
+    labels = targets.long()
 
     width = labels.size(1)
     right = width - crop_right if crop_right else width
     if crop_left >= right:
         raise ValueError(
-            f"legacy symbol crop [{crop_left}, -{crop_right}] is empty for label width {width}"
+            f"OCR target crop [{crop_left}, -{crop_right}] is empty for label width {width}"
         )
     return labels[:, crop_left:right].long()
 
@@ -61,7 +34,6 @@ def _align_logits_and_labels(
     logits: torch.Tensor,
     labels: torch.Tensor,
     strict_width: bool,
-    label_align: str = "majority_bins",
     label_min_majority: float = 0.6,
     ignore_index: int = -100,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -79,32 +51,20 @@ def _align_logits_and_labels(
 
     if strict_width:
         raise ValueError(
-            f"legacy_logreg width mismatch: logits T={logits_width}, labels T={label_width}"
+            f"fcn_ocr width mismatch: logits T={logits_width}, labels T={label_width}"
         )
 
     if label_width <= 0 or logits_width <= 0:
-        raise ValueError(f"legacy_logreg got empty width: logits T={logits_width}, labels T={label_width}")
+        raise ValueError(f"fcn_ocr got empty width: logits T={logits_width}, labels T={label_width}")
 
-    label_align = label_align.lower()
-    if label_align == "legacy_crop_resample":
-        positions = (
-            (torch.arange(logits_width, device=labels.device, dtype=torch.float32) + 0.5)
-            * float(label_width)
-            / float(logits_width)
-        ).floor().long().clamp(max=label_width - 1)
-        return logits, labels[:, positions]
-
-    if label_align == "majority_bins":
-        labels = _align_labels_by_majority_bins(
-            labels,
-            target_width=logits_width,
-            num_classes=logits.size(1),
-            min_majority=label_min_majority,
-            ignore_index=ignore_index,
-        )
-        return logits, labels
-
-    raise ValueError("label_align must be 'majority_bins' or 'legacy_crop_resample'")
+    labels = _align_labels_by_majority_bins(
+        labels,
+        target_width=logits_width,
+        num_classes=logits.size(1),
+        min_majority=label_min_majority,
+        ignore_index=ignore_index,
+    )
+    return logits, labels
 
 
 def _align_labels_by_majority_bins(
@@ -325,43 +285,35 @@ def baseline_heatmap_loss(
     return per_pixel.mean()
 
 
-def legacy_logreg_loss(
+def fcn_ocr_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
-    target_mode: str = "dense_symbols",
     crop_left: int = 6,
     crop_right: int = 5,
     strict_width: bool = False,
-    label_align: str = "majority_bins",
     label_min_majority: float = 0.6,
     space_index: int | None = None,
     space_weight: float = 1.0,
     ignore_index: int = -100,
 ) -> torch.Tensor:
     """
-    Dense classification loss, analogous to the old final+softmax+logreg branch.
+    Per-timestep classification loss for the FCN OCR output.
 
     logits: (B, C, T)
 
-    target_mode:
-      - "dense_symbols": targets are old-style symbol maps and are aligned by
-        maxpool + cropX([crop_left, -crop_right]).
+    Targets contain one OCR class per input X-position and are cropped before
+    majority-bin alignment with the model output sequence.
     """
-    target_mode = target_mode.lower()
-    if target_mode == "dense_symbols":
-        labels = legacy_dense_symbols_to_labels(
-            targets.to(device=logits.device),
-            crop_left=crop_left,
-            crop_right=crop_right,
-        )
-    else:
-        raise ValueError("target_mode must be 'dense_symbols'")
+    labels = fcn_ocr_targets_to_labels(
+        targets.to(device=logits.device),
+        crop_left=crop_left,
+        crop_right=crop_right,
+    )
 
     logits, labels = _align_logits_and_labels(
         logits,
         labels,
         strict_width=strict_width,
-        label_align=label_align,
         label_min_majority=label_min_majority,
         ignore_index=ignore_index,
     )

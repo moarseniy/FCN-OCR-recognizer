@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also render fonts that do not cover every character in the config alphabet.",
     )
-    parser.add_argument("--limit", type=int, default=None, help="Optional limit for quick smoke checks.")
+    parser.add_argument("--limit", type=int, default=None, help="Optional limit for a quick validation run.")
     return parser.parse_args()
 
 
@@ -176,9 +176,7 @@ def unique_output_path(output_dir: Path, font_path: Path, index: int) -> Path:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    alphabet = config.sample_alphabet or config.alphabet
-    if not alphabet:
-        raise ValueError("generation config alphabet is empty")
+    alphabet = config.alphabet
 
     font_paths = SingleLineDataset._collect_unchecked_font_paths(
         config.font_paths,

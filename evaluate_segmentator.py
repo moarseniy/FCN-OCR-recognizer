@@ -414,7 +414,6 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     print(f"y_pad:                      {metrics['y_pad']:+.5f}")
     print(f"x_pad:                      {metrics['x_pad']:.5f}")
     print(f"baseline_crop:              {metrics['baseline_crop']}")
-    print(f"baseline_strict_lines:      {metrics['baseline_strict_lines']}")
     print(f"baseline_line_pad:          {metrics['baseline_line_pad']:.5f}")
     print(f"baseline_line_pad_px:       {metrics['baseline_line_pad_px']:.2f}")
     print(f"baseline_deskew:            {metrics['baseline_deskew']}")
@@ -436,7 +435,6 @@ def configure_segmentator(
     y_pad: float,
     x_pad: float,
     baseline_crop: bool,
-    baseline_strict_lines: bool,
     baseline_line_pad: float,
     baseline_line_pad_px: float,
     baseline_deskew: bool,
@@ -458,28 +456,22 @@ def configure_segmentator(
     if not 0.0 < baseline_detector_threshold < 1.0:
         raise ValueError("baseline_detector_threshold must be between 0 and 1")
 
-    segmentator.cut_threshold = segmentator._resolve_cut_threshold(
-        cut_threshold,
-        {"segmentator_cut_threshold": segmentator.cut_threshold},
-    )
+    segmentator.cut_threshold = segmentator._resolve_cut_threshold(cut_threshold)
     segmentator.cut_min_width = segmentator._resolve_non_negative_int(
         cut_min_width,
-        {"segmentator_cut_min_width": segmentator.cut_min_width},
-        "segmentator_cut_min_width",
+        "cut_min_width",
         default=segmentator.cut_min_width,
         min_value=1,
     )
     segmentator.cut_max_width = segmentator._resolve_non_negative_int(
         cut_max_width,
-        {"segmentator_cut_max_width": segmentator.cut_max_width},
-        "segmentator_cut_max_width",
+        "cut_max_width",
         default=segmentator.cut_max_width,
         min_value=0,
     )
     segmentator.cut_smooth_radius = segmentator._resolve_non_negative_int(
         cut_smooth_radius,
-        {"segmentator_cut_smooth_radius": segmentator.cut_smooth_radius},
-        "segmentator_cut_smooth_radius",
+        "cut_smooth_radius",
         default=segmentator.cut_smooth_radius,
         min_value=0,
     )
@@ -487,7 +479,6 @@ def configure_segmentator(
     segmentator.y_pad = float(y_pad)
     segmentator.x_pad = float(x_pad)
     segmentator.baseline_crop = bool(baseline_crop)
-    segmentator.baseline_strict_lines = bool(baseline_strict_lines)
     segmentator.baseline_line_pad = float(baseline_line_pad)
     segmentator.baseline_line_pad_px = float(baseline_line_pad_px)
     segmentator.baseline_deskew = bool(baseline_deskew)
@@ -525,7 +516,6 @@ def evaluate_with_segmentator(
     metrics["y_pad"] = float(segmentator.y_pad)
     metrics["x_pad"] = float(segmentator.x_pad)
     metrics["baseline_crop"] = bool(segmentator.baseline_crop)
-    metrics["baseline_strict_lines"] = bool(segmentator.baseline_strict_lines)
     metrics["baseline_line_pad"] = float(segmentator.baseline_line_pad)
     metrics["baseline_line_pad_px"] = float(segmentator.baseline_line_pad_px)
     metrics["baseline_deskew"] = bool(segmentator.baseline_deskew)
@@ -559,7 +549,6 @@ def evaluate_prepared(
     y_pad: float,
     x_pad: float,
     baseline_crop: bool,
-    baseline_strict_lines: bool,
     baseline_line_pad: float,
     baseline_line_pad_px: float,
     baseline_deskew: bool,
@@ -578,7 +567,6 @@ def evaluate_prepared(
         baseline_crop=baseline_crop,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
-        baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
@@ -598,7 +586,6 @@ def evaluate_prepared(
         y_pad=y_pad,
         x_pad=x_pad,
         baseline_crop=baseline_crop,
-        baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_deskew=baseline_deskew,
@@ -627,7 +614,7 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
             file.write(
                 "trial\tcut_threshold\tcut_min_width\tcut_max_width\tcut_smooth_radius\t"
                 "scale_x\ty_pad\tx_pad\t"
-                "baseline_crop\tbaseline_strict_lines\tbaseline_line_pad\t"
+                "baseline_crop\tbaseline_line_pad\t"
                 "baseline_line_pad_px\tbaseline_deskew\tbaseline_max_angle\t"
                 "baseline_detector_threshold\t"
                 "metric\tlength_accuracy\taverage_abs_length_error\ttotal_abs_length_error\t"
@@ -638,7 +625,7 @@ def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], met
             f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['cut_min_width']}\t"
             f"{metrics['cut_max_width']}\t{metrics['cut_smooth_radius']}\t"
             f"{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t{metrics['x_pad']:.8f}\t"
-            f"{int(metrics['baseline_crop'])}\t{int(metrics['baseline_strict_lines'])}\t"
+            f"{int(metrics['baseline_crop'])}\t"
             f"{metrics['baseline_line_pad']:.8f}\t"
             f"{metrics['baseline_line_pad_px']:.8f}\t"
             f"{int(metrics['baseline_deskew'])}\t"
@@ -691,7 +678,6 @@ def optimize(
     tune_baseline_max_angle: bool,
     tune_baseline_deskew: bool,
     baseline_crop: bool,
-    baseline_strict_lines: bool,
     baseline_line_pad: float,
     baseline_line_pad_px: float,
     baseline_deskew: bool,
@@ -810,7 +796,6 @@ def optimize(
         fixed_params["x_pad"] = x_pad
     if not tune_baseline_crop:
         fixed_params["baseline_crop"] = baseline_crop
-    fixed_params["baseline_strict_lines"] = baseline_strict_lines
     if not tune_baseline_line_pad:
         fixed_params["baseline_line_pad"] = baseline_line_pad
     if not tune_baseline_line_pad_px:
@@ -867,7 +852,6 @@ def optimize(
         baseline_crop=baseline_crop,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
-        baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
@@ -973,7 +957,6 @@ def optimize(
             y_pad=trial_y_pad,
             x_pad=trial_x_pad,
             baseline_crop=bool(trial_baseline_crop),
-            baseline_strict_lines=baseline_strict_lines,
             baseline_line_pad=trial_baseline_line_pad,
             baseline_line_pad_px=trial_baseline_line_pad_px,
             baseline_deskew=bool(trial_baseline_deskew),
@@ -1074,7 +1057,6 @@ def optimize(
         y_pad=float(best_params["y_pad"]),
         x_pad=float(best_params["x_pad"]),
         baseline_crop=bool(best_params["baseline_crop"]),
-        baseline_strict_lines=bool(best_params["baseline_strict_lines"]),
         baseline_line_pad=float(best_params["baseline_line_pad"]),
         baseline_line_pad_px=float(best_params["baseline_line_pad_px"]),
         baseline_deskew=bool(best_params["baseline_deskew"]),
@@ -1114,7 +1096,6 @@ def evaluate(
     y_pad: float,
     x_pad: float,
     baseline_crop: bool,
-    baseline_strict_lines: bool,
     baseline_line_pad: float,
     baseline_line_pad_px: float,
     baseline_deskew: bool,
@@ -1141,7 +1122,6 @@ def evaluate(
         y_pad=y_pad,
         x_pad=x_pad,
         baseline_crop=baseline_crop,
-        baseline_strict_lines=baseline_strict_lines,
         baseline_line_pad=baseline_line_pad,
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_deskew=baseline_deskew,
@@ -1191,11 +1171,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--y-pad", type=float, default=0.0)
     parser.add_argument("--x-pad", type=float, default=0.0)
     parser.add_argument("--baseline-crop", action="store_true")
-    parser.add_argument(
-        "--baseline-strict-lines",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     parser.add_argument("--baseline-line-pad", type=float, default=0.08)
     parser.add_argument("--baseline-line-pad-px", type=float, default=0.0)
     parser.add_argument(
@@ -1315,7 +1290,6 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "detector_threshold": metrics["baseline_detector_threshold"],
             "deskew": metrics["baseline_deskew"],
             "max_angle": metrics["baseline_max_angle"],
-            "strict_lines": metrics["baseline_strict_lines"],
             "line_pad": metrics["baseline_line_pad"],
             "line_pad_px": metrics["baseline_line_pad_px"],
         },
@@ -1405,7 +1379,6 @@ def main() -> None:
             tune_baseline_max_angle=args.optuna_tune_baseline_max_angle,
             tune_baseline_deskew=args.optuna_tune_baseline_deskew,
             baseline_crop=args.baseline_crop,
-            baseline_strict_lines=args.baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
             baseline_line_pad_px=args.baseline_line_pad_px,
             baseline_deskew=args.baseline_deskew,
@@ -1443,7 +1416,6 @@ def main() -> None:
             y_pad=args.y_pad,
             x_pad=args.x_pad,
             baseline_crop=args.baseline_crop,
-            baseline_strict_lines=args.baseline_strict_lines,
             baseline_line_pad=args.baseline_line_pad,
             baseline_line_pad_px=args.baseline_line_pad_px,
             baseline_deskew=args.baseline_deskew,

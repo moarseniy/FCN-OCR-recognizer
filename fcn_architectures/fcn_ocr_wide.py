@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 
-ARCHITECTURE_NAME = "legacy_fcn_wide"
+ARCHITECTURE_NAME = "fcn_ocr_wide"
 
 
 def _scaled_channels(channels: int, width_multiplier: float) -> int:
@@ -37,12 +37,12 @@ def _conv_bn_relu(
     return nn.Sequential(*layers)
 
 
-class LegacyFCNWide(nn.Module):
+class FCNOCRWide(nn.Module):
     """
-    A drop-in heavier version of legacy_fcn.
+    A drop-in heavier version of fcn_ocr.
 
-    It keeps the exact legacy kernel/stride geometry, so for the same input size
-    it has the same output width as legacy_fcn. Only channel counts and optional
+    It keeps the exact base kernel/stride geometry, so for the same input size
+    it has the same output width as fcn_ocr. Only channel counts and optional
     dropout are changed.
     """
 
@@ -101,15 +101,15 @@ class LegacyFCNWide(nn.Module):
 
         if y.size(2) != 1:
             raise RuntimeError(
-                "LegacyFCNWide expects output height 1 before squeezing; "
+                "FCNOCRWide expects output height 1 before squeezing; "
                 f"got output shape {tuple(y.shape)}. Check training image_height."
             )
 
         return y.squeeze(2)
 
 
-def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> LegacyFCNWide:
-    return LegacyFCNWide(
+def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> FCNOCRWide:
+    return FCNOCRWide(
         in_channels=in_channels,
         num_classes=num_classes,
         **dict(kwargs),

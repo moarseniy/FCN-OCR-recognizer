@@ -1,7 +1,7 @@
 from .debug_report import save_debug_image
 from .baseline_detector import BaselineDetector
 from .inference_config import InferenceConfig
-from .pipeline import OCRPipeline, OCRPipelineResult
+from .pipeline import OCRPipeline, OCRPipelinePathResult, OCRPipelineResult
 from .recognizer import TextRecognizer, tensor_to_pil
 from .results import (
     ClassConfidence,
@@ -23,6 +23,7 @@ __all__ = [
     "DecodedSymbol",
     "InferenceConfig",
     "OCRPipeline",
+    "OCRPipelinePathResult",
     "OCRPipelineResult",
     "PreprocessDebug",
     "RecognitionResult",

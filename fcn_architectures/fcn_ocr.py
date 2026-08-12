@@ -6,15 +6,15 @@ import torch
 import torch.nn as nn
 
 
-ARCHITECTURE_NAME = "legacy_fcn"
+ARCHITECTURE_NAME = "fcn_ocr"
 
 
-class LegacyFCN(nn.Module):
+class FCNOCR(nn.Module):
     """
     Полносверточный распознаватель строк.
       - in_channels: 1 (grayscale) или 3 (RGB)
       - num_classes: число выходных классов final 1x1 conv
-        * legacy OCR: len(alphabet)
+        * FCN OCR: len(alphabet)
         * cut projection обычно использует отдельную архитектуру с 1 выходом
       - input height должен быть заранее подобран так, чтобы сеть могла
         свести высоту к 1 (см. stride по высоте в conv1 и т.д.)
@@ -94,18 +94,15 @@ class LegacyFCN(nn.Module):
 
         if y.size(2) != 1:
             raise RuntimeError(
-                "LegacyFCN expects output height 1 before squeezing; "
+                "FCNOCR expects output height 1 before squeezing; "
                 f"got output shape {tuple(y.shape)}. Check training image_height."
             )
 
         return y.squeeze(2)
 
 
-FullyConvTextRecognizer = LegacyFCN
-
-
-def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> LegacyFCN:
+def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> FCNOCR:
     if kwargs:
         unknown = ", ".join(sorted(kwargs))
         raise ValueError(f"{ARCHITECTURE_NAME} does not support architecture_params: {unknown}")
-    return LegacyFCN(in_channels=in_channels, num_classes=num_classes)
+    return FCNOCR(in_channels=in_channels, num_classes=num_classes)

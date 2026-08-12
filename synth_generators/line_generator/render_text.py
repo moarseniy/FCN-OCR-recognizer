@@ -67,13 +67,13 @@ def target_to_float(target: torch.Tensor | None) -> torch.Tensor | None:
     return output.clamp(0.0, 1.0).contiguous()
 
 
-def dense_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
+def ocr_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
     if target is None:
         return None
     output = target.detach().cpu().long()
     if output.ndim != 1:
         raise ValueError(
-            f"dense target must have shape (W,), got {tuple(output.shape)}"
+            f"OCR target must have shape (W,), got {tuple(output.shape)}"
         )
     return output.contiguous()
 
@@ -110,7 +110,6 @@ def load_config(
     metadata = load_chunk_metadata(chunks_dir)
     immutable_fields = (
         "alphabet",
-        "sample_alphabet",
         "space_char",
         "image_height",
         "image_width",
@@ -160,7 +159,7 @@ def apply_augmentations(
     config: SingleLineDatasetConfig,
     device: torch.device,
     enabled: bool,
-    dense_target: torch.Tensor | None = None,
+    ocr_target: torch.Tensor | None = None,
     cut_projection_target: torch.Tensor | None = None,
     baseline_target: torch.Tensor | None = None,
 ) -> tuple[
@@ -171,20 +170,20 @@ def apply_augmentations(
     list[dict[str, Any]],
 ]:
     image = tensor_to_float_image(image)
-    dense_target = dense_target_to_long(dense_target)
+    ocr_target = ocr_target_to_long(ocr_target)
     cut_projection_target = target_to_float(cut_projection_target)
     baseline_target = target_to_float(baseline_target)
     if not enabled:
-        return image, dense_target, cut_projection_target, baseline_target, []
+        return image, ocr_target, cut_projection_target, baseline_target, []
 
     augmenter = GpuTextAugmenter(config)
     batch = image.unsqueeze(0).to(device)
     augmented, metadata = augmenter.augment_with_metadata(batch)
-    if dense_target is not None:
-        dense_target = (
+    if ocr_target is not None:
+        ocr_target = (
             augmenter.apply_metadata_to_targets(
-                dense_target.unsqueeze(0).to(device),
-                "dense_symbols",
+                ocr_target.unsqueeze(0).to(device),
+                "fcn_ocr",
                 metadata,
             )[0]
             .detach()
@@ -213,7 +212,7 @@ def apply_augmentations(
         )
     return (
         augmented[0].detach().cpu(),
-        dense_target,
+        ocr_target,
         cut_projection_target,
         baseline_target,
         metadata[0],
@@ -249,13 +248,13 @@ def load_chunk_sample(
         images = chunk["images"]
         texts = chunk["texts"]
         local_index = index - offset
-        dense_targets = chunk.get("dense_targets")
+        ocr_targets = chunk.get("ocr_targets")
         cut_targets = chunk.get("cut_projection_targets")
         baseline_targets = chunk.get("baseline_targets")
         return (
             images[local_index],
             str(texts[local_index]),
-            dense_targets[local_index] if dense_targets is not None else None,
+            ocr_targets[local_index] if ocr_targets is not None else None,
             cut_targets[local_index] if cut_targets is not None else None,
             baseline_targets[local_index] if baseline_targets is not None else None,
             {
@@ -327,28 +326,28 @@ def _projection_centerlines(projection: np.ndarray, height: int) -> np.ndarray:
     return line_mask
 
 
-def describe_dense_target(
-    dense_target: torch.Tensor | None,
+def describe_ocr_target(
+    ocr_target: torch.Tensor | None,
     alphabet: str,
     space_char: str,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
-    dense = dense_target_to_long(dense_target)
-    if dense is None:
+    ocr_labels = ocr_target_to_long(ocr_target)
+    if ocr_labels is None:
         return [], False, False
-    dense_array = dense.numpy()
-    if dense_array.size and (
-        dense_array.min() < 0 or dense_array.max() >= len(alphabet)
+    target_array = ocr_labels.numpy()
+    if target_array.size and (
+        target_array.min() < 0 or target_array.max() >= len(alphabet)
     ):
         raise ValueError(
-            "dense target contains a class index outside the configured alphabet"
+            "OCR target contains a class index outside the configured alphabet"
         )
 
     runs: list[dict[str, Any]] = []
     run_start = 0
-    for x in range(1, dense_array.size + 1):
-        if x < dense_array.size and dense_array[x] == dense_array[run_start]:
+    for x in range(1, target_array.size + 1):
+        if x < target_array.size and target_array[x] == target_array[run_start]:
             continue
-        class_index = int(dense_array[run_start])
+        class_index = int(target_array[run_start])
         char = alphabet[class_index]
         runs.append(
             {
@@ -361,8 +360,8 @@ def describe_dense_target(
         run_start = x
 
     space_index = alphabet.index(space_char)
-    has_left_space = bool(dense_array.size and dense_array[0] == space_index)
-    has_right_space = bool(dense_array.size and dense_array[-1] == space_index)
+    has_left_space = bool(target_array.size and target_array[0] == space_index)
+    has_right_space = bool(target_array.size and target_array[-1] == space_index)
     return runs, has_left_space, has_right_space
 
 
@@ -434,12 +433,12 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
         f"source: {metadata['source']}",
         f"text: {metadata['text']!r}",
     ]
-    dense_runs = metadata.get("dense_runs")
-    if dense_runs:
+    ocr_runs = metadata.get("ocr_runs")
+    if ocr_runs:
         run_text = " ".join(
-            f"{run['char']}[{run['start']}:{run['end']}]" for run in dense_runs
+            f"{run['char']}[{run['start']}:{run['end']}]" for run in ocr_runs
         )
-        lines.append(f"dense: {run_text}")
+        lines.append(f"fcn_ocr: {run_text}")
     lines.extend(
         [
             f"image: {metadata['image_size'][0]}x{metadata['image_size'][1]}",
@@ -592,7 +591,7 @@ def main() -> None:
         (
             image_tensor,
             text,
-            dense_target,
+            ocr_target,
             cut_projection_target,
             baseline_target,
             source_metadata,
@@ -600,7 +599,7 @@ def main() -> None:
         text = normalize_text(text, config)
         (
             image_tensor,
-            dense_target,
+            ocr_target,
             cut_projection_target,
             baseline_target,
             augmentations,
@@ -609,7 +608,7 @@ def main() -> None:
             config,
             device,
             enabled=not args.no_augmentations,
-            dense_target=dense_target,
+            ocr_target=ocr_target,
             cut_projection_target=cut_projection_target,
             baseline_target=baseline_target,
         )
@@ -619,10 +618,10 @@ def main() -> None:
             raise RuntimeError("dataset must be initialized for text rendering")
         sample = dataset.generate_text_sample(args.text, rng)
         text = sample.text
-        dense_target = sample.dense_target
+        ocr_target = sample.ocr_target
         (
             image_tensor,
-            dense_target,
+            ocr_target,
             cut_projection_target,
             baseline_target,
             augmentations,
@@ -631,14 +630,14 @@ def main() -> None:
             config,
             device,
             enabled=not args.no_augmentations,
-            dense_target=dense_target,
+            ocr_target=ocr_target,
             cut_projection_target=sample.cut_projection_target,
             baseline_target=sample.baseline_target,
         )
         source = "text"
-    alphabet = config.alphabet or config.sample_alphabet
-    dense_runs, has_left_space, has_right_space = describe_dense_target(
-        dense_target,
+    alphabet = config.alphabet
+    ocr_runs, has_left_space, has_right_space = describe_ocr_target(
+        ocr_target,
         alphabet,
         config.space_char,
     )
@@ -660,7 +659,7 @@ def main() -> None:
     metadata = {
         "source": source,
         "text": display_text,
-        "dense_runs": dense_runs,
+        "ocr_runs": ocr_runs,
         "image_size": [image.width, image.height],
         "seed": args.seed,
         "config": str(config_path),
@@ -691,11 +690,11 @@ def main() -> None:
     print(f"Saved image: {output_path}")
     print(f"Saved metadata: {metadata_path}")
     print(f"Text: {display_text!r}")
-    if dense_runs:
+    if ocr_runs:
         print(
-            "Dense: "
+            "FCN OCR: "
             + " ".join(
-                f"{run['char']}[{run['start']}:{run['end']}]" for run in dense_runs
+                f"{run['char']}[{run['start']}:{run['end']}]" for run in ocr_runs
             )
         )
     print(f"Image size: {image.width}x{image.height}")

@@ -9,11 +9,11 @@ from fcn_ocr.results import VerticalSegmentationResult
 def make_lightweight_recognizer(alphabet: str = " AB") -> TextRecognizer:
     """Build a decoder-only recognizer without loading a checkpoint."""
     recognizer = TextRecognizer.__new__(TextRecognizer)
-    recognizer.loss_mode = "legacy_logreg"
+    recognizer.loss_mode = "fcn_ocr"
     recognizer.alphabet = alphabet
     recognizer.idx_to_char = dict(enumerate(alphabet))
-    recognizer.legacy_crop_left = 0
-    recognizer.legacy_crop_right = 0
+    recognizer.ocr_crop_left = 0
+    recognizer.ocr_crop_right = 0
     return recognizer
 
 

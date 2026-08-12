@@ -23,20 +23,21 @@ architecture_params:
 Одна и та же архитектура может использоваться и для OCR, и для вертикального
 сегментатора. Это определяется не файлом архитектуры, а training-конфигом:
 
-- legacy OCR: `loss_mode: legacy_logreg`, `legacy_target_mode: dense_symbols`
+- FCN OCR: `loss_mode: fcn_ocr`
 - вертикальный сегментатор разрезов: `loss_mode: cut_projection`
 - детектор верхней/нижней базовой линии: `loss_mode: baseline_heatmap`
 
-Старые конфиги и checkpoint без поля `architecture` используют `legacy_fcn`.
+Поле `architecture` обязательно. Алиасы и неявная архитектура по умолчанию не
+поддерживаются.
 
 Текущие встроенные варианты:
 
-- `legacy_fcn` - исходная архитектура со старой геометрией выхода.
-- `legacy_fcn_highres` - plain FCN в стиле старой сети, но без горизонтального
+- `fcn_ocr` - исходная OCR-архитектура с компактной геометрией выхода.
+- `fcn_ocr_highres` - plain FCN без горизонтального
   stride=2 в `conv2`; для кропа 48x64 дает `T=48` вместо `T=19`.
-- `legacy_fcn_wide` - тот же набор kernel/stride, но с увеличенным числом
-  каналов через `width_multiplier`; это самый безопасный drop-in эксперимент
-  для OCR, потому что ширина выхода совпадает с `legacy_fcn`.
+- `fcn_ocr_wide` - тот же набор kernel/stride, но с увеличенным числом
+  каналов через `width_multiplier`; это прямой более тяжёлый эксперимент
+  для OCR, потому что ширина выхода совпадает с `fcn_ocr`.
 - `vertical_segmentator_fcn` - легкая width-preserving сеть для cut projection.
 - `baseline_detector_fcn` - height/width-preserving сеть с выходом
   `B x 2 x H x W` для top/bottom baseline heatmap.

@@ -24,8 +24,11 @@ class GpuTextAugmenter:
         self.probabilities = self._effective_probabilities(config)
         self.params = config.augmentations
         self.last_augmentations: list[list[dict[str, Any]]] = []
-        alphabet = config.alphabet or config.sample_alphabet
-        self.space_index = alphabet.index(config.space_char) if config.space_char in alphabet else 0
+        self.space_index = (
+            config.alphabet.index(config.space_char)
+            if config.space_char in config.alphabet
+            else 0
+        )
 
     def enabled(self) -> bool:
         return any(probability > 0.0 for probability in self.probabilities.values())
@@ -98,7 +101,7 @@ class GpuTextAugmenter:
             if has_params:
                 output = self._apply_target_one(name, output, target_format, params_by_sample)
 
-        if target_format.lower() != "dense_symbols":
+        if target_format.lower() != "fcn_ocr":
             output = output.clamp(0.0, 1.0)
         return output
 
@@ -350,8 +353,8 @@ class GpuTextAugmenter:
             )
             return warped.clamp(0.0, 1.0).to(dtype=targets.dtype)
 
-        is_dense = target_format == "dense_symbols"
-        mode = "nearest" if is_dense else "bilinear"
+        is_ocr = target_format == "fcn_ocr"
+        mode = "nearest" if is_ocr else "bilinear"
         fill = self._target_fill_value(target_format)
         target_map = targets.to(dtype=torch.float32).unsqueeze(1).unsqueeze(2)
         grid = F.affine_grid(theta, target_map.shape, align_corners=False)
@@ -365,7 +368,7 @@ class GpuTextAugmenter:
         )
         warped = warped * mask + fill * (1.0 - mask)
         output = warped[:, 0, 0, :]
-        if is_dense:
+        if is_ocr:
             return output.round().to(dtype=targets.dtype)
         return output.to(dtype=targets.dtype)
 
@@ -375,10 +378,10 @@ class GpuTextAugmenter:
         width: int,
         target_format: str,
     ) -> torch.Tensor:
-        is_dense = target_format == "dense_symbols"
-        mode = "nearest" if is_dense else "linear"
+        is_ocr = target_format == "fcn_ocr"
+        mode = "nearest" if is_ocr else "linear"
         target_map = targets.to(dtype=torch.float32).unsqueeze(1)
-        if is_dense:
+        if is_ocr:
             resized = F.interpolate(target_map, size=width, mode=mode)
             return resized[:, 0, :].round().to(dtype=targets.dtype)
         resized = F.interpolate(target_map, size=width, mode=mode, align_corners=False)
@@ -1433,7 +1436,7 @@ class GpuTextAugmenter:
         return float(params.get("fillcolor", self.config.background)) / 255.0
 
     def _target_fill_value(self, target_format: str) -> float:
-        return float(self.space_index if target_format == "dense_symbols" else 0.0)
+        return float(self.space_index if target_format == "fcn_ocr" else 0.0)
 
     @staticmethod
     def _x_pad_configured(params: dict[str, Any]) -> bool:

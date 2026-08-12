@@ -23,7 +23,6 @@ class BaselineInferenceConfig(BaseModel):
     detector_threshold: float = Field(default=0.35, gt=0.0, lt=1.0)
     deskew: bool = True
     max_angle: float = Field(default=12.0, gt=0.0)
-    strict_lines: bool = True
     line_pad: float = Field(default=0.08, ge=0.0)
     line_pad_px: float = Field(default=0.0, ge=0.0)
 

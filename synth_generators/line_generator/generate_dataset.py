@@ -31,21 +31,21 @@ def save_chunk(
     output_dir: Path,
     chunk_idx: int,
     alphabet: str,
-    save_dense_targets: bool = False,
+    save_ocr_targets: bool = False,
 ) -> dict[str, Any]:
     images = []
     texts = []
-    dense_targets = []
+    ocr_targets = []
     cut_projection_targets = []
     baseline_targets = []
 
     for sample in samples:
         images.append(image_to_uint8(sample.image))
         texts.append(sample.text)
-        if save_dense_targets:
-            if sample.dense_target is None:
-                raise RuntimeError("sample does not contain dense_target")
-            dense_targets.append(sample.dense_target.detach().cpu().to(torch.int16))
+        if save_ocr_targets:
+            if sample.ocr_target is None:
+                raise RuntimeError("sample does not contain ocr_target")
+            ocr_targets.append(sample.ocr_target.detach().cpu().to(torch.int16))
         if sample.cut_projection_target is not None:
             cut_projection_targets.append(
                 (sample.cut_projection_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
@@ -67,18 +67,18 @@ def save_chunk(
         "images": torch.stack(images, dim=0).contiguous(),
         "texts": texts,
     }
-    dense_class_counts = None
-    if save_dense_targets:
-        stacked_dense_targets = torch.stack(dense_targets, dim=0).contiguous()
-        if int(stacked_dense_targets.min()) < 0 or int(
-            stacked_dense_targets.max()
+    ocr_class_counts = None
+    if save_ocr_targets:
+        stacked_ocr_targets = torch.stack(ocr_targets, dim=0).contiguous()
+        if int(stacked_ocr_targets.min()) < 0 or int(
+            stacked_ocr_targets.max()
         ) >= len(alphabet):
             raise ValueError(
-                "dense target contains an index outside the generation alphabet"
+                "OCR target contains an index outside the generation alphabet"
             )
-        chunk["dense_targets"] = stacked_dense_targets
-        dense_class_counts = torch.bincount(
-            stacked_dense_targets.long().flatten(),
+        chunk["ocr_targets"] = stacked_ocr_targets
+        ocr_class_counts = torch.bincount(
+            stacked_ocr_targets.long().flatten(),
             minlength=len(alphabet),
         ).tolist()
     if cut_projection_targets:
@@ -97,7 +97,7 @@ def save_chunk(
         "file": filename,
         "samples": len(images),
         "text_char_counts": dict(Counter("".join(texts))),
-        "dense_class_counts": dense_class_counts,
+        "ocr_class_counts": ocr_class_counts,
         "max_observed_text_length": max(len(text) for text in texts),
     }
 
@@ -149,17 +149,17 @@ def generate_chunk_worker(task: dict) -> dict:
         samples,
         Path(task["output_dir"]),
         task["chunk_idx"],
-        alphabet=config.alphabet or config.sample_alphabet,
-        save_dense_targets=bool(task["save_dense_targets"]),
+        alphabet=config.alphabet,
+        save_ocr_targets=bool(task["save_ocr_targets"]),
     )
 
 
 def build_metadata(
     config: SingleLineDatasetConfig, chunks: list[dict[str, Any]]
 ) -> ChunkMetadata:
-    alphabet = config.alphabet or config.sample_alphabet
+    alphabet = config.alphabet
     text_char_counts: Counter[str] = Counter()
-    dense_class_counts = [0] * len(alphabet) if config.save_dense_targets else None
+    ocr_class_counts = [0] * len(alphabet) if config.save_ocr_targets else None
     max_observed_text_length = 0
     manifest = []
     for chunk in chunks:
@@ -169,13 +169,13 @@ def build_metadata(
             max_observed_text_length,
             int(chunk["max_observed_text_length"]),
         )
-        if dense_class_counts is not None:
-            chunk_counts = chunk["dense_class_counts"]
-            if chunk_counts is None or len(chunk_counts) != len(dense_class_counts):
-                raise ValueError("chunk dense class statistics do not match alphabet")
-            dense_class_counts = [
+        if ocr_class_counts is not None:
+            chunk_counts = chunk["ocr_class_counts"]
+            if chunk_counts is None or len(chunk_counts) != len(ocr_class_counts):
+                raise ValueError("chunk OCR class statistics do not match alphabet")
+            ocr_class_counts = [
                 total + int(count)
-                for total, count in zip(dense_class_counts, chunk_counts)
+                for total, count in zip(ocr_class_counts, chunk_counts)
             ]
 
     return ChunkMetadata.model_validate(
@@ -183,7 +183,6 @@ def build_metadata(
             "format": CHUNK_FORMAT,
             "version": CHUNK_METADATA_VERSION,
             "alphabet": alphabet,
-            "sample_alphabet": config.sample_alphabet,
             "space_char": config.space_char,
             "samples": config.samples,
             "image_height": config.image_height,
@@ -210,15 +209,15 @@ def build_metadata(
             "ink_spacing_min_char_gap_px": config.ink_spacing_min_char_gap_px,
             "ink_spacing_touch_gap_px": config.ink_spacing_touch_gap_px,
             "ink_spacing_touch_probability": config.ink_spacing_touch_probability,
-            "dense_targets": config.save_dense_targets,
-            "dense_target_edge_bounds": "ink",
+            "ocr_targets": config.save_ocr_targets,
+            "ocr_target_edge_bounds": "ink",
             "cut_projection_targets": config.save_cut_projection_targets,
             "cut_projection_peak_radius": config.cut_projection_peak_radius,
             "cut_projection_include_margins": config.cut_projection_include_margins,
             "baseline_targets": config.save_baseline_targets,
             "baseline_target_radius": config.baseline_target_radius,
             "dtype": "uint8",
-            "dense_target_dtype": "int16" if config.save_dense_targets else None,
+            "ocr_target_dtype": "int16" if config.save_ocr_targets else None,
             "cut_projection_target_dtype": "uint8"
             if config.save_cut_projection_targets
             else None,
@@ -229,7 +228,7 @@ def build_metadata(
             "text_char_counts": {
                 char: int(text_char_counts.get(char, 0)) for char in alphabet
             },
-            "dense_class_counts": dense_class_counts,
+            "ocr_class_counts": ocr_class_counts,
             "max_observed_text_length": max_observed_text_length,
         }
     )
@@ -263,7 +262,7 @@ def generate_chunks_sequential(
             output_dir,
             chunk_idx,
             alphabet=dataset.alphabet,
-            save_dense_targets=dataset.config.save_dense_targets,
+            save_ocr_targets=dataset.config.save_ocr_targets,
         )
         chunks.append(chunk)
         saved += chunk["samples"]
@@ -293,7 +292,7 @@ def generate_chunks_parallel(
                 "end": end,
                 "sample_count": end - start,
                 "output_dir": str(output_dir),
-                "save_dense_targets": config.save_dense_targets,
+                "save_ocr_targets": config.save_ocr_targets,
                 "config": worker_config_data(
                     config,
                     font_paths,

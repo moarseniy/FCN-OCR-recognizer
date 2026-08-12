@@ -46,7 +46,6 @@ class TextRecognizer:
         baseline_crop: bool = False,
         baseline_deskew: bool = True,
         baseline_max_angle: float = 12.0,
-        baseline_strict_lines: bool = True,
         baseline_line_pad: float = 0.08,
         baseline_line_pad_px: float = 0.0,
         baseline_detector_checkpoint: str | Path | None = None,
@@ -76,7 +75,6 @@ class TextRecognizer:
         self.baseline_crop = bool(baseline_crop)
         self.baseline_deskew = bool(baseline_deskew)
         self.baseline_max_angle = float(baseline_max_angle)
-        self.baseline_strict_lines = bool(baseline_strict_lines)
         self.baseline_line_pad = float(baseline_line_pad)
         self.baseline_line_pad_px = float(baseline_line_pad_px)
         self.baseline_detector_checkpoint = Path(baseline_detector_checkpoint) if baseline_detector_checkpoint else None
@@ -92,27 +90,37 @@ class TextRecognizer:
         self.alphabet = self.checkpoint["alphabet"]
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
 
-        model_config = self.checkpoint.get("model_config", {})
-        checkpoint_config = self.checkpoint.get("config", {})
-        self.architecture = normalize_architecture_name(
-            model_config.get("architecture", checkpoint_config.get("architecture", "legacy_fcn"))
-        )
-        self.architecture_params = dict(
-            model_config.get(
-                "architecture_params",
-                checkpoint_config.get("architecture_params", {}),
+        model_config = self.checkpoint["model_config"]
+        checkpoint_config = self.checkpoint["config"]
+        self.architecture = normalize_architecture_name(model_config["architecture"])
+        self.architecture_params = dict(model_config["architecture_params"])
+        self.in_channels = int(model_config["in_channels"])
+        self.num_classes = int(model_config["num_classes"])
+        self.loss_mode = str(model_config["loss_mode"]).lower()
+        self.target_format = str(model_config["target_format"]).lower()
+        if self.loss_mode not in {"fcn_ocr", "cut_projection", "baseline_heatmap"}:
+            raise ValueError(f"Unsupported checkpoint loss_mode: {self.loss_mode!r}")
+        if self.target_format != self.loss_mode:
+            raise ValueError(
+                "Checkpoint target_format must match loss_mode exactly; "
+                f"got loss_mode={self.loss_mode!r}, target_format={self.target_format!r}"
             )
-            or {}
-        )
-        self.in_channels = int(model_config.get("in_channels", 3))
-        self.num_classes = int(model_config.get("num_classes", len(self.alphabet)))
-        self.loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", "legacy_logreg"))).lower()
-        self.space_char = checkpoint_config.get("space_char", " ")
+        expected_classes = {
+            "fcn_ocr": len(self.alphabet),
+            "cut_projection": 1,
+            "baseline_heatmap": 2,
+        }[self.loss_mode]
+        if self.num_classes != expected_classes:
+            raise ValueError(
+                f"Checkpoint {self.loss_mode} expects {expected_classes} output classes, "
+                f"got {self.num_classes}"
+            )
+        self.space_char = str(checkpoint_config["space_char"])
         self.space_idx = self.alphabet.index(self.space_char) if self.space_char in self.alphabet else None
-        self.image_height = int(checkpoint_config.get("image_height", 48))
-        self.preprocess_fill = int(checkpoint_config.get("background", 255))
-        self.legacy_crop_left = int(checkpoint_config.get("legacy_crop_left", 0))
-        self.legacy_crop_right = int(checkpoint_config.get("legacy_crop_right", 0))
+        self.image_height = int(checkpoint_config["image_height"])
+        self.preprocess_fill = int(checkpoint_config["background"])
+        self.ocr_crop_left = int(checkpoint_config["ocr_crop_left"])
+        self.ocr_crop_right = int(checkpoint_config["ocr_crop_right"])
 
         self.model = create_model(
             self.architecture,
@@ -136,23 +144,15 @@ class TextRecognizer:
             raise FileNotFoundError(f"Baseline detector checkpoint not found: {self.baseline_detector_checkpoint}")
 
         checkpoint = torch.load(self.baseline_detector_checkpoint, map_location=self.device)
-        model_config = checkpoint.get("model_config", {})
-        checkpoint_config = checkpoint.get("config", {})
-        target_format = str(model_config.get("target_format", checkpoint_config.get("target_format", ""))).lower()
-        loss_mode = str(model_config.get("loss_mode", checkpoint_config.get("loss_mode", ""))).lower()
-        architecture = normalize_architecture_name(
-            model_config.get("architecture", checkpoint_config.get("architecture", "baseline_detector_fcn"))
-        )
-        architecture_params = dict(
-            model_config.get(
-                "architecture_params",
-                checkpoint_config.get("architecture_params", {}),
-            )
-            or {}
-        )
-        in_channels = int(model_config.get("in_channels", checkpoint_config.get("channels", 1)))
-        num_classes = int(model_config.get("num_classes", 2))
-        if target_format != "baseline_heatmap" and loss_mode != "baseline_heatmap":
+        model_config = checkpoint["model_config"]
+        checkpoint_config = checkpoint["config"]
+        target_format = str(model_config["target_format"]).lower()
+        loss_mode = str(model_config["loss_mode"]).lower()
+        architecture = normalize_architecture_name(model_config["architecture"])
+        architecture_params = dict(model_config["architecture_params"])
+        in_channels = int(model_config["in_channels"])
+        num_classes = int(model_config["num_classes"])
+        if target_format != "baseline_heatmap" or loss_mode != "baseline_heatmap":
             raise ValueError(
                 "Baseline detector checkpoint must be trained with loss_mode=baseline_heatmap; "
                 f"got loss_mode={loss_mode!r}, target_format={target_format!r}"
@@ -171,22 +171,22 @@ class TextRecognizer:
 
         self.baseline_detector_model = model
         self.baseline_detector_in_channels = in_channels
-        self.baseline_detector_image_height = int(checkpoint_config.get("image_height", 0) or 0)
+        self.baseline_detector_image_height = int(checkpoint_config["image_height"])
         self.baseline_detector_architecture = architecture
 
     def print_summary(self) -> None:
-        epoch = self.checkpoint.get("epoch", "?")
-        loss = self.checkpoint.get("loss")
-        loss_text = f", loss: {loss:.8f}" if isinstance(loss, float) else ""
         print(f"Using device: {self.device}")
-        print(f"Model loaded from epoch {epoch}{loss_text}")
+        print(
+            f"Model loaded from epoch {self.checkpoint['epoch']}, "
+            f"loss: {float(self.checkpoint['loss']):.8f}"
+        )
         print(f"Architecture: {self.architecture}")
         if self.architecture_params:
             print(f"Architecture params: {self.architecture_params}")
         print(f"Alphabet size: {len(self.alphabet)}")
         print(f"Loss mode: {self.loss_mode}")
-        if self.loss_mode in {"legacy", "legacy_logreg"}:
-            print(f"Legacy crop: [{self.legacy_crop_left}, -{self.legacy_crop_right}]")
+        if self.loss_mode == "fcn_ocr":
+            print(f"FCN OCR crop: [{self.ocr_crop_left}, -{self.ocr_crop_right}]")
         print(f"Preprocess scale_x: {self.scale_x:+.4f}")
         print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
         print(f"Preprocess x_pad:   {self.x_pad:.4f}")
@@ -194,7 +194,7 @@ class TextRecognizer:
         if self.baseline_crop:
             print(
                 f"  deskew={self.baseline_deskew}, max_angle={self.baseline_max_angle:.2f}, "
-                f"strict_lines={self.baseline_strict_lines}, line_pad={self.baseline_line_pad:.3f}, "
+                f"line_pad={self.baseline_line_pad:.3f}, "
                 f"line_pad_px={self.baseline_line_pad_px:.1f}"
             )
             if self.baseline_detector_model is not None:
@@ -320,7 +320,6 @@ class TextRecognizer:
         baseline_enabled = bool(apply_baseline and self.baseline_crop)
         debug_metadata: dict[str, Any] = {
             "baseline_crop": baseline_enabled,
-            "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_line_pad": self.baseline_line_pad,
             "baseline_line_pad_px": self.baseline_line_pad_px,
             "baseline_detector_checkpoint": str(self.baseline_detector_checkpoint) if self.baseline_detector_checkpoint else None,
@@ -519,7 +518,6 @@ class TextRecognizer:
                 debug_images.append(("baseline mask", Image.fromarray(first["cleaned_mask"])))
             metadata = {
                 "baseline_status": first["status"],
-                "baseline_strict_lines": self.baseline_strict_lines,
                 "baseline_line_pad": self.baseline_line_pad,
                 "baseline_line_pad_px": self.baseline_line_pad_px,
                 "baseline_foreground_pixels": int(first["foreground_pixels"]),
@@ -573,10 +571,9 @@ class TextRecognizer:
                 working_image = rotated
                 detection = second
                 status = "ok_deskewed"
-            elif self.baseline_strict_lines:
+            else:
                 metadata = {
-                    "baseline_status": f"strict_lines_rotated_detection_failed_after_{second['status']}",
-                    "baseline_strict_lines": self.baseline_strict_lines,
+                    "baseline_status": f"rotated_detection_failed_after_{second['status']}",
                     "baseline_line_pad": self.baseline_line_pad,
                     "baseline_line_pad_px": self.baseline_line_pad_px,
                     "baseline_angle_degrees": original_angle,
@@ -586,8 +583,6 @@ class TextRecognizer:
                     debug_images.append(("baseline rotated detection failed", rotated))
                     debug_images.append(("baseline rotated cleaned mask", Image.fromarray(second["cleaned_mask"])))
                 return image, PreprocessDebug(metadata=metadata, images=debug_images)
-            else:
-                status = f"ok_without_deskew_after_{second['status']}"
 
         cropped = self._crop_with_fill(working_image, detection["crop_box"])
         if collect_debug:
@@ -604,7 +599,6 @@ class TextRecognizer:
 
         metadata = {
             "baseline_status": status,
-            "baseline_strict_lines": self.baseline_strict_lines,
             "baseline_line_pad": self.baseline_line_pad,
             "baseline_line_pad_px": self.baseline_line_pad_px,
             "baseline_angle_degrees": original_angle,
@@ -683,7 +677,7 @@ class TextRecognizer:
                 working_image = rotated
                 working_source_x = rotated_source_x
                 detection = second
-            elif self.baseline_strict_lines:
+            else:
                 return image, source_x
 
         cropped = self._crop_with_fill(working_image, detection["crop_box"])
@@ -825,7 +819,7 @@ class TextRecognizer:
         crop_box, text_height = paired_crop
         confidence = min(float(top_line["confidence"]), float(bottom_line["confidence"]))
         angle = self._combined_baseline_angle(top_line, bottom_line)
-        if self.baseline_strict_lines and not angle["baseline_pair_angle_consistent"]:
+        if not angle["baseline_pair_angle_consistent"]:
             return {
                 "ok": False,
                 "status": "neural_baseline_angle_mismatch",
@@ -1170,34 +1164,6 @@ class TextRecognizer:
         return best_line
 
 
-    def _baseline_crop_box(
-        self,
-        slope: float,
-        intercept: float,
-        xs: np.ndarray,
-        ys: np.ndarray,
-        image_width: int,
-    ) -> tuple[tuple[int, int, int, int], int]:
-        text_top = float(np.quantile(ys, 0.02))
-        text_bottom = float(np.quantile(ys, 0.98))
-        text_height = max(4.0, text_bottom - text_top + 1.0)
-        x_min = int(xs.min())
-        x_max = int(xs.max())
-        baseline_xs = np.arange(x_min, x_max + 1, dtype=np.float64)
-        baseline_ys = slope * baseline_xs + intercept
-        baseline_center = float(np.median(baseline_ys))
-        above_baseline = max(4.0, baseline_center - text_top)
-        if above_baseline < text_height * 0.35:
-            above_baseline = max(4.0, text_height * 0.85)
-
-        margin = max(0.0, above_baseline * self.baseline_line_pad + self.baseline_line_pad_px)
-        top = int(math.floor(min(text_top, float(baseline_ys.min()) - above_baseline) - margin))
-        bottom = int(math.ceil(max(text_bottom + 1.0, float(baseline_ys.max())) + margin))
-        if bottom <= top:
-            bottom = top + max(4, int(round(text_height)))
-
-        return (0, top, image_width, bottom), int(round(text_height))
-
     def _paired_baseline_crop_box(
         self,
         top_slope: float,
@@ -1218,34 +1184,17 @@ class TextRecognizer:
         text_bottom = float(np.quantile(ys, 0.98))
         line_height = float(np.median(bottom_ys - top_ys))
         bbox_height = text_bottom - text_top + 1.0
-        text_height = max(4.0, line_height, bbox_height)
 
         if line_height <= 2.0 or float(np.median(top_ys)) >= float(np.median(bottom_ys)):
-            if self.baseline_strict_lines:
-                return None
-            return self._baseline_crop_box(
-                slope=bottom_slope,
-                intercept=bottom_intercept,
-                xs=xs,
-                ys=ys,
-                image_width=image_width,
-            )
+            return None
 
-        if self.baseline_strict_lines:
-            margin_reference = max(line_height, bbox_height)
-            margin = max(0.0, margin_reference * self.baseline_line_pad + self.baseline_line_pad_px)
-            top = int(math.floor(float(top_ys.min()) - margin))
-            bottom = int(math.ceil(float(bottom_ys.max()) + 1.0 + margin))
-            if bottom <= top:
-                return None
-            return (0, top, image_width, bottom), max(1, int(round(bottom - top)))
-
-        margin = max(0.0, text_height * self.baseline_line_pad + self.baseline_line_pad_px)
-        top = int(math.floor(min(text_top, float(top_ys.min())) - margin))
-        bottom = int(math.ceil(max(text_bottom + 1.0, float(bottom_ys.max()) + 1.0) + margin))
+        margin_reference = max(line_height, bbox_height)
+        margin = max(0.0, margin_reference * self.baseline_line_pad + self.baseline_line_pad_px)
+        top = int(math.floor(float(top_ys.min()) - margin))
+        bottom = int(math.ceil(float(bottom_ys.max()) + 1.0 + margin))
         if bottom <= top:
-            bottom = top + max(4, int(round(text_height)))
-        return (0, top, image_width, bottom), int(round(text_height))
+            return None
+        return (0, top, image_width, bottom), max(1, int(round(bottom - top)))
 
     def _draw_baseline_overlay(
         self,
@@ -1494,8 +1443,8 @@ class TextRecognizer:
     def _map_input_boundary_to_ocr(self, boundary: float, input_width: int, ocr_width: int) -> int:
         if input_width <= 0 or ocr_width <= 0:
             return 0
-        left = min(max(0, self.legacy_crop_left), max(0, input_width - 1))
-        right = max(left + 1, input_width - max(0, self.legacy_crop_right))
+        left = min(max(0, self.ocr_crop_left), max(0, input_width - 1))
+        right = max(left + 1, input_width - max(0, self.ocr_crop_right))
         mapped = int(round((float(boundary) - float(left)) * float(ocr_width) / float(right - left)))
         return max(0, min(ocr_width, mapped))
 
@@ -1675,17 +1624,17 @@ class TextRecognizer:
         config: dict[str, Any] | Any | None,
     ) -> tuple[float, float] | None:
         ranges = self._glyph_prior_field(config, "ranges", {}) or {}
-        fallback = None
+        default_bounds = None
         for group, bounds in ranges.items():
             if group == "~":
-                fallback = bounds
+                default_bounds = bounds
                 continue
             if char in str(group):
                 low, high = bounds
                 return float(low), float(high)
-        if fallback is None:
+        if default_bounds is None:
             return None
-        low, high = fallback
+        low, high = default_bounds
         return float(low), float(high)
 
     def _glyph_width_prior_adjustment(
@@ -1829,7 +1778,7 @@ class TextRecognizer:
         total_score, raw_score, class_index, prior_score, ratio = ranked[0]
         return class_index, raw_score, prior_score, ratio, total_score, candidates
 
-    def decode_legacy_with_cuts(
+    def decode_fcn_ocr_with_cuts(
         self,
         logits: torch.Tensor,
         segmentation_result: VerticalSegmentationResult,
@@ -1842,13 +1791,13 @@ class TextRecognizer:
         segmentator_source_x: np.ndarray | None = None,
         glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
-        if self.loss_mode not in {"legacy", "legacy_logreg"}:
+        if self.loss_mode != "fcn_ocr":
             raise ValueError(
-                "legacy+cuts decoding expects a legacy OCR checkpoint; "
+                "FCN OCR+cuts decoding expects an fcn_ocr checkpoint; "
                 f"got loss_mode={self.loss_mode!r}"
             )
         if logits.dim() != 3 or logits.size(0) != 1:
-            raise ValueError(f"legacy+cuts decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
+            raise ValueError(f"FCN OCR+cuts decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
         if not 0.0 < center_fraction <= 1.0:
             raise ValueError("center_fraction must be in (0, 1]")
         if min_score_width < 1:
@@ -1996,7 +1945,7 @@ class TextRecognizer:
             decode_method="cells",
         )
 
-    def decode_legacy_with_cuts_dp(
+    def decode_fcn_ocr_with_cuts_dp(
         self,
         logits: torch.Tensor,
         segmentation_result: VerticalSegmentationResult,
@@ -2013,13 +1962,13 @@ class TextRecognizer:
         skip_cut_penalty: float = 0.35,
         glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
-        if self.loss_mode not in {"legacy", "legacy_logreg"}:
+        if self.loss_mode != "fcn_ocr":
             raise ValueError(
-                "legacy+cuts DP decoding expects a legacy OCR checkpoint; "
+                "FCN OCR+cuts DP decoding expects an fcn_ocr checkpoint; "
                 f"got loss_mode={self.loss_mode!r}"
             )
         if logits.dim() != 3 or logits.size(0) != 1:
-            raise ValueError(f"legacy+cuts DP decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
+            raise ValueError(f"FCN OCR+cuts DP decoding expects logits shape (1, C, T), got {tuple(logits.shape)}")
         if not 0.0 < center_fraction <= 1.0:
             raise ValueError("center_fraction must be in (0, 1]")
         if min_score_width < 1:
@@ -2052,28 +2001,9 @@ class TextRecognizer:
 
         candidate_cuts = self._candidate_cut_positions_from_scores(segmentation_result)
         if len(candidate_cuts) < 2:
-            fallback = self.decode_legacy_with_cuts(
-                logits,
-                segmentation_result,
-                input_width=input_width,
-                input_height=input_height,
-                top_k=top_k,
-                center_fraction=center_fraction,
-                min_score_width=min_score_width,
-                ocr_source_x=ocr_source_x,
-                segmentator_source_x=segmentator_source_x,
-                glyph_width_prior=glyph_width_prior,
-            )
-            return CutDecodingResult(
-                text=fallback.text,
-                symbols=fallback.symbols,
-                cuts=fallback.cuts,
-                boundaries=fallback.boundaries,
-                input_width=fallback.input_width,
-                ocr_width=fallback.ocr_width,
-                segmentator_width=fallback.segmentator_width,
-                decode_method="dp_fallback_cells",
-                path_score=fallback.path_score,
+            raise ValueError(
+                "FCN OCR DP decoding requires at least two candidate cuts, "
+                f"got {len(candidate_cuts)}"
             )
 
         boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
@@ -2256,28 +2186,8 @@ class TextRecognizer:
             if key[0] in end_index_set and key[1] > 0
         ]
         if not final_items:
-            fallback = self.decode_legacy_with_cuts(
-                logits,
-                segmentation_result,
-                input_width=input_width,
-                input_height=input_height,
-                top_k=top_k,
-                center_fraction=center_fraction,
-                min_score_width=min_score_width,
-                ocr_source_x=ocr_source_x,
-                segmentator_source_x=segmentator_source_x,
-                glyph_width_prior=glyph_width_prior,
-            )
-            return CutDecodingResult(
-                text=fallback.text,
-                symbols=fallback.symbols,
-                cuts=fallback.cuts,
-                boundaries=fallback.boundaries,
-                input_width=fallback.input_width,
-                ocr_width=fallback.ocr_width,
-                segmentator_width=fallback.segmentator_width,
-                decode_method="dp_fallback_cells",
-                path_score=fallback.path_score,
+            raise ValueError(
+                "FCN OCR DP decoding could not build a valid path through the cut candidates"
             )
 
         best_key, (best_score, _, _) = max(

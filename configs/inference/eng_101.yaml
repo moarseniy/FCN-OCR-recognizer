@@ -7,7 +7,6 @@ baseline:
   detector_threshold: 0.35
   deskew: true
   max_angle: 12.0
-  strict_lines: true
   line_pad: 0.08
   line_pad_px: 0.0
 

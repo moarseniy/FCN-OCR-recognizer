@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
+from fcn_ocr.inference_config import BaselineInferenceConfig
 from fcn_ocr.recognizer import TextRecognizer
 
 
-def _baseline_box_recognizer(*, strict: bool = True) -> TextRecognizer:
+def _baseline_box_recognizer() -> TextRecognizer:
     recognizer = TextRecognizer.__new__(TextRecognizer)
-    recognizer.baseline_strict_lines = strict
     recognizer.baseline_line_pad = 0.1
     recognizer.baseline_line_pad_px = 2.0
     return recognizer
 
 
-def test_strict_paired_baseline_crop_uses_both_lines_and_combined_padding() -> None:
+def test_paired_baseline_crop_uses_both_lines_and_combined_padding() -> None:
     recognizer = _baseline_box_recognizer()
     xs = np.arange(0, 20, dtype=np.float64)
     ys = np.linspace(12.0, 18.0, num=20, dtype=np.float64)
@@ -31,8 +32,8 @@ def test_strict_paired_baseline_crop_uses_both_lines_and_combined_padding() -> N
     assert result == ((0, 7, 20, 24), 17)
 
 
-def test_strict_paired_baseline_crop_rejects_crossed_lines() -> None:
-    recognizer = _baseline_box_recognizer(strict=True)
+def test_paired_baseline_crop_rejects_crossed_lines() -> None:
+    recognizer = _baseline_box_recognizer()
     xs = np.arange(0, 10, dtype=np.float64)
     ys = np.linspace(10.0, 12.0, num=10, dtype=np.float64)
 
@@ -47,3 +48,8 @@ def test_strict_paired_baseline_crop_rejects_crossed_lines() -> None:
     )
 
     assert result is None
+
+
+def test_baseline_config_rejects_removed_strict_lines_switch() -> None:
+    with pytest.raises(ValueError, match="strict_lines"):
+        BaselineInferenceConfig.model_validate({"strict_lines": False})

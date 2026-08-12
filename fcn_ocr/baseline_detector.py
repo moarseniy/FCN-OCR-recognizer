@@ -19,7 +19,6 @@ class BaselineDetector(TextRecognizer):
         threshold: float = 0.35,
         deskew: bool = True,
         max_angle: float = 12.0,
-        strict_lines: bool = True,
         line_pad: float = 0.08,
         line_pad_px: float = 0.0,
         background: int = 255,
@@ -34,7 +33,6 @@ class BaselineDetector(TextRecognizer):
         self.baseline_deskew = bool(deskew)
         self.baseline_line_pad = float(line_pad)
         self.baseline_line_pad_px = float(line_pad_px)
-        self.baseline_strict_lines = bool(strict_lines)
         self.baseline_max_angle = float(max_angle)
         self.preprocess_fill = int(background)
         self.baseline_detector_model = None

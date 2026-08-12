@@ -1,4 +1,4 @@
-sample_alphabet: " -0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+alphabet: " -0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 space_char: " "
 channels: 1
 seed: 43
@@ -8,7 +8,7 @@ chunk_size: 1024
 num_workers: 4
 overwrite: false
 
-save_dense_targets: false
+save_ocr_targets: false
 save_cut_projection_targets: true
 cut_projection_peak_radius: 1
 cut_projection_include_margins: true

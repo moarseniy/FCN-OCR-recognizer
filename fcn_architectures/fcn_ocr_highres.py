@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 
-ARCHITECTURE_NAME = "legacy_fcn_highres"
+ARCHITECTURE_NAME = "fcn_ocr_highres"
 
 
 def _scaled_channels(channels: int, width_multiplier: float) -> int:
@@ -37,13 +37,13 @@ def _conv_bn_relu(
     return nn.Sequential(*layers)
 
 
-class LegacyFCNHighRes(nn.Module):
+class FCNOCRHighRes(nn.Module):
     """
-    Plain legacy-like FCN with denser horizontal output.
+    Plain FCN OCR architecture with denser horizontal output.
 
-    This keeps the old valid-convolution style and vertical reduction path, but
+    This keeps the valid-convolution style and vertical reduction path, but
     changes conv2 horizontal stride from 2 to 1. For 48x64 crops it produces
-    T=48 instead of T=19, which is less coarse for dense OCR labels.
+    T=48 instead of T=19, which is less coarse for per-column OCR targets.
     """
 
     BASE_CHANNELS = (8, 12, 16, 16, 16, 24, 32, 48, 72)
@@ -101,15 +101,15 @@ class LegacyFCNHighRes(nn.Module):
 
         if y.size(2) != 1:
             raise RuntimeError(
-                "LegacyFCNHighRes expects output height 1 before squeezing; "
+                "FCNOCRHighRes expects output height 1 before squeezing; "
                 f"got output shape {tuple(y.shape)}. Check training image_height."
             )
 
         return y.squeeze(2)
 
 
-def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> LegacyFCNHighRes:
-    return LegacyFCNHighRes(
+def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> FCNOCRHighRes:
+    return FCNOCRHighRes(
         in_channels=in_channels,
         num_classes=num_classes,
         **dict(kwargs),

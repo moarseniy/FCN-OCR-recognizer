@@ -11,13 +11,6 @@ import torch.nn as nn
 _PACKAGE = "fcn_architectures"
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
-_ALIASES = {
-    "default": "legacy_fcn",
-    "fcn": "legacy_fcn",
-    "fully_conv_text_recognizer": "legacy_fcn",
-}
-
-
 def _discover_architectures() -> dict[str, str]:
     modules: dict[str, str] = {}
     for module_info in iter_modules([str(_PACKAGE_DIR)]):
@@ -30,18 +23,15 @@ def _discover_architectures() -> dict[str, str]:
         if getattr(module, "create_model", None) is None:
             continue
 
-        architecture_name = normalize_architecture_name(
-            getattr(module, "ARCHITECTURE_NAME", module_name)
-        )
+        architecture_name = normalize_architecture_name(module.ARCHITECTURE_NAME)
         modules[architecture_name] = module_path
     return modules
 
 
-def normalize_architecture_name(name: str | None) -> str:
-    if not name:
-        return "legacy_fcn"
-    normalized = str(name).strip().lower().replace("-", "_")
-    return _ALIASES.get(normalized, normalized)
+def normalize_architecture_name(name: str) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("architecture must be a non-empty module name")
+    return name.strip().lower()
 
 
 def available_architectures() -> tuple[str, ...]:
@@ -56,14 +46,11 @@ def _model_factory(name: str) -> Callable[..., nn.Module]:
         raise ValueError(f"Unknown FCN architecture: {name!r}. Available architectures: {available}")
 
     module = import_module(module_path)
-    factory = getattr(module, "create_model", None)
-    if factory is None:
-        raise ValueError(f"Architecture module {module_path!r} does not define create_model(...)")
-    return factory
+    return module.create_model
 
 
 def create_model(
-    architecture: str | None,
+    architecture: str,
     in_channels: int,
     num_classes: int,
     **architecture_params: Any,

@@ -35,7 +35,7 @@ class VerticalSegmentatorFCN(nn.Module):
 
     The network reduces only the vertical dimension. Output timestep T is equal
     to the input image width, so cut projection targets can be trained without
-    horizontal resampling or legacy crop offsets.
+    horizontal resampling or OCR crop offsets.
     """
 
     def __init__(

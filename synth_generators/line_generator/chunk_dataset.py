@@ -36,7 +36,7 @@ def validate_chunk_payload(
 
     expected_keys = {"images", "texts"}
     target_keys = {
-        "dense_targets": metadata.dense_targets,
+        "ocr_targets": metadata.ocr_targets,
         "cut_projection_targets": metadata.cut_projection_targets,
         "baseline_targets": metadata.baseline_targets,
     }
@@ -75,20 +75,25 @@ def validate_chunk_payload(
     if any(not isinstance(text, str) for text in texts):
         raise TypeError(f"Chunk {path} texts must contain only strings")
 
-    if metadata.dense_targets:
-        dense = chunk["dense_targets"]
+    if metadata.ocr_targets:
+        ocr_targets = chunk["ocr_targets"]
         expected_shape = (manifest_entry.samples, metadata.image_width)
-        if not isinstance(dense, torch.Tensor) or tuple(dense.shape) != expected_shape:
+        if (
+            not isinstance(ocr_targets, torch.Tensor)
+            or tuple(ocr_targets.shape) != expected_shape
+        ):
             raise ValueError(
-                f"Chunk {path} dense_targets must have shape {expected_shape}"
+                f"Chunk {path} ocr_targets must have shape {expected_shape}"
             )
-        if dense.dtype != torch.int16:
+        if ocr_targets.dtype != torch.int16:
             raise ValueError(
-                f"Chunk {path} dense_targets dtype must be int16, got {dense.dtype}"
+                f"Chunk {path} ocr_targets dtype must be int16, got {ocr_targets.dtype}"
             )
-        if int(dense.min()) < 0 or int(dense.max()) >= len(metadata.alphabet):
+        if int(ocr_targets.min()) < 0 or int(ocr_targets.max()) >= len(
+            metadata.alphabet
+        ):
             raise ValueError(
-                f"Chunk {path} dense_targets contain class indices outside metadata alphabet"
+                f"Chunk {path} ocr_targets contain class indices outside metadata alphabet"
             )
 
     if metadata.cut_projection_targets:
@@ -133,19 +138,19 @@ class ChunkedLineDataset(Dataset):
         *,
         config: SingleLineDatasetConfig,
         cache_size: int = 2,
-        target_format: str = "dense_symbols",
+        target_format: str = "fcn_ocr",
     ):
         self.root_dir = Path(root_dir).expanduser().resolve()
         self.cache_size = max(1, cache_size)
         self.config = config
         self.target_format = target_format
         if self.target_format not in {
-            "dense_symbols",
+            "fcn_ocr",
             "cut_projection",
             "baseline_heatmap",
         }:
             raise ValueError(
-                "target_format must be 'dense_symbols', 'cut_projection', or 'baseline_heatmap'"
+                "target_format must be 'fcn_ocr', 'cut_projection', or 'baseline_heatmap'"
             )
         self.metadata = load_chunk_metadata(self.root_dir)
         self.metadata.require_target(self.target_format)
@@ -185,8 +190,8 @@ class ChunkedLineDataset(Dataset):
 
         image = chunk["images"][local_idx]
 
-        if self.target_format == "dense_symbols":
-            return self._make_dense_symbol_target(image, chunk, local_idx)
+        if self.target_format == "fcn_ocr":
+            return self._make_ocr_target(image, chunk, local_idx)
         if self.target_format == "cut_projection":
             return self._make_cut_projection_target(image, chunk, local_idx)
         if self.target_format == "baseline_heatmap":
@@ -229,25 +234,25 @@ class ChunkedLineDataset(Dataset):
             self._chunk_cache.popitem(last=False)
         return chunk
 
-    def _make_dense_symbol_target(
+    def _make_ocr_target(
         self,
         image: torch.Tensor,
         chunk: dict,
         local_idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if "dense_targets" not in chunk:
+        if "ocr_targets" not in chunk:
             raise KeyError(
-                "Chunk does not contain dense_targets. Regenerate the dataset with "
-                "save_dense_targets: true in the generation config."
+                "Chunk does not contain ocr_targets. Regenerate the dataset with "
+                "save_ocr_targets: true in the generation config."
             )
-        target = chunk["dense_targets"][local_idx].long()
+        target = chunk["ocr_targets"][local_idx].long()
         if target.dim() != 1:
             raise ValueError(
-                f"dense target must have shape (W,), got {tuple(target.shape)}"
+                f"OCR target must have shape (W,), got {tuple(target.shape)}"
             )
         if target.size(0) != image.shape[-1]:
             raise ValueError(
-                f"dense target width {target.size(0)} does not match image width {image.shape[-1]}"
+                f"OCR target width {target.size(0)} does not match image width {image.shape[-1]}"
             )
         return image, target
 

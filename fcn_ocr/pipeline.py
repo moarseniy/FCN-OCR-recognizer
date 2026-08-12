@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Sequence
 
 from PIL import Image
 import torch
@@ -38,6 +39,13 @@ class OCRPipelineResult:
         if self.recognition is not None:
             return self.recognition.text
         return ""
+
+
+@dataclass(frozen=True)
+class OCRPipelinePathResult:
+    path: Path
+    text: str
+    error: str = ""
 
 
 class OCRPipeline:
@@ -93,7 +101,6 @@ class OCRPipeline:
                 threshold=baseline.detector_threshold,
                 deskew=baseline.deskew,
                 max_angle=baseline.max_angle,
-                strict_lines=baseline.strict_lines,
                 line_pad=baseline.line_pad,
                 line_pad_px=baseline.line_pad_px,
             )
@@ -115,7 +122,7 @@ class OCRPipeline:
             )
             print(
                 "    runs once before OCR/segmentator; "
-                f"deskew={baseline.deskew}, strict_lines={baseline.strict_lines}, "
+                f"deskew={baseline.deskew}, "
                 f"line_pad={baseline.line_pad:.3f}, line_pad_px={baseline.line_pad_px:.1f}"
             )
         print(
@@ -211,32 +218,13 @@ class OCRPipeline:
                 or segmentator_source_x is None
             ):
                 raise RuntimeError("decode stage requires completed OCR and segmentator stages")
-            decode_kwargs = {
-                "input_width": int(ocr_input.shape[-1]),
-                "input_height": int(ocr_input.shape[-2]),
-                "top_k": self.decode.top_k,
-                "center_fraction": self.decode.center_fraction,
-                "min_score_width": self.decode.min_score_width,
-                "ocr_source_x": ocr_source_x,
-                "segmentator_source_x": segmentator_source_x,
-                "glyph_width_prior": self.decode.glyph_width_prior.model_dump(),
-            }
-            if self.decode.method == "dp":
-                cut_decoding = self.recognizer.decode_legacy_with_cuts_dp(
-                    ocr_logits,
-                    segmentation,
-                    cut_weight=self.decode.cut_weight,
-                    ocr_weight=self.decode.ocr_weight,
-                    width_weight=self.decode.width_weight,
-                    skip_cut_penalty=self.decode.skip_cut_penalty,
-                    **decode_kwargs,
-                )
-            else:
-                cut_decoding = self.recognizer.decode_legacy_with_cuts(
-                    ocr_logits,
-                    segmentation,
-                    **decode_kwargs,
-                )
+            cut_decoding = self._decode_with_segmentator(
+                ocr_logits,
+                segmentation,
+                ocr_input=ocr_input,
+                ocr_source_x=ocr_source_x,
+                segmentator_source_x=segmentator_source_x,
+            )
 
         return OCRPipelineResult(
             recognition=recognition,
@@ -250,3 +238,334 @@ class OCRPipeline:
             segmentator_preprocess_debug=segmentator_debug,
             cut_decoding=cut_decoding,
         )
+
+    @torch.no_grad()
+    def recognize_paths_text(
+        self,
+        image_paths: Sequence[str | Path],
+        batch_size: int = 1,
+        log_every: int = 0,
+    ) -> tuple[list[OCRPipelinePathResult], dict[str, float | int]]:
+        if self.recognizer is None:
+            raise ValueError("OCRPipeline text recognition requires an ocr section")
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
+        paths = [Path(path) for path in image_paths]
+        results: dict[int, OCRPipelinePathResult] = {}
+        prepared: list[dict[str, Any]] = []
+        for index, path in enumerate(paths):
+            try:
+                with Image.open(path) as image_file:
+                    source = image_file.convert("RGB")
+                if self.baseline_processor is not None:
+                    baseline_image, _ = self.baseline_processor.prepare_baseline_image(
+                        source,
+                        collect_debug=False,
+                    )
+                else:
+                    baseline_image = source
+
+                ocr_input, ocr_source_x = (
+                    self.recognizer.preprocess_pil_after_baseline_with_source_x(
+                        baseline_image
+                    )
+                )
+                ocr_output_width = self.recognizer.output_width_for_input_width(
+                    int(ocr_input.shape[-1])
+                )
+                if ocr_output_width < 1:
+                    raise ValueError(
+                        "OCR preprocessing produced an input that is too narrow for "
+                        f"{self.recognizer.architecture}: input={tuple(ocr_input.shape)}"
+                    )
+
+                item: dict[str, Any] = {
+                    "index": index,
+                    "path": path,
+                    "ocr_input": ocr_input,
+                    "ocr_source_x": ocr_source_x,
+                    "ocr_output_width": ocr_output_width,
+                }
+                if self.segmentator is not None:
+                    segmentator_input, segmentator_source_x = (
+                        self.segmentator.preprocess_pil_after_baseline_with_source_x(
+                            baseline_image
+                        )
+                    )
+                    segmentator_output_width = (
+                        self.segmentator.output_width_for_input_width(
+                            int(segmentator_input.shape[-1])
+                        )
+                    )
+                    if segmentator_output_width < 1:
+                        raise ValueError(
+                            "Segmentator preprocessing produced an input that is too narrow for "
+                            f"{self.segmentator.architecture}: "
+                            f"input={tuple(segmentator_input.shape)}"
+                        )
+                    item.update(
+                        {
+                            "segmentator_input": segmentator_input,
+                            "segmentator_source_x": segmentator_source_x,
+                            "segmentator_output_width": segmentator_output_width,
+                        }
+                    )
+                prepared.append(item)
+            except Exception as error:
+                results[index] = OCRPipelinePathResult(
+                    path=path,
+                    text="",
+                    error=repr(error),
+                )
+
+        gpu_batches = 0
+        gpu_batch_items = 0
+        padded_width_total = 0
+        useful_width_total = 0
+        max_gpu_batch_size = 0
+        processed = len(results)
+        for width_batch in self._make_width_aware_batches(
+            prepared,
+            max_batch_size=batch_size,
+        ):
+            try:
+                ocr_batch = self._pad_inference_batch(
+                    [item["ocr_input"] for item in width_batch],
+                    device=self.recognizer.device,
+                )
+                ocr_logits, _ = self.recognizer.logits_from_tensor(ocr_batch)
+
+                segmentator_logits = None
+                segmentator_batch = None
+                if self.segmentator is not None:
+                    segmentator_batch = self._pad_inference_batch(
+                        [item["segmentator_input"] for item in width_batch],
+                        device=self.segmentator.device,
+                    )
+                    segmentator_logits, _ = self.segmentator.logits_from_tensor(
+                        segmentator_batch
+                    )
+
+                gpu_batches += 1
+                gpu_batch_items += len(width_batch)
+                max_gpu_batch_size = max(max_gpu_batch_size, len(width_batch))
+                for item in width_batch:
+                    useful_width_total += int(item["ocr_input"].shape[-1])
+                    if self.segmentator is not None:
+                        useful_width_total += int(item["segmentator_input"].shape[-1])
+                padded_width_total += len(width_batch) * int(ocr_batch.shape[-1])
+                if segmentator_batch is not None:
+                    padded_width_total += len(width_batch) * int(
+                        segmentator_batch.shape[-1]
+                    )
+
+                for batch_index, item in enumerate(width_batch):
+                    index = int(item["index"])
+                    path = item["path"]
+                    try:
+                        sample_ocr_logits = ocr_logits[
+                            batch_index : batch_index + 1,
+                            :,
+                            : int(item["ocr_output_width"]),
+                        ]
+                        if self.decode is not None and self.decode.enabled:
+                            if self.segmentator is None or segmentator_logits is None:
+                                raise RuntimeError(
+                                    "decode stage requires a segmentator section"
+                                )
+                            segmentator_input = item["segmentator_input"]
+                            sample_segmentator_logits = segmentator_logits[
+                                batch_index : batch_index + 1,
+                                :,
+                                : int(item["segmentator_output_width"]),
+                            ]
+                            segmentation = self.segmentator.analyze_segmentation_logits(
+                                sample_segmentator_logits,
+                                input_shape=(1, *tuple(segmentator_input.shape)),
+                            )
+                            decoded = self._decode_with_segmentator(
+                                sample_ocr_logits,
+                                segmentation,
+                                ocr_input=item["ocr_input"],
+                                ocr_source_x=item["ocr_source_x"],
+                                segmentator_source_x=item["segmentator_source_x"],
+                            )
+                            text = decoded.text
+                        else:
+                            text, _ = self.recognizer.decode_predictions(
+                                sample_ocr_logits
+                            )
+                        results[index] = OCRPipelinePathResult(
+                            path=path,
+                            text=text.strip(),
+                        )
+                    except Exception as error:
+                        results[index] = OCRPipelinePathResult(
+                            path=path,
+                            text="",
+                            error=repr(error),
+                        )
+            except Exception as error:
+                for item in width_batch:
+                    index = int(item["index"])
+                    results[index] = OCRPipelinePathResult(
+                        path=item["path"],
+                        text="",
+                        error=f"batch_error={error!r}",
+                    )
+
+            processed += len(width_batch)
+            if log_every > 0 and (
+                processed == len(paths) or processed % log_every == 0
+            ):
+                print(f"Recognized {processed}/{len(paths)} images")
+
+        ordered = [results[index] for index in range(len(paths))]
+        padding_efficiency = (
+            useful_width_total / padded_width_total
+            if padded_width_total > 0
+            else 1.0
+        )
+        return ordered, {
+            "gpu_batches": gpu_batches,
+            "average_gpu_batch_size": (
+                gpu_batch_items / gpu_batches if gpu_batches > 0 else 0.0
+            ),
+            "max_gpu_batch_size": max_gpu_batch_size,
+            "padding_efficiency": padding_efficiency,
+        }
+
+    def _decode_with_segmentator(
+        self,
+        ocr_logits: torch.Tensor,
+        segmentation: VerticalSegmentationResult,
+        *,
+        ocr_input: torch.Tensor,
+        ocr_source_x,
+        segmentator_source_x,
+    ) -> CutDecodingResult:
+        if self.recognizer is None or self.decode is None or not self.decode.enabled:
+            raise RuntimeError("segmentator decode is not enabled")
+        decode_kwargs = {
+            "input_width": int(ocr_input.shape[-1]),
+            "input_height": int(ocr_input.shape[-2]),
+            "top_k": self.decode.top_k,
+            "center_fraction": self.decode.center_fraction,
+            "min_score_width": self.decode.min_score_width,
+            "ocr_source_x": ocr_source_x,
+            "segmentator_source_x": segmentator_source_x,
+            "glyph_width_prior": self.decode.glyph_width_prior.model_dump(),
+        }
+        if self.decode.method == "dp":
+            return self.recognizer.decode_fcn_ocr_with_cuts_dp(
+                ocr_logits,
+                segmentation,
+                cut_weight=self.decode.cut_weight,
+                ocr_weight=self.decode.ocr_weight,
+                width_weight=self.decode.width_weight,
+                skip_cut_penalty=self.decode.skip_cut_penalty,
+                **decode_kwargs,
+            )
+        return self.recognizer.decode_fcn_ocr_with_cuts(
+            ocr_logits,
+            segmentation,
+            **decode_kwargs,
+        )
+
+    @staticmethod
+    def _make_width_aware_batches(
+        prepared: list[dict[str, Any]],
+        max_batch_size: int,
+        max_width_ratio: float = 1.35,
+    ) -> list[list[dict[str, Any]]]:
+        if max_batch_size < 1:
+            raise ValueError("max_batch_size must be >= 1")
+        if max_width_ratio < 1.0:
+            raise ValueError("max_width_ratio must be >= 1")
+
+        def stage_widths(item: dict[str, Any]) -> tuple[int, int | None]:
+            segmentator_width = (
+                int(item["segmentator_input"].shape[-1])
+                if "segmentator_input" in item
+                else None
+            )
+            return int(item["ocr_input"].shape[-1]), segmentator_width
+
+        ordered = sorted(prepared, key=lambda item: stage_widths(item)[0])
+        batches: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+        min_ocr_width = max_ocr_width = 0
+        min_segmentator_width = max_segmentator_width = 0
+        for item in ordered:
+            ocr_width, segmentator_width = stage_widths(item)
+            if not current:
+                current = [item]
+                min_ocr_width = max_ocr_width = ocr_width
+                if segmentator_width is not None:
+                    min_segmentator_width = max_segmentator_width = segmentator_width
+                continue
+
+            next_min_ocr = min(min_ocr_width, ocr_width)
+            next_max_ocr = max(max_ocr_width, ocr_width)
+            ocr_compatible = (
+                next_max_ocr / max(1, next_min_ocr) <= max_width_ratio
+            )
+            segmentator_compatible = True
+            if segmentator_width is not None:
+                next_min_segmentator = min(
+                    min_segmentator_width,
+                    segmentator_width,
+                )
+                next_max_segmentator = max(
+                    max_segmentator_width,
+                    segmentator_width,
+                )
+                segmentator_compatible = (
+                    next_max_segmentator / max(1, next_min_segmentator)
+                    <= max_width_ratio
+                )
+            if (
+                len(current) >= max_batch_size
+                or not ocr_compatible
+                or not segmentator_compatible
+            ):
+                batches.append(current)
+                current = [item]
+                min_ocr_width = max_ocr_width = ocr_width
+                if segmentator_width is not None:
+                    min_segmentator_width = max_segmentator_width = segmentator_width
+                continue
+            current.append(item)
+            min_ocr_width = next_min_ocr
+            max_ocr_width = next_max_ocr
+            if segmentator_width is not None:
+                min_segmentator_width = next_min_segmentator
+                max_segmentator_width = next_max_segmentator
+        if current:
+            batches.append(current)
+        return batches
+
+    @staticmethod
+    def _pad_inference_batch(
+        tensors: list[torch.Tensor],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if not tensors:
+            raise ValueError("Cannot build an empty inference batch")
+        channels = int(tensors[0].shape[0])
+        height = int(tensors[0].shape[1])
+        max_width = max(int(tensor.shape[-1]) for tensor in tensors)
+        batch = torch.ones(
+            (len(tensors), channels, height, max_width),
+            dtype=tensors[0].dtype,
+            device=device,
+        )
+        for batch_index, tensor in enumerate(tensors):
+            if tuple(tensor.shape[:2]) != (channels, height):
+                raise ValueError(
+                    "All tensors in an inference batch must have equal channels/height; "
+                    f"expected {(channels, height)}, got {tuple(tensor.shape[:2])}"
+                )
+            batch[batch_index, :, :, : tensor.shape[-1]] = tensor.to(device)
+        return batch

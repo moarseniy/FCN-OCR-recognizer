@@ -6,7 +6,6 @@ import numpy as np
 from PIL import Image
 import torch
 
-from evaluate_ocr import recognize_images_with_segmentator
 from fcn_ocr.inference_config import InferenceConfig
 from fcn_ocr.pipeline import OCRPipeline
 from fcn_ocr.results import CutDecodingResult, PreprocessDebug, RecognitionResult
@@ -55,7 +54,7 @@ class _FakeRecognizer:
         return recognition, logits
 
     @staticmethod
-    def decode_legacy_with_cuts(logits, segmentation_result, **kwargs):
+    def decode_fcn_ocr_with_cuts(logits, segmentation_result, **kwargs):
         return CutDecodingResult(
             text="AB",
             symbols=[],
@@ -130,22 +129,10 @@ def test_pipeline_and_evaluation_path_return_the_same_decoded_text(
             _pipeline_with_fakes(recognizer, segmentator).recognize_pil(image).text
         )
 
-    predictions, errors, _ = recognize_images_with_segmentator(
+    path_results, _ = _pipeline_with_fakes(
         recognizer,
         segmentator,
-        [(0, image_path)],
-        batch_size=1,
-        log_every=0,
-        segmentator_decode_method="cells",
-        segmentator_decode_top_k=8,
-        segmentator_decode_center_fraction=0.6,
-        segmentator_decode_min_score_width=1,
-        segmentator_decode_cut_weight=1.0,
-        segmentator_decode_ocr_weight=1.0,
-        segmentator_decode_width_weight=0.05,
-        segmentator_decode_skip_cut_penalty=0.35,
-        segmentator_decode_glyph_width_prior=None,
-    )
+    ).recognize_paths_text([image_path], batch_size=1)
 
-    assert errors == {0: ""}
-    assert pipeline_text == predictions[0] == "AB"
+    assert path_results[0].error == ""
+    assert pipeline_text == path_results[0].text == "AB"

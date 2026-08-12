@@ -22,7 +22,6 @@ class VerticalSegmentator(TextRecognizer):
         baseline_crop: bool = False,
         baseline_deskew: bool = True,
         baseline_max_angle: float = 12.0,
-        baseline_strict_lines: bool = True,
         baseline_line_pad: float = 0.08,
         baseline_line_pad_px: float = 0.0,
         baseline_detector_checkpoint: str | Path | None = None,
@@ -42,45 +41,37 @@ class VerticalSegmentator(TextRecognizer):
             baseline_crop=baseline_crop,
             baseline_deskew=baseline_deskew,
             baseline_max_angle=baseline_max_angle,
-            baseline_strict_lines=baseline_strict_lines,
             baseline_line_pad=baseline_line_pad,
             baseline_line_pad_px=baseline_line_pad_px,
             baseline_detector_checkpoint=baseline_detector_checkpoint,
             baseline_detector_threshold=baseline_detector_threshold,
         )
-        checkpoint_config = self.checkpoint.get("config", {})
-        model_config = self.checkpoint.get("model_config", {})
-        self.target_format = str(
-            model_config.get("target_format", checkpoint_config.get("target_format", ""))
-        ).lower()
-        if self.loss_mode == "cut_projection" or self.num_classes == 1:
-            self.target_format = "cut_projection"
-
-        if self.target_format != "cut_projection" or self.num_classes != 1:
+        if (
+            self.target_format != "cut_projection"
+            or self.loss_mode != "cut_projection"
+            or self.num_classes != 1
+        ):
             raise ValueError(
                 "VerticalSegmentator expects a cut_projection checkpoint with one output channel; "
                 f"got target_format={self.target_format!r}, num_classes={self.num_classes}"
             )
 
-        self.cut_threshold = self._resolve_cut_threshold(cut_threshold, checkpoint_config)
+        self.cut_threshold = self._resolve_cut_threshold(cut_threshold)
         self.cut_min_width = self._resolve_non_negative_int(
             cut_min_width,
-            checkpoint_config,
-            "segmentator_cut_min_width",
+            "cut_min_width",
             default=1,
             min_value=1,
         )
         self.cut_max_width = self._resolve_non_negative_int(
             cut_max_width,
-            checkpoint_config,
-            "segmentator_cut_max_width",
+            "cut_max_width",
             default=0,
             min_value=0,
         )
         self.cut_smooth_radius = self._resolve_non_negative_int(
             cut_smooth_radius,
-            checkpoint_config,
-            "segmentator_cut_smooth_radius",
+            "cut_smooth_radius",
             default=0,
             min_value=0,
         )
@@ -89,8 +80,8 @@ class VerticalSegmentator(TextRecognizer):
             self.print_summary()
 
     @staticmethod
-    def _resolve_cut_threshold(value: float | None, config: dict) -> float:
-        resolved = float(config.get("segmentator_cut_threshold", 0.5) if value is None else value)
+    def _resolve_cut_threshold(value: float | None) -> float:
+        resolved = 0.5 if value is None else float(value)
         if not 0.0 < resolved < 1.0:
             raise ValueError("segmentator cut threshold must be between 0 and 1")
         return resolved
@@ -98,21 +89,20 @@ class VerticalSegmentator(TextRecognizer):
     @staticmethod
     def _resolve_non_negative_int(
         value: int | None,
-        config: dict,
         key: str,
         default: int,
         min_value: int,
     ) -> int:
-        resolved = int(config.get(key, default) if value is None else value)
+        resolved = default if value is None else int(value)
         if resolved < min_value:
             raise ValueError(f"{key} must be >= {min_value}")
         return resolved
 
     def print_summary(self) -> None:
-        epoch = self.checkpoint.get("epoch", "?")
-        loss = self.checkpoint.get("loss")
-        loss_text = f", loss: {loss:.8f}" if isinstance(loss, float) else ""
-        print(f"Segmentator loaded from epoch {epoch}{loss_text}")
+        print(
+            f"Segmentator loaded from epoch {self.checkpoint['epoch']}, "
+            f"loss: {float(self.checkpoint['loss']):.8f}"
+        )
         print(f"Segmentator checkpoint: {self.checkpoint_path}")
         print(f"Segmentator device: {self.device}")
         print(f"Segmentator input height: {self.image_height}")

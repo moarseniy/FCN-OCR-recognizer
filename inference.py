@@ -102,7 +102,6 @@ def _load_source_image(
     dataset_config = dataset_config.model_copy(
         update={
             "alphabet": recognizer.alphabet,
-            "sample_alphabet": recognizer.alphabet,
             "channels": recognizer.in_channels,
             "image_height": recognizer.image_height,
         }
@@ -155,15 +154,15 @@ def _debug_metadata(
     if result.cut_decoding is not None:
         metadata.update(
             {
-                "legacy_cuts_text": result.cut_decoding.text,
-                "legacy_cuts_decode_method": result.cut_decoding.decode_method,
-                "legacy_cuts_path_score": result.cut_decoding.path_score,
-                "legacy_cuts_symbols": len(result.cut_decoding.symbols),
-                "legacy_cuts_raw_cuts": len(result.cut_decoding.cuts),
-                "legacy_cuts_decode_center_fraction": config.ocr.decode.center_fraction,
-                "legacy_cuts_decode_min_score_width": config.ocr.decode.min_score_width,
-                "legacy_cuts_decode_skip_cut_penalty": config.ocr.decode.skip_cut_penalty,
-                "legacy_cuts_decode_glyph_width_prior": config.ocr.decode.glyph_width_prior.model_dump(),
+                "fcn_ocr_cuts_text": result.cut_decoding.text,
+                "fcn_ocr_cuts_decode_method": result.cut_decoding.decode_method,
+                "fcn_ocr_cuts_path_score": result.cut_decoding.path_score,
+                "fcn_ocr_cuts_symbols": len(result.cut_decoding.symbols),
+                "fcn_ocr_cuts_raw_cuts": len(result.cut_decoding.cuts),
+                "fcn_ocr_cuts_decode_center_fraction": config.ocr.decode.center_fraction,
+                "fcn_ocr_cuts_decode_min_score_width": config.ocr.decode.min_score_width,
+                "fcn_ocr_cuts_decode_skip_cut_penalty": config.ocr.decode.skip_cut_penalty,
+                "fcn_ocr_cuts_decode_glyph_width_prior": config.ocr.decode.glyph_width_prior.model_dump(),
             }
         )
     return metadata
@@ -186,7 +185,7 @@ def main() -> None:
         )
     if result.cut_decoding is not None:
         print(
-            f"Recognized text (legacy+cuts/{result.cut_decoding.decode_method}): "
+            f"Recognized text (fcn_ocr+cuts/{result.cut_decoding.decode_method}): "
             f"'{result.cut_decoding.text}'"
         )
     if result.recognition is not None:

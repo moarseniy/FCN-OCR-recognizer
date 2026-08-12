@@ -11,7 +11,6 @@ from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
 
 def _augmenter() -> GpuTextAugmenter:
     config = SingleLineDatasetConfig(
-        sample_alphabet=" AB",
         alphabet=" AB",
         augmentation_probabilities={"x_pad": 1.0},
         augmentations={
@@ -26,7 +25,7 @@ def _augmenter() -> GpuTextAugmenter:
     return GpuTextAugmenter(config)
 
 
-def test_x_pad_resizes_dense_content_and_labels_new_edges_as_space() -> None:
+def test_x_pad_resizes_ocr_content_and_labels_new_edges_as_space() -> None:
     augmenter = _augmenter()
     image = torch.linspace(0.0, 1.0, 6).reshape(1, 1, 1, 6).repeat(1, 1, 4, 1)
     target = torch.tensor([[1, 1, 1, 2, 2, 2]])
@@ -34,7 +33,7 @@ def test_x_pad_resizes_dense_content_and_labels_new_edges_as_space() -> None:
     augmented_image, augmented_target, metadata = augmenter.augment_with_metadata(
         image,
         targets=target,
-        target_format="dense_symbols",
+        target_format="fcn_ocr",
     )
 
     assert tuple(augmented_image.shape) == tuple(image.shape)
@@ -70,7 +69,7 @@ def test_x_pad_metadata_replays_the_same_geometry_on_another_target() -> None:
 
     replayed = augmenter.apply_metadata_to_targets(
         target,
-        target_format="dense_symbols",
+        target_format="fcn_ocr",
         metadata=metadata,
     )
 
@@ -116,14 +115,13 @@ def test_crop_y_replays_on_both_baseline_heatmap_channels() -> None:
         ("crop_x", {"left": 2, "right": 1}),
     ],
 )
-def test_sampled_geometric_metadata_replays_exactly_on_dense_targets(
+def test_sampled_geometric_metadata_replays_exactly_on_ocr_targets(
     name: str,
     params: dict[str, float | int],
 ) -> None:
     random.seed(7)
     torch.manual_seed(7)
     config = SingleLineDatasetConfig(
-        sample_alphabet=" AB",
         alphabet=" AB",
         augmentation_probabilities={name: 1.0},
         augmentations={name: params},
@@ -135,11 +133,11 @@ def test_sampled_geometric_metadata_replays_exactly_on_dense_targets(
     _, augmented_target, metadata = augmenter.augment_with_metadata(
         image,
         targets=target,
-        target_format="dense_symbols",
+        target_format="fcn_ocr",
     )
     replayed_target = augmenter.apply_metadata_to_targets(
         target,
-        target_format="dense_symbols",
+        target_format="fcn_ocr",
         metadata=metadata,
     )
 

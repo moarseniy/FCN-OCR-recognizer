@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
-from loss import _align_logits_and_labels, legacy_dense_symbols_to_labels
+from loss import _align_logits_and_labels, fcn_ocr_targets_to_labels
 from synth_generators.line_generator.dataset import (
     SingleLineDataset,
     SingleLineDatasetConfig,
@@ -11,9 +12,8 @@ from synth_generators.line_generator.dataset import (
 
 def _dataset_without_rendering() -> SingleLineDataset:
     config = SingleLineDatasetConfig(
-        sample_alphabet=" AB",
         alphabet=" AB",
-        save_dense_targets=True,
+        save_ocr_targets=True,
     )
     dataset = SingleLineDataset.__new__(SingleLineDataset)
     dataset.config = config
@@ -22,10 +22,10 @@ def _dataset_without_rendering() -> SingleLineDataset:
     return dataset
 
 
-def test_dense_target_marks_pixels_outside_visible_ink_as_space() -> None:
+def test_ocr_target_marks_pixels_outside_visible_ink_as_space() -> None:
     dataset = _dataset_without_rendering()
 
-    labels = dataset._encode_dense_symbols(
+    labels = dataset._encode_ocr_targets(
         spans=[("A", 2.0, 5.0), ("B", 5.0, 8.0)],
         ink_spans=[("A", 2.0, 5.0), ("B", 5.0, 8.0)],
         width=10,
@@ -34,10 +34,10 @@ def test_dense_target_marks_pixels_outside_visible_ink_as_space() -> None:
     assert labels.tolist() == [0, 0, 1, 1, 1, 2, 2, 2, 0, 0]
 
 
-def test_dense_target_uses_nearest_character_between_logical_spans() -> None:
+def test_ocr_target_uses_nearest_character_between_logical_spans() -> None:
     dataset = _dataset_without_rendering()
 
-    labels = dataset._encode_dense_symbols(
+    labels = dataset._encode_ocr_targets(
         spans=[("A", 1.0, 3.0), ("B", 5.0, 7.0)],
         ink_spans=[("A", 1.0, 3.0), ("B", 5.0, 7.0)],
         width=8,
@@ -54,7 +54,6 @@ def test_majority_alignment_keeps_clear_bins_and_ignores_ambiguous_bins() -> Non
         logits,
         labels,
         strict_width=False,
-        label_align="majority_bins",
         label_min_majority=0.6,
         ignore_index=-100,
     )
@@ -62,9 +61,16 @@ def test_majority_alignment_keeps_clear_bins_and_ignores_ambiguous_bins() -> Non
     assert aligned.tolist() == [[-100, 2]]
 
 
-def test_legacy_dense_crop_only_removes_configured_columns() -> None:
+def test_fcn_ocr_crop_only_removes_configured_columns() -> None:
     labels = torch.tensor([[0, 1, 1, 2, 2, 0]])
 
-    cropped = legacy_dense_symbols_to_labels(labels, crop_left=1, crop_right=1)
+    cropped = fcn_ocr_targets_to_labels(labels, crop_left=1, crop_right=1)
 
     assert cropped.tolist() == [[1, 1, 2, 2]]
+
+
+def test_fcn_ocr_targets_reject_removed_image_map_format() -> None:
+    targets = torch.zeros((1, 1, 4, 8), dtype=torch.long)
+
+    with pytest.raises(ValueError, match=r"shape \(B, W\)"):
+        fcn_ocr_targets_to_labels(targets)

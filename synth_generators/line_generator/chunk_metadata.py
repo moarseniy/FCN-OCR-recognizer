@@ -39,7 +39,6 @@ class ChunkMetadata(BaseModel):
     format: Literal[CHUNK_FORMAT]
     version: Literal[CHUNK_METADATA_VERSION]
     alphabet: str
-    sample_alphabet: str
     space_char: str
     samples: int = Field(ge=1)
     image_height: int = Field(ge=1)
@@ -66,25 +65,25 @@ class ChunkMetadata(BaseModel):
     ink_spacing_min_char_gap_px: float = 0.0
     ink_spacing_touch_gap_px: float = Field(default=0.5, ge=0.0)
     ink_spacing_touch_probability: float = Field(default=1.0, ge=0.0, le=1.0)
-    dense_targets: bool
-    dense_target_edge_bounds: Literal["ink"] = "ink"
+    ocr_targets: bool
+    ocr_target_edge_bounds: Literal["ink"] = "ink"
     cut_projection_targets: bool
     cut_projection_peak_radius: int = Field(ge=0)
     cut_projection_include_margins: bool
     baseline_targets: bool
     baseline_target_radius: int = Field(ge=0)
     dtype: Literal["uint8"]
-    dense_target_dtype: Literal["int16"] | None = None
+    ocr_target_dtype: Literal["int16"] | None = None
     cut_projection_target_dtype: Literal["uint8"] | None = None
     baseline_target_dtype: Literal["uint8"] | None = None
     chunk_size: int = Field(ge=1)
     chunk_count: int = Field(ge=1)
     chunks: list[ChunkManifestEntry]
     text_char_counts: dict[str, int]
-    dense_class_counts: list[int] | None
+    ocr_class_counts: list[int] | None
     max_observed_text_length: int = Field(ge=0)
 
-    @field_validator("alphabet", "sample_alphabet")
+    @field_validator("alphabet")
     @classmethod
     def alphabets_must_be_nonempty_and_unique(cls, value: str) -> str:
         if not value:
@@ -116,11 +115,6 @@ class ChunkMetadata(BaseModel):
     def validate_contract(self) -> "ChunkMetadata":
         if self.space_char not in self.alphabet:
             raise ValueError("space_char must be present in alphabet")
-        missing_sample_chars = sorted(set(self.sample_alphabet) - set(self.alphabet))
-        if missing_sample_chars:
-            raise ValueError(
-                f"alphabet does not cover sample_alphabet chars: {missing_sample_chars}"
-            )
         if self.max_text_length < self.min_text_length:
             raise ValueError("max_text_length must be >= min_text_length")
         if self.word_count_max < self.word_count_min:
@@ -146,25 +140,25 @@ class ChunkMetadata(BaseModel):
             raise ValueError(
                 "text_char_counts keys must exactly match the dataset alphabet"
             )
-        if self.dense_class_counts is not None:
-            if len(self.dense_class_counts) != len(self.alphabet):
-                raise ValueError("dense_class_counts length must match alphabet length")
-            if any(count < 0 for count in self.dense_class_counts):
-                raise ValueError("dense_class_counts values must be non-negative")
+        if self.ocr_class_counts is not None:
+            if len(self.ocr_class_counts) != len(self.alphabet):
+                raise ValueError("ocr_class_counts length must match alphabet length")
+            if any(count < 0 for count in self.ocr_class_counts):
+                raise ValueError("ocr_class_counts values must be non-negative")
 
-        if self.dense_targets:
-            if self.dense_target_dtype != "int16" or self.dense_class_counts is None:
+        if self.ocr_targets:
+            if self.ocr_target_dtype != "int16" or self.ocr_class_counts is None:
                 raise ValueError(
-                    "dense targets require int16 dtype and dense_class_counts"
+                    "OCR targets require int16 dtype and ocr_class_counts"
                 )
-            expected_dense_values = self.samples * self.image_width
-            if sum(self.dense_class_counts) != expected_dense_values:
+            expected_ocr_values = self.samples * self.image_width
+            if sum(self.ocr_class_counts) != expected_ocr_values:
                 raise ValueError(
-                    "dense_class_counts sum does not match samples * image_width"
+                    "ocr_class_counts sum does not match samples * image_width"
                 )
-        elif self.dense_target_dtype is not None or self.dense_class_counts is not None:
+        elif self.ocr_target_dtype is not None or self.ocr_class_counts is not None:
             raise ValueError(
-                "dense target metadata is present while dense_targets is false"
+                "OCR target metadata is present while ocr_targets is false"
             )
 
         expected_cut_dtype = "uint8" if self.cut_projection_targets else None
@@ -179,7 +173,7 @@ class ChunkMetadata(BaseModel):
 
     def require_target(self, target_format: str) -> None:
         available = {
-            "dense_symbols": self.dense_targets,
+            "fcn_ocr": self.ocr_targets,
             "cut_projection": self.cut_projection_targets,
             "baseline_heatmap": self.baseline_targets,
         }
@@ -193,7 +187,6 @@ class ChunkMetadata(BaseModel):
     def dataset_config_data(self) -> dict[str, Any]:
         return {
             "alphabet": self.alphabet,
-            "sample_alphabet": self.sample_alphabet,
             "space_char": self.space_char,
             "samples": self.samples,
             "image_height": self.image_height,
@@ -220,7 +213,7 @@ class ChunkMetadata(BaseModel):
             "ink_spacing_min_char_gap_px": self.ink_spacing_min_char_gap_px,
             "ink_spacing_touch_gap_px": self.ink_spacing_touch_gap_px,
             "ink_spacing_touch_probability": self.ink_spacing_touch_probability,
-            "save_dense_targets": self.dense_targets,
+            "save_ocr_targets": self.ocr_targets,
             "save_cut_projection_targets": self.cut_projection_targets,
             "cut_projection_peak_radius": self.cut_projection_peak_radius,
             "cut_projection_include_margins": self.cut_projection_include_margins,

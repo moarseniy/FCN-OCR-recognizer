@@ -28,23 +28,22 @@ ALPHABET = " AB"
 
 
 def _chunk_payload(*, image_dtype: torch.dtype = torch.uint8) -> dict:
-    dense = torch.zeros((2, 32), dtype=torch.int16)
-    dense[0, 8:24] = 1
-    dense[1, 8:24] = 2
+    ocr_targets = torch.zeros((2, 32), dtype=torch.int16)
+    ocr_targets[0, 8:24] = 1
+    ocr_targets[1, 8:24] = 2
     return {
         "images": torch.zeros((2, 1, 16, 32), dtype=image_dtype),
         "texts": ["A", "B"],
-        "dense_targets": dense,
+        "ocr_targets": ocr_targets,
     }
 
 
 def _metadata_data(*, version: int = CHUNK_METADATA_VERSION) -> dict:
-    dense_counts = [32, 16, 16]
+    ocr_counts = [32, 16, 16]
     data = {
         "format": CHUNK_FORMAT,
         "version": version,
         "alphabet": ALPHABET,
-        "sample_alphabet": ALPHABET,
         "space_char": " ",
         "samples": 2,
         "image_height": 16,
@@ -67,7 +66,7 @@ def _metadata_data(*, version: int = CHUNK_METADATA_VERSION) -> dict:
         "neighbor_line_visible_ratio_min": 0.06,
         "neighbor_line_gap_min": 0,
         "neighbor_line_gap_max": 5,
-        "dense_targets": True,
+        "ocr_targets": True,
         "cut_projection_targets": False,
         "cut_projection_peak_radius": 1,
         "cut_projection_include_margins": True,
@@ -81,11 +80,11 @@ def _metadata_data(*, version: int = CHUNK_METADATA_VERSION) -> dict:
     if version == CHUNK_METADATA_VERSION:
         data.update(
             {
-                "dense_target_dtype": "int16",
+                "ocr_target_dtype": "int16",
                 "cut_projection_target_dtype": None,
                 "baseline_target_dtype": None,
                 "text_char_counts": {" ": 0, "A": 1, "B": 1},
-                "dense_class_counts": dense_counts,
+                "ocr_class_counts": ocr_counts,
                 "max_observed_text_length": 1,
             }
         )
@@ -161,11 +160,19 @@ def test_training_config_cannot_override_dataset_contract() -> None:
     with pytest.raises(
         ValidationError, match="Extra inputs are not permitted"
     ) as error:
-        TrainingConfig.model_validate({"alphabet": " BA"})
+        TrainingConfig.model_validate(
+            {
+                "architecture": "fcn_ocr",
+                "chunks_dir": "/unused",
+                "alphabet": " BA",
+            }
+        )
     assert error.value.errors()[0]["loc"] == ("alphabet",)
 
     training = TrainingConfig.model_validate(
         {
+            "architecture": "fcn_ocr",
+            "chunks_dir": "/unused",
             "seed": 123,
             "augmentation_probabilities": {"x_pad": 0.5},
             "augmentations": {"x_pad": {"pad": 0.1}},
@@ -181,9 +188,27 @@ def test_training_config_cannot_override_dataset_contract() -> None:
     assert dataset_config.augmentation_probabilities == {"x_pad": 0.5}
 
 
+def test_removed_config_vocabulary_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SingleLineDatasetConfig.model_validate(
+            {
+                "alphabet": ALPHABET,
+                "sample_alphabet": ALPHABET,
+            }
+        )
+
+    with pytest.raises(ValidationError, match="loss_mode must be one of"):
+        TrainingConfig.model_validate(
+            {
+                "architecture": "fcn_ocr",
+                "chunks_dir": "/unused",
+                "loss_mode": "legacy_logreg",
+            }
+        )
+
+
 def test_generation_writer_builds_a_complete_current_contract() -> None:
     config = SingleLineDatasetConfig(
-        sample_alphabet=ALPHABET,
         alphabet=ALPHABET,
         samples=2,
         image_height=16,
@@ -191,7 +216,7 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
         min_text_length=1,
         max_text_length=2,
         chunk_size=2,
-        save_dense_targets=True,
+        save_ocr_targets=True,
     )
 
     metadata = build_metadata(
@@ -201,7 +226,7 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
                 "file": "chunk_000000.pt",
                 "samples": 2,
                 "text_char_counts": {"A": 1, "B": 1},
-                "dense_class_counts": [32, 16, 16],
+                "ocr_class_counts": [32, 16, 16],
                 "max_observed_text_length": 1,
             }
         ],
@@ -209,8 +234,8 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
 
     assert metadata.version == CHUNK_METADATA_VERSION
     assert metadata.samples == 2
-    assert metadata.dense_target_dtype == "int16"
-    assert metadata.dense_class_counts == [32, 16, 16]
+    assert metadata.ocr_target_dtype == "int16"
+    assert metadata.ocr_class_counts == [32, 16, 16]
     assert metadata.text_char_counts == {" ": 0, "A": 1, "B": 1}
 
 
@@ -221,8 +246,9 @@ def test_training_loader_builds_model_input_config_only_from_metadata(
     _write_dataset(root)
     training = TrainingConfig.model_validate(
         {
+            "architecture": "fcn_ocr",
             "chunks_dir": str(root),
-            "loss_mode": "legacy_logreg",
+            "loss_mode": "fcn_ocr",
             "augmentation_probabilities": {"x_pad": 0.25},
         }
     )

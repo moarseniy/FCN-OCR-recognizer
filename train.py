@@ -32,7 +32,7 @@ from fcn_architectures import (
     create_model,
     normalize_architecture_name,
 )
-from loss import baseline_heatmap_loss, cut_projection_loss, legacy_logreg_loss
+from loss import baseline_heatmap_loss, cut_projection_loss, fcn_ocr_loss
 
 from datetime import datetime
 import os
@@ -45,9 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
-SUPPORTED_LOSS_MODES = ("legacy_logreg", "cut_projection", "baseline_heatmap")
-SUPPORTED_LEGACY_TARGET_MODES = ("dense_symbols",)
-SUPPORTED_LEGACY_LABEL_ALIGNS = ("majority_bins", "legacy_crop_resample")
+SUPPORTED_LOSS_MODES = ("fcn_ocr", "cut_projection", "baseline_heatmap")
 SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
 SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 TRAINING_CONFIG_FILENAME = "training_config.yaml"
@@ -56,10 +54,10 @@ TRAINING_CONFIG_FILENAME = "training_config.yaml"
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    architecture: str = "legacy_fcn"
+    architecture: str
     architecture_params: dict[str, Any] = Field(default_factory=dict)
 
-    chunks_dir: str | None = None
+    chunks_dir: str = Field(min_length=1)
 
     epochs: int = Field(default=50, ge=1)
     batch_size: int = Field(default=128, ge=1)
@@ -75,14 +73,12 @@ class TrainingConfig(BaseModel):
     rmsprop_alpha: float = Field(default=0.99, gt=0.0, lt=1.0)
     rmsprop_momentum: float = Field(default=0.0, ge=0.0)
     rmsprop_eps: float = Field(default=1e-8, gt=0.0)
-    loss_mode: str = "legacy_logreg"
-    legacy_target_mode: str = "dense_symbols"
-    legacy_crop_left: int = Field(default=6, ge=0)
-    legacy_crop_right: int = Field(default=5, ge=0)
-    legacy_strict_width: bool = False
-    legacy_label_align: str = "majority_bins"
-    legacy_label_min_majority: float = Field(default=0.6, ge=0.0, le=1.0)
-    legacy_space_weight: float = Field(default=1.0, gt=0.0)
+    loss_mode: str = "fcn_ocr"
+    ocr_crop_left: int = Field(default=6, ge=0)
+    ocr_crop_right: int = Field(default=5, ge=0)
+    ocr_strict_width: bool = False
+    ocr_target_min_majority: float = Field(default=0.6, ge=0.0, le=1.0)
+    ocr_space_weight: float = Field(default=1.0, gt=0.0)
     cut_projection_crop_left: int = Field(default=0, ge=0)
     cut_projection_crop_right: int = Field(default=0, ge=0)
     cut_projection_strict_width: bool = True
@@ -171,26 +167,6 @@ class TrainingConfig(BaseModel):
             raise ValueError(f"loss_mode must be one of {SUPPORTED_LOSS_MODES}")
         return value
 
-    @field_validator("legacy_target_mode")
-    @classmethod
-    def legacy_target_mode_must_be_supported(cls, value: str) -> str:
-        value = value.lower()
-        if value not in SUPPORTED_LEGACY_TARGET_MODES:
-            raise ValueError(
-                f"legacy_target_mode must be one of {SUPPORTED_LEGACY_TARGET_MODES}"
-            )
-        return value
-
-    @field_validator("legacy_label_align")
-    @classmethod
-    def legacy_label_align_must_be_supported(cls, value: str) -> str:
-        value = value.lower()
-        if value not in SUPPORTED_LEGACY_LABEL_ALIGNS:
-            raise ValueError(
-                f"legacy_label_align must be one of {SUPPORTED_LEGACY_LABEL_ALIGNS}"
-            )
-        return value
-
     @field_validator("cut_projection_loss")
     @classmethod
     def cut_projection_loss_must_be_supported(cls, value: str) -> str:
@@ -235,15 +211,13 @@ class TrainingConfig(BaseModel):
         return value
 
 
-def model_num_classes(
-    alphabet: str, loss_mode: str, legacy_target_mode: str = "dense_symbols"
-) -> int:
+def model_num_classes(alphabet: str, loss_mode: str) -> int:
     loss_mode = loss_mode.lower()
     if loss_mode == "cut_projection":
         return 1
     if loss_mode == "baseline_heatmap":
         return 2
-    if loss_mode == "legacy_logreg":
+    if loss_mode == "fcn_ocr":
         return len(alphabet)
     raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
@@ -305,18 +279,9 @@ def build_checkpoint(
     val_losses,
     scheduler=None,
 ):
-    loss_mode = str(config.get("loss_mode", "legacy_logreg")).lower()
-    legacy_target_mode = str(config.get("legacy_target_mode", "dense_symbols")).lower()
-    architecture = normalize_architecture_name(
-        str(config.get("architecture", "legacy_fcn"))
-    )
-    architecture_params = dict(config.get("architecture_params") or {})
-    if loss_mode == "cut_projection":
-        target_format = "cut_projection"
-    elif loss_mode == "baseline_heatmap":
-        target_format = "baseline_heatmap"
-    else:
-        target_format = legacy_target_mode
+    loss_mode = str(config["loss_mode"]).lower()
+    architecture = normalize_architecture_name(str(config["architecture"]))
+    architecture_params = dict(config["architecture_params"])
     return {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
@@ -331,13 +296,10 @@ def build_checkpoint(
         "model_config": {
             "architecture": architecture,
             "architecture_params": architecture_params,
-            "in_channels": config.get("channels", 3),
-            "num_classes": model_num_classes(alphabet, loss_mode, legacy_target_mode),
+            "in_channels": config["channels"],
+            "num_classes": model_num_classes(alphabet, loss_mode),
             "loss_mode": loss_mode,
-            "legacy_target_mode": legacy_target_mode,
-            "target_format": target_format,
-            "cut_projection_loss": config.get("cut_projection_loss", "mse"),
-            "baseline_heatmap_loss": config.get("baseline_heatmap_loss", "bce"),
+            "target_format": loss_mode,
         },
         "train_losses": train_losses,
         "val_losses": val_losses,
@@ -577,47 +539,42 @@ def validate_model_target_width(
             )
         return
 
-    if config.loss_mode != "legacy_logreg":
-        return
-    if config.legacy_target_mode != "dense_symbols":
+    if config.loss_mode != "fcn_ocr":
         return
 
     target_width = (
-        dataset_config.image_width - config.legacy_crop_left - config.legacy_crop_right
+        dataset_config.image_width - config.ocr_crop_left - config.ocr_crop_right
     )
     if target_width <= 0:
         raise ValueError(
-            "Legacy target crop is empty: "
+            "FCN OCR target crop is empty: "
             f"image_width={dataset_config.image_width}, "
-            f"legacy_crop_left={config.legacy_crop_left}, "
-            f"legacy_crop_right={config.legacy_crop_right}"
+            f"ocr_crop_left={config.ocr_crop_left}, "
+            f"ocr_crop_right={config.ocr_crop_right}"
         )
-    print(f"Legacy target width: {target_width}")
+    print(f"FCN OCR target width: {target_width}")
 
-    if not config.legacy_strict_width or output_width == target_width:
+    if not config.ocr_strict_width or output_width == target_width:
         return
 
     raise ValueError(
-        "legacy_strict_width requires model output width to match target width, "
+        "ocr_strict_width requires model output width to match target width, "
         f"but architecture={config.architecture!r} gives T={output_width} while "
-        f"targets have width {target_width}. For width-preserving cut segmentation "
-        "use architecture: vertical_segmentator_fcn with legacy_crop_left: 0 and "
-        "legacy_crop_right: 0, or set legacy_strict_width: false to allow label resampling."
+        f"targets have width {target_width}. Set ocr_strict_width: false to use "
+        "majority-bin target alignment."
     )
 
 
 def compute_loss(
     logits,
     targets,
-    loss_mode="legacy_logreg",
-    legacy_target_mode="dense_symbols",
-    legacy_crop_left=6,
-    legacy_crop_right=5,
-    legacy_strict_width=False,
-    legacy_label_align="majority_bins",
-    legacy_label_min_majority=0.6,
-    legacy_space_index=None,
-    legacy_space_weight=1.0,
+    loss_mode="fcn_ocr",
+    ocr_crop_left=6,
+    ocr_crop_right=5,
+    ocr_strict_width=False,
+    ocr_target_min_majority=0.6,
+    ocr_space_index=None,
+    ocr_space_weight=1.0,
     cut_projection_crop_left=0,
     cut_projection_crop_right=0,
     cut_projection_strict_width=True,
@@ -628,18 +585,16 @@ def compute_loss(
     baseline_heatmap_positive_weight=4.0,
 ):
     loss_mode = loss_mode.lower()
-    if loss_mode == "legacy_logreg":
-        return legacy_logreg_loss(
+    if loss_mode == "fcn_ocr":
+        return fcn_ocr_loss(
             logits,
             targets,
-            target_mode=legacy_target_mode,
-            crop_left=legacy_crop_left,
-            crop_right=legacy_crop_right,
-            strict_width=legacy_strict_width,
-            label_align=legacy_label_align,
-            label_min_majority=legacy_label_min_majority,
-            space_index=legacy_space_index,
-            space_weight=legacy_space_weight,
+            crop_left=ocr_crop_left,
+            crop_right=ocr_crop_right,
+            strict_width=ocr_strict_width,
+            label_min_majority=ocr_target_min_majority,
+            space_index=ocr_space_index,
+            space_weight=ocr_space_weight,
         )
     if loss_mode == "cut_projection":
         return cut_projection_loss(
@@ -672,16 +627,15 @@ def prepare_batch(imgs, targets, device):
     return imgs, targets
 
 
-def augmentation_target_format(loss_mode: str, legacy_target_mode: str) -> str | None:
+def augmentation_target_format(loss_mode: str) -> str:
     loss_mode = loss_mode.lower()
-    legacy_target_mode = legacy_target_mode.lower()
     if loss_mode == "cut_projection":
         return "cut_projection"
     if loss_mode == "baseline_heatmap":
         return "baseline_heatmap"
-    if loss_mode == "legacy_logreg" and legacy_target_mode == "dense_symbols":
-        return "dense_symbols"
-    return None
+    if loss_mode == "fcn_ocr":
+        return "fcn_ocr"
+    raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
 
 def validate(
@@ -692,15 +646,13 @@ def validate(
     preview_saver=None,
     log_every=0,
     augmenter=None,
-    loss_mode="legacy_logreg",
-    legacy_target_mode="dense_symbols",
-    legacy_crop_left=6,
-    legacy_crop_right=5,
-    legacy_strict_width=False,
-    legacy_label_align="majority_bins",
-    legacy_label_min_majority=0.6,
-    legacy_space_index=None,
-    legacy_space_weight=1.0,
+    loss_mode="fcn_ocr",
+    ocr_crop_left=6,
+    ocr_crop_right=5,
+    ocr_strict_width=False,
+    ocr_target_min_majority=0.6,
+    ocr_space_index=None,
+    ocr_space_weight=1.0,
     cut_projection_crop_left=0,
     cut_projection_crop_right=0,
     cut_projection_strict_width=True,
@@ -727,15 +679,10 @@ def validate(
 
             imgs, targets = prepare_batch(imgs, targets, device)
             if augmenter is not None:
-                target_format = augmentation_target_format(
-                    loss_mode, legacy_target_mode
+                target_format = augmentation_target_format(loss_mode)
+                imgs, targets = augmenter.augment_batch(
+                    imgs, targets, target_format
                 )
-                if target_format is None:
-                    imgs = augmenter(imgs)
-                else:
-                    imgs, targets = augmenter.augment_batch(
-                        imgs, targets, target_format
-                    )
 
             if preview_saver is not None:
                 preview_saver.save_batch(imgs, targets)
@@ -746,14 +693,12 @@ def validate(
                 logits,
                 targets,
                 loss_mode=loss_mode,
-                legacy_target_mode=legacy_target_mode,
-                legacy_crop_left=legacy_crop_left,
-                legacy_crop_right=legacy_crop_right,
-                legacy_strict_width=legacy_strict_width,
-                legacy_label_align=legacy_label_align,
-                legacy_label_min_majority=legacy_label_min_majority,
-                legacy_space_index=legacy_space_index,
-                legacy_space_weight=legacy_space_weight,
+                ocr_crop_left=ocr_crop_left,
+                ocr_crop_right=ocr_crop_right,
+                ocr_strict_width=ocr_strict_width,
+                ocr_target_min_majority=ocr_target_min_majority,
+                ocr_space_index=ocr_space_index,
+                ocr_space_weight=ocr_space_weight,
                 cut_projection_crop_left=cut_projection_crop_left,
                 cut_projection_crop_right=cut_projection_crop_right,
                 cut_projection_strict_width=cut_projection_strict_width,
@@ -796,15 +741,13 @@ def train_one_epoch(
     preview_saver=None,
     log_every=0,
     augmenter=None,
-    loss_mode="legacy_logreg",
-    legacy_target_mode="dense_symbols",
-    legacy_crop_left=6,
-    legacy_crop_right=5,
-    legacy_strict_width=False,
-    legacy_label_align="majority_bins",
-    legacy_label_min_majority=0.6,
-    legacy_space_index=None,
-    legacy_space_weight=1.0,
+    loss_mode="fcn_ocr",
+    ocr_crop_left=6,
+    ocr_crop_right=5,
+    ocr_strict_width=False,
+    ocr_target_min_majority=0.6,
+    ocr_space_index=None,
+    ocr_space_weight=1.0,
     cut_projection_crop_left=0,
     cut_projection_crop_right=0,
     cut_projection_strict_width=True,
@@ -829,11 +772,8 @@ def train_one_epoch(
 
         imgs, targets = prepare_batch(imgs, targets, device)
         if augmenter is not None:
-            target_format = augmentation_target_format(loss_mode, legacy_target_mode)
-            if target_format is None:
-                imgs = augmenter(imgs)
-            else:
-                imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
+            target_format = augmentation_target_format(loss_mode)
+            imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
 
         if preview_saver is not None:
             preview_saver.save_batch(imgs, targets)
@@ -844,14 +784,12 @@ def train_one_epoch(
             logits,
             targets,
             loss_mode=loss_mode,
-            legacy_target_mode=legacy_target_mode,
-            legacy_crop_left=legacy_crop_left,
-            legacy_crop_right=legacy_crop_right,
-            legacy_strict_width=legacy_strict_width,
-            legacy_label_align=legacy_label_align,
-            legacy_label_min_majority=legacy_label_min_majority,
-            legacy_space_index=legacy_space_index,
-            legacy_space_weight=legacy_space_weight,
+            ocr_crop_left=ocr_crop_left,
+            ocr_crop_right=ocr_crop_right,
+            ocr_strict_width=ocr_strict_width,
+            ocr_target_min_majority=ocr_target_min_majority,
+            ocr_space_index=ocr_space_index,
+            ocr_space_weight=ocr_space_weight,
             cut_projection_crop_left=cut_projection_crop_left,
             cut_projection_crop_right=cut_projection_crop_right,
             cut_projection_strict_width=cut_projection_strict_width,
@@ -917,7 +855,7 @@ def describe_target_for_preview(target):
         return (
             f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
         )
-    return "<dense_symbols>"
+    return "<fcn_ocr>"
 
 
 class InputPreviewSaver:
@@ -1148,7 +1086,6 @@ def effective_training_config_data(
     data.update(
         {
             "alphabet": dataset_config.alphabet,
-            "sample_alphabet": dataset_config.sample_alphabet,
             "space_char": dataset_config.space_char,
             "max_text_length": dataset_config.max_text_length,
             "channels": dataset_config.channels,
@@ -1167,16 +1104,10 @@ def load_dataset_from_config(
         target_format = "cut_projection"
     elif config.loss_mode == "baseline_heatmap":
         target_format = "baseline_heatmap"
-    elif config.loss_mode == "legacy_logreg":
-        target_format = config.legacy_target_mode
+    elif config.loss_mode == "fcn_ocr":
+        target_format = "fcn_ocr"
     else:
         raise ValueError(f"Unsupported loss_mode: {config.loss_mode}")
-
-    if not config.chunks_dir:
-        raise ValueError(
-            "Training config must contain chunks_dir. "
-            "Online generation during training is not supported anymore."
-        )
 
     chunks_dir = resolve_chunks_dir(config.chunks_dir)
     config.chunks_dir = str(chunks_dir)
@@ -1266,16 +1197,16 @@ def validate_and_log_alphabet(
     text_counts = metadata.text_char_counts
     if text_counts is None or metadata.max_observed_text_length is None:
         raise ValueError("Current metadata must contain text statistics")
-    dense_counts = metadata.dense_class_counts
+    ocr_counts = metadata.ocr_class_counts
     unused_chars = [char for char in alphabet if text_counts.get(char, 0) == 0]
 
     stats_path = Path(checkpoint_dir) / "alphabet_stats.tsv"
     with stats_path.open("w") as file:
-        file.write("class_index\tchar\ttext_count\tdense_target_count\n")
+        file.write("class_index\tchar\ttext_count\tocr_target_count\n")
         for class_index, char in enumerate(alphabet):
-            dense_count = "" if dense_counts is None else str(dense_counts[class_index])
+            ocr_count = "" if ocr_counts is None else str(ocr_counts[class_index])
             file.write(
-                f"{class_index}\t{printable_char(char)}\t{text_counts.get(char, 0)}\t{dense_count}\n"
+                f"{class_index}\t{printable_char(char)}\t{text_counts.get(char, 0)}\t{ocr_count}\n"
             )
 
     print("\nAlphabet/data check:")
@@ -1288,12 +1219,12 @@ def validate_and_log_alphabet(
     print(f"  Stats file:             {stats_path}")
     print("  Per-char counts:")
     for class_index, char in enumerate(alphabet):
-        dense_suffix = (
-            "" if dense_counts is None else f", dense={dense_counts[class_index]}"
+        ocr_suffix = (
+            "" if ocr_counts is None else f", ocr_targets={ocr_counts[class_index]}"
         )
         print(
             f"    [{class_index:>3}] {printable_char(char):>9}: "
-            f"text={text_counts.get(char, 0)}{dense_suffix}"
+            f"text={text_counts.get(char, 0)}{ocr_suffix}"
         )
 
     if unused_chars:
@@ -1348,9 +1279,9 @@ def resolve_chunks_dir(configured_dir: str | Path) -> Path:
 
 def save_experiment_config_snapshots(
     training_config_path: str | Path,
-    chunks_dir: str | Path | None,
+    chunks_dir: str | Path,
     checkpoint_dir: str | Path,
-) -> tuple[Path, Path | None]:
+) -> tuple[Path, Path]:
     checkpoint_dir = Path(checkpoint_dir)
     training_config_path = Path(training_config_path).expanduser().resolve()
 
@@ -1359,25 +1290,17 @@ def save_experiment_config_snapshots(
         shutil.copy2(training_config_path, training_snapshot)
     print(f"Training config saved to {training_snapshot}")
 
-    if chunks_dir is None:
-        print(
-            "Warning: generation config snapshot cannot be saved because chunks_dir is not set"
-        )
-        return training_snapshot, None
-
     chunks_dir = Path(chunks_dir)
     generation_source = chunks_dir / GENERATION_CONFIG_FILENAME
-    generation_snapshot: Path | None = None
-    if generation_source.is_file():
-        generation_snapshot = checkpoint_dir / GENERATION_CONFIG_FILENAME
-        if generation_source.resolve() != generation_snapshot.resolve():
-            shutil.copy2(generation_source, generation_snapshot)
-        print(f"Generation config saved to {generation_snapshot}")
-    else:
-        print(
-            "Warning: generation config snapshot is missing in dataset directory: "
-            f"{generation_source}"
+    if not generation_source.is_file():
+        raise FileNotFoundError(
+            "Dataset directory must contain its generation config: "
+            f"{generation_source}. Regenerate the dataset with the current generator."
         )
+    generation_snapshot = checkpoint_dir / GENERATION_CONFIG_FILENAME
+    if generation_source.resolve() != generation_snapshot.resolve():
+        shutil.copy2(generation_source, generation_snapshot)
+    print(f"Generation config saved to {generation_snapshot}")
 
     return training_snapshot, generation_snapshot
 
@@ -1402,8 +1325,7 @@ def run_training(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     print(f"Checkpoint directory: {checkpoint_dir}")
 
-    if args.chunks_dir is not None:
-        args.chunks_dir = str(resolve_chunks_dir(args.chunks_dir))
+    args.chunks_dir = str(resolve_chunks_dir(args.chunks_dir))
     training_config_snapshot, generation_config_snapshot = (
         save_experiment_config_snapshots(
             config_path,
@@ -1439,10 +1361,10 @@ def run_training(
     print(f"Validation samples: {len(val_dataset)}")
 
     alphabet = dataset_config.alphabet
-    num_classes = model_num_classes(alphabet, args.loss_mode, args.legacy_target_mode)
-    legacy_space_index = None
-    if args.loss_mode == "legacy_logreg" and dataset_config.space_char in alphabet:
-        legacy_space_index = alphabet.index(dataset_config.space_char)
+    num_classes = model_num_classes(alphabet, args.loss_mode)
+    ocr_space_index = None
+    if args.loss_mode == "fcn_ocr" and dataset_config.space_char in alphabet:
+        ocr_space_index = alphabet.index(dataset_config.space_char)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
     print("Loss mode: ", args.loss_mode)
@@ -1468,20 +1390,16 @@ def run_training(
             f"strict_size={args.baseline_heatmap_strict_size}"
         )
     else:
-        print("Legacy target mode: ", args.legacy_target_mode)
-        if args.legacy_target_mode == "dense_symbols":
-            print(
-                f"Legacy label crop: [{args.legacy_crop_left}, -{args.legacy_crop_right}]"
-            )
-            print(
-                f"Legacy label align: {args.legacy_label_align} "
-                f"min_majority={args.legacy_label_min_majority:g}"
-            )
-            print(
-                f"Legacy space weight: {args.legacy_space_weight:g} "
-                f"(space index: {legacy_space_index})"
-            )
-            print("Batch targets: dense symbol labels from generator/chunks")
+        print(f"FCN OCR target crop: [{args.ocr_crop_left}, -{args.ocr_crop_right}]")
+        print(
+            "FCN OCR target alignment: majority_bins "
+            f"min_majority={args.ocr_target_min_majority:g}"
+        )
+        print(
+            f"FCN OCR space weight: {args.ocr_space_weight:g} "
+            f"(space index: {ocr_space_index})"
+        )
+        print("Batch targets: one OCR class per input X-position")
 
     train_loader = make_data_loader(
         dataset,
@@ -1578,10 +1496,7 @@ def run_training(
         print("Found latest checkpoint, loading...")
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         checkpoint_architecture = normalize_architecture_name(
-            checkpoint.get("model_config", {}).get(
-                "architecture",
-                checkpoint.get("config", {}).get("architecture", "legacy_fcn"),
-            )
+            checkpoint["model_config"]["architecture"]
         )
         if checkpoint_architecture != args.architecture:
             raise ValueError(
@@ -1590,11 +1505,11 @@ def run_training(
             )
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
+        if scheduler is not None and checkpoint["scheduler_state_dict"] is not None:
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
-        train_losses = checkpoint.get("train_losses", [])
-        val_losses = checkpoint.get("val_losses", [])
+        train_losses = checkpoint["train_losses"]
+        val_losses = checkpoint["val_losses"]
         best_val_loss = min(val_losses) if val_losses else float("inf")
         best_train_loss = min(train_losses) if train_losses else float("inf")
         print(f"Resuming from epoch {start_epoch}")
@@ -1618,14 +1533,12 @@ def run_training(
                 args.log_every,
                 train_augmenter,
                 args.loss_mode,
-                args.legacy_target_mode,
-                args.legacy_crop_left,
-                args.legacy_crop_right,
-                args.legacy_strict_width,
-                args.legacy_label_align,
-                args.legacy_label_min_majority,
-                legacy_space_index,
-                args.legacy_space_weight,
+                args.ocr_crop_left,
+                args.ocr_crop_right,
+                args.ocr_strict_width,
+                args.ocr_target_min_majority,
+                ocr_space_index,
+                args.ocr_space_weight,
                 args.cut_projection_crop_left,
                 args.cut_projection_crop_right,
                 args.cut_projection_strict_width,
@@ -1647,14 +1560,12 @@ def run_training(
                 args.log_every,
                 val_augmenter,
                 args.loss_mode,
-                args.legacy_target_mode,
-                args.legacy_crop_left,
-                args.legacy_crop_right,
-                args.legacy_strict_width,
-                args.legacy_label_align,
-                args.legacy_label_min_majority,
-                legacy_space_index,
-                args.legacy_space_weight,
+                args.ocr_crop_left,
+                args.ocr_crop_right,
+                args.ocr_strict_width,
+                args.ocr_target_min_majority,
+                ocr_space_index,
+                args.ocr_space_weight,
                 args.cut_projection_crop_left,
                 args.cut_projection_crop_right,
                 args.cut_projection_strict_width,

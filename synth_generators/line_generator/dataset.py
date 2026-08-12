@@ -52,8 +52,7 @@ class SingleLineDatasetConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    sample_alphabet: str = " 0123456789abcdefghijklmnopqrstuvwxyz"
-    alphabet: str | None = None
+    alphabet: str
     space_char: str = " "
     samples: int = Field(default=10_000, ge=1)
     image_height: int = Field(default=48, ge=16)
@@ -103,25 +102,12 @@ class SingleLineDatasetConfig(BaseModel):
     chunk_size: int = Field(default=1024, ge=1)
     num_workers: int = Field(default=0, ge=0)
     overwrite: bool = False
-    save_dense_targets: bool = False
+    save_ocr_targets: bool = False
     save_cut_projection_targets: bool = False
     save_baseline_targets: bool = False
     cut_projection_peak_radius: int = Field(default=1, ge=0)
     cut_projection_include_margins: bool = True
     baseline_target_radius: int = Field(default=1, ge=0)
-
-    @model_validator(mode="before")
-    @classmethod
-    def fill_alphabet_aliases(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        data = dict(data)
-        if data.get("sample_alphabet") is None and data.get("alphabet") is not None:
-            data["sample_alphabet"] = data["alphabet"]
-        if data.get("alphabet") is None and data.get("sample_alphabet") is not None:
-            data["alphabet"] = data["sample_alphabet"]
-        return data
 
     @model_validator(mode="after")
     def edge_visibility_thresholds_must_be_ordered(self) -> "SingleLineDatasetConfig":
@@ -180,28 +166,13 @@ class SingleLineDatasetConfig(BaseModel):
             resolved_paths.append(str(path_obj if path_obj.is_absolute() else base_dir / path_obj))
         return resolved_paths
 
-    @field_validator("sample_alphabet")
-    @classmethod
-    def sample_alphabet_must_be_unique(cls, value: str) -> str:
-        if not value:
-            raise ValueError("sample_alphabet must not be empty")
-        if len(set(value)) != len(value):
-            raise ValueError("sample_alphabet must contain unique characters")
-        return value
-
     @field_validator("alphabet")
     @classmethod
-    def alphabet_must_be_unique_and_cover_samples(cls, value: str | None, info) -> str | None:
-        if value is None:
-            return value
+    def alphabet_must_be_unique(cls, value: str) -> str:
         if not value:
             raise ValueError("alphabet must not be empty")
         if len(set(value)) != len(value):
             raise ValueError("alphabet must contain unique characters")
-        sample_alphabet = info.data.get("sample_alphabet", "")
-        missing = sorted(set(sample_alphabet) - set(value))
-        if missing:
-            raise ValueError(f"alphabet does not cover sample_alphabet chars: {missing}")
         return value
 
     @field_validator("space_char")
@@ -311,7 +282,7 @@ class TextRenderStyle:
 class GeneratedLineSample:
     text: str
     image: torch.Tensor
-    dense_target: torch.Tensor | None
+    ocr_target: torch.Tensor | None
     cut_projection_target: torch.Tensor | None
     baseline_target: torch.Tensor | None
 
@@ -321,19 +292,16 @@ class SingleLineDataset:
 
     def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
-        self.alphabet = config.alphabet or config.sample_alphabet
+        self.alphabet = config.alphabet
         self.char_to_index = {char: idx for idx, char in enumerate(self.alphabet)}
         if config.space_char not in self.char_to_index:
-            raise ValueError("space_char must be present in sample_alphabet/alphabet")
-        self.sample_alphabet = config.sample_alphabet
-        if not self.sample_alphabet:
-            raise ValueError("sample_alphabet must not be empty")
+            raise ValueError("space_char must be present in alphabet")
         if config.font_check:
             self.font_paths = self._resolve_font_paths(
                 config.font_paths,
                 config.font_dir,
                 config.font_extensions,
-                self.sample_alphabet,
+                self.alphabet,
             )
         else:
             self.font_paths = self._collect_unchecked_font_paths(
@@ -426,9 +394,9 @@ class SingleLineDataset:
         text = self._normalize_spaces(text)
         if not text:
             raise ValueError("text must not be empty")
-        missing = sorted(set(text) - set(self.sample_alphabet))
+        missing = sorted(set(text) - set(self.alphabet))
         if missing:
-            raise ValueError(f"text contains chars outside sample_alphabet: {missing}")
+            raise ValueError(f"text contains chars outside alphabet: {missing}")
 
     def _normalize_spaces(self, text: str) -> str:
         return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
@@ -498,9 +466,9 @@ class SingleLineDataset:
         raise RuntimeError("failed to generate non-empty line crops")
 
     def _make_line_text(self, rng: random.Random) -> str:
-        chars = [char for char in self.sample_alphabet if char != self.config.space_char]
+        chars = [char for char in self.alphabet if char != self.config.space_char]
         if not chars:
-            raise ValueError("sample_alphabet must contain at least one non-space character for line_crops")
+            raise ValueError("alphabet must contain at least one non-space character for line_crops")
 
         word_count = rng.randint(self.config.word_count_min, self.config.word_count_max)
         words = []
@@ -532,7 +500,7 @@ class SingleLineDataset:
 
         for _ in range(1000):
             text_length = rng.randint(self.config.min_text_length, self.config.max_text_length)
-            text = self._normalize_spaces("".join(rng.choice(self.sample_alphabet) for _ in range(text_length)))
+            text = self._normalize_spaces("".join(rng.choice(self.alphabet) for _ in range(text_length)))
             if not text:
                 continue
             style = self._sample_text_style(rng)
@@ -592,7 +560,7 @@ class SingleLineDataset:
             text=main_text,
             font=font,
             style=style,
-            fallback_bbox=main_bbox,
+            font_bbox=main_bbox,
             canvas_width=width,
             x=main_x,
         )
@@ -757,23 +725,23 @@ class SingleLineDataset:
         text: str,
         font: ImageFont.FreeTypeFont,
         style: TextRenderStyle,
-        fallback_bbox: tuple[float, float, float, float],
+        font_bbox: tuple[float, float, float, float],
         canvas_width: int | None = None,
         x: float | None = None,
     ) -> tuple[int, int]:
         padding = 2
         width = canvas_width or max(
             1,
-            int(math.ceil(fallback_bbox[2] - fallback_bbox[0])) + 2 * padding,
+            int(math.ceil(font_bbox[2] - font_bbox[0])) + 2 * padding,
         )
-        height = max(1, int(math.ceil(fallback_bbox[3] - fallback_bbox[1])) + 2 * padding)
-        draw_x = float(padding - fallback_bbox[0]) if x is None else float(x)
-        draw_y = float(padding - fallback_bbox[1])
+        height = max(1, int(math.ceil(font_bbox[3] - font_bbox[1])) + 2 * padding)
+        draw_x = float(padding - font_bbox[0]) if x is None else float(x)
+        draw_y = float(padding - font_bbox[1])
         mask = Image.new("L", (width, height), color=0)
         self._draw_text(ImageDraw.Draw(mask), draw_x, draw_y, text, font, 255, style)
         visible_bbox = mask.getbbox()
         if visible_bbox is None:
-            return int(math.floor(fallback_bbox[1])), int(math.ceil(fallback_bbox[3])) - 1
+            return int(math.floor(font_bbox[1])), int(math.ceil(font_bbox[3])) - 1
         return (
             int(round(visible_bbox[1] - draw_y)),
             int(round(visible_bbox[3] - 1 - draw_y)),
@@ -899,7 +867,7 @@ class SingleLineDataset:
             text=text,
             font=font,
             style=style,
-            fallback_bbox=bbox,
+            font_bbox=bbox,
         )
 
         return image, spans, cut_spans, baseline_top, baseline_bottom
@@ -962,7 +930,7 @@ class SingleLineDataset:
             text=text,
             font=font,
             style=style,
-            fallback_bbox=bbox,
+            font_bbox=bbox,
         )
         return image, spans, cut_spans, baseline_top, baseline_bottom, baseline_mask
 
@@ -1093,9 +1061,9 @@ class SingleLineDataset:
         if len(spans) != len(cut_spans):
             raise ValueError("logical and cut span counts must match")
 
-        dense_target = None
-        if self.config.save_dense_targets:
-            dense_target = self._encode_dense_symbols(
+        ocr_target = None
+        if self.config.save_ocr_targets:
+            ocr_target = self._encode_ocr_targets(
                 spans,
                 image.width,
                 ink_spans=cut_spans,
@@ -1125,19 +1093,19 @@ class SingleLineDataset:
         return GeneratedLineSample(
             text=text,
             image=tensor.contiguous(),
-            dense_target=dense_target,
+            ocr_target=ocr_target,
             cut_projection_target=cut_projection_target,
             baseline_target=baseline_target,
         )
 
-    def _encode_dense_symbols(
+    def _encode_ocr_targets(
         self,
         spans: list[tuple[str, float, float]],
         width: int,
         ink_spans: list[tuple[str, float, float]] | None = None,
     ) -> torch.Tensor:
         if not spans:
-            raise ValueError("cannot encode dense symbols for an empty span list")
+            raise ValueError("cannot encode FCN OCR targets for an empty span list")
         if ink_spans is not None and len(ink_spans) != len(spans):
             raise ValueError("logical and ink span counts must match")
 
@@ -1303,11 +1271,11 @@ class SingleLineDataset:
         text: str,
         font: ImageFont.FreeTypeFont,
         style: TextRenderStyle,
-        fallback_bbox: tuple[float, float, float, float],
+        font_bbox: tuple[float, float, float, float],
     ) -> tuple[float, float, Image.Image | None]:
-        fallback = (float(y + fallback_bbox[1]), float(y + fallback_bbox[3] - 1))
+        font_bounds = (float(y + font_bbox[1]), float(y + font_bbox[3] - 1))
         if not self.config.save_baseline_targets:
-            return fallback[0], fallback[1], None
+            return font_bounds[0], font_bounds[1], None
 
         mask = Image.new("L", (width, height), color=0)
         mask_draw = ImageDraw.Draw(mask)
@@ -1321,7 +1289,7 @@ class SingleLineDataset:
 
         visible_bbox = mask.getbbox()
         if visible_bbox is None:
-            return fallback[0], fallback[1], mask
+            return font_bounds[0], font_bounds[1], mask
         return float(visible_bbox[1]), float(visible_bbox[3] - 1), mask
 
     def _glyph_cut_spans(
@@ -1635,8 +1603,8 @@ class SingleLineDataset:
         if accepted:
             return accepted
         raise FileNotFoundError(
-            "No usable font files cover the configured sample_alphabet. "
-            "Pass font_dir/font_paths with fonts that contain every sample_alphabet character."
+            "No usable font files cover the configured alphabet. "
+            "Pass font_dir/font_paths with fonts that contain every alphabet character."
         )
 
     @classmethod
@@ -1767,7 +1735,7 @@ class SingleLineDataset:
         alphabet: str,
     ) -> None:
         print("\nFonts check")
-        print(f"  sample_alphabet length: {len(alphabet)}")
+        print(f"  alphabet length: {len(alphabet)}")
         print(f"  candidates: {len(candidates)}")
         print(f"  accepted:   {len(accepted)}")
         print(f"  rejected:   {len(rejected)}")

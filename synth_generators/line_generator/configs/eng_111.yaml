@@ -1,4 +1,4 @@
-sample_alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 space_char: " "
 samples: 100000
 output_dir: ../../../data
@@ -31,4 +31,4 @@ background_extensions:
   - .bmp
   - .webp
 horizontal_padding: 8
-save_dense_targets: true
+save_ocr_targets: true

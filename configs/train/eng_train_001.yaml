@@ -1,5 +1,5 @@
 chunks_dir: ../../data/eng_001
-architecture: legacy_fcn
+architecture: fcn_ocr
 architecture_params: {}
 
 epochs: 50
@@ -20,13 +20,11 @@ max_val_batches: 50
 val_fraction: 0.1
 seed: 42
 resume: false
-loss_mode: legacy_logreg
-legacy_target_mode: dense_symbols
-legacy_crop_left: 6
-legacy_crop_right: 5
-legacy_label_align: majority_bins
-legacy_label_min_majority: 0.6
-legacy_space_weight: 0.5
+loss_mode: fcn_ocr
+ocr_crop_left: 6
+ocr_crop_right: 5
+ocr_target_min_majority: 0.6
+ocr_space_weight: 0.5
 
 num_workers: 0
 drop_last: false

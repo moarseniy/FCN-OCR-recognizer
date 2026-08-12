@@ -12,7 +12,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-Набор фиксирует текущие контракты dense-разметки, краевых пробелов,
+Набор фиксирует текущие контракты OCR-разметки, краевых пробелов,
 геометрических аугментаций и targets, baseline crop, вертикальных cuts,
 cells/DP-декодирования и соответствия inference/evaluation.
 
@@ -35,13 +35,13 @@ targets, manifest чанков и статистика классов. Конф�
 
 - `images`: тензор `N x C x H x W` в `uint8`;
 - `texts`: исходная текстовая разметка;
-- опционально `dense_targets`, `cut_projection_targets` и `baseline_targets` для конкретных
+- опционально `ocr_targets`, `cut_projection_targets` и `baseline_targets` для конкретных
   режимов обучения.
 
-Основной OCR-режим сейчас — `loss_mode: legacy_logreg` и
-`legacy_target_mode: dense_symbols`. В этом режиме `final` имеет
-`len(alphabet)` выходов, а таргет выравнивается как в старом графе через
-`max_pool2d(kernel=(4, 1), stride=(4, 1), padding=(1, 0))` и `cropX=[6, -5]`.
+Основной OCR-режим — `loss_mode: fcn_ocr`. В этом режиме `final` имеет
+`len(alphabet)` выходов, а `ocr_targets` содержат один класс для каждой
+X-позиции входного изображения. После `ocr_crop_left/right` разметка
+сводится к ширине выхода сети через majority-bin выравнивание.
 Для вертикального сегментатора используется `loss_mode: cut_projection`:
 `final` имеет 1 выход, а таргет содержит одномерную heatmap-проекцию с пиками
 в координатах правильных разрезов между символами.
@@ -49,19 +49,19 @@ targets, manifest чанков и статистика классов. Конф�
 baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где канал 0 отвечает за
 верхнюю линию текстового поля, а канал 1 - за нижнюю.
 
-В generation-конфиге `sample_alphabet` задает символы, из которых синтезируются
-строки. В training-конфиге `alphabet` задает классы модели. В примерах оба
-набора начинаются с пробела: пробел является обычным классом, но генератор
+В generation-конфиге `alphabet` задает символы и точный порядок классов.
+Training получает этот алфавит только из `metadata.yaml`. В примерах алфавит
+начинается с пробела: пробел является обычным классом, но генератор
 нормализует строки, убирая пробелы в начале/конце и схлопывая несколько
 пробелов подряд в один.
 
 Основные конфиги для эксперимента `101` теперь разделены по назначению:
 
-- `synth_generators/line_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `dense_targets`, без соседних строк;
+- `synth_generators/line_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `ocr_targets`, без соседних строк;
 - `synth_generators/line_generator/configs/eng_101_cuts.yaml` — cuts-сегментатор: чистая основная строка, `cut_projection_targets`, без соседних строк;
 - `synth_generators/line_generator/configs/eng_101_baselines.yaml` — baseline detector: `baseline_targets`, соседние верхние/нижние строки как вертикальный мусор.
 
-Старые минимальные примеры также остаются:
+Дополнительные минимальные примеры:
 
 - `synth_generators/line_generator/configs/eng_001.yaml` — генерация;
 - `configs/train/eng_train_001.yaml` — обучение.
@@ -110,7 +110,7 @@ font_extensions:
 ```
 
 При создании генератора запускается fonts check: шрифты без полного покрытия
-`sample_alphabet` отбрасываются, а в терминал выводятся количество найденных,
+`alphabet` отбрасываются, а в терминал выводятся количество найденных,
 принятых и отклоненных шрифтов, примеры отклонений и часто отсутствующие
 символы. `font_paths` тоже поддерживается, если нужно явно перечислить файлы.
 
@@ -237,7 +237,7 @@ augmentations:
 `fill_mode: constant` использует `fillcolor`. Для target-ов применяется такое
 же геометрическое преобразование: новые области получают класс пробела для OCR
 и ноль для cut/baseline-разметки. `pad_reference: content` трактует долю padding
-от исходной ширины содержимого, как inference `x_pad`; legacy-вариант
+от исходной ширины содержимого, как inference `x_pad`; вариант
 `pad_reference: output` считает её от фиксированной ширины выходного тензора.
 `crop_x` и `crop_y` обрезают края, а затем ресайзят результат обратно в
 исходный размер тензора.
@@ -300,10 +300,10 @@ word_spacing_multiplier_max: 1.7
 разметки включается в generation-конфиге отдельно:
 
 ```yaml
-save_dense_targets: true
+save_ocr_targets: true
 ```
 
-для OCR `legacy_logreg`,
+для OCR `fcn_ocr`,
 
 ```yaml
 save_cut_projection_targets: true
@@ -320,7 +320,7 @@ baseline_target_radius: 1
 
 для top/bottom baseline detector.
 
-Тогда в чанки попадет `dense_targets` (`N x W`) — класс символа для
+Тогда в чанки попадет `ocr_targets` (`N x W`) — класс символа для
 каждой X-колонки исходного кропа. Фон до ink bbox первого глифа и после ink bbox
 последнего глифа размечается классом пробела; боковые bearing-поля шрифта не
 приписываются крайним буквам. Если включен `save_cut_projection_targets`,
@@ -413,7 +413,7 @@ python synth_generators/line_generator/render_text.py \
   --output output/render_chunk.png
 ```
 
-`render_text` преобразует `dense_targets` вместе с изображением и под полем
+`render_text` преобразует `ocr_targets` вместе с изображением и под полем
 `text` выводит поколоночную разметку как `␠[start:end]`. Крайние пробельные
 классы также показываются в самом поле `text`. `--show-full-markup` дополнительно
 рисует cut-линии зелёным, а верхнюю и нижнюю baseline — красным и синим.
@@ -429,13 +429,13 @@ FCN-архитектуры лежат в `fcn_architectures/`: одна архи
 После этого архитектуру можно выбрать в любом training-конфиге:
 
 ```yaml
-architecture: legacy_fcn
+architecture: fcn_ocr
 architecture_params: {}
 ```
 
 Архитектура не привязана к задаче: один и тот же файл можно использовать и для
 OCR, и для вертикального сегментатора. Роль задается остальными полями конфига:
-`loss_mode`, `legacy_target_mode`, числом классов и разметкой в чанках.
+`loss_mode`, числом классов и разметкой в чанках.
 
 Для экспериментов с вертикальным сегментатором есть пример архитектуры, которая
 сохраняет горизонтальное разрешение выхода 1:1 с входной картинкой:
@@ -461,19 +461,18 @@ architecture_params:
 
 Имя архитектуры сохраняется в checkpoint, поэтому `inference.py`,
 `evaluate_ocr.py` и `VerticalSegmentator` автоматически собирают такую же сеть
-при загрузке модели. Старые checkpoint без этого поля считаются
-`legacy_fcn`.
+при загрузке модели. Checkpoint без полного `model_config` не поддерживается.
 
 Для более тяжелых FCN-экспериментов добавлены:
 
-- `legacy_fcn_wide`: drop-in вариант старой OCR-сети с теми же kernel/stride и
+- `fcn_ocr_wide`: более тяжёлый вариант базовой OCR-сети с теми же kernel/stride и
   такой же шириной выхода, но с большим числом каналов.
-- `legacy_fcn_highres`: plain FCN в стиле старой OCR-сети, но без
+- `fcn_ocr_highres`: plain FCN OCR без
   горизонтального stride=2 в `conv2`; для 48x64 дает более плотный выход
   `T=48` вместо `T=19`.
 - `residual_temporal_fcn`: width-preserving FCN с residual-блоками и temporal
-  convolutions по X. Для OCR ее удобнее запускать с `legacy_crop_left: 0`,
-  `legacy_crop_right: 0`, `legacy_strict_width: true`; для cuts она также
+  convolutions по X. Для OCR ее удобнее запускать с `ocr_crop_left: 0`,
+  `ocr_crop_right: 0`, `ocr_strict_width: true`; для cuts она также
   совместима с `cut_projection_strict_width: true`.
 
 Готовые примеры: `configs/train/eng_train_101_wide.yaml`,
@@ -481,24 +480,20 @@ architecture_params:
 `configs/train/eng_train_101_residual.yaml`,
 `configs/train/eng_train_101_cuts_residual.yaml`.
 
-Для обучения в старом плотном режиме на чанках с `dense_targets`:
+Для обучения FCN OCR на чанках с `ocr_targets`:
 
 ```yaml
-loss_mode: legacy_logreg
-legacy_target_mode: dense_symbols
-legacy_crop_left: 6
-legacy_crop_right: 5
-legacy_label_align: majority_bins
-legacy_label_min_majority: 0.6
-legacy_space_weight: 0.5
+loss_mode: fcn_ocr
+ocr_crop_left: 6
+ocr_crop_right: 5
+ocr_target_min_majority: 0.6
+ocr_space_weight: 0.5
 ```
 
-`legacy_label_align` управляет тем, как плотная разметка шириной входного кропа
-сводится к временной ширине выхода сети. `majority_bins` делит dense-разметку на
-интервалы под выходные позиции, берет класс большинства и игнорирует позицию,
-если большинство слабее `legacy_label_min_majority`. Старое поведение с выбором
-одной центральной точки можно вернуть через `legacy_crop_resample`.
-`legacy_space_weight` уменьшает или увеличивает вклад класса пробела в OCR-loss.
+Majority-bin выравнивание делит `ocr_targets` на интервалы под выходные позиции,
+берет класс большинства и игнорирует позицию, если большинство слабее
+`ocr_target_min_majority`.
+`ocr_space_weight` уменьшает или увеличивает вклад класса пробела в OCR-loss.
 
 Для обучения вертикального сегментатора на heatmap разрезов:
 
@@ -640,7 +635,8 @@ python evaluate_segmentator.py \
 `cut_f1` и средняя ошибка совпавших линий по X. Предсказанные линии
 возвращаются в координаты исходника через карту геометрии preprocessing,
 включая baseline crop, deskew, padding и resize.
-Label Studio JSON по-прежнему поддерживается для старой оценки по длине.
+Для Label Studio JSON без ручных cut-линий доступна менее точная оценка по
+длине текста.
 
 Оценка обеих baseline:
 
@@ -668,7 +664,7 @@ workers, checkpoint path, preview-настройки и GPU-аугментаци
 Алфавит, размеры картинок, число каналов и `max_text_length` берутся из
 `metadata.yaml` в папке чанков и не могут переопределяться training-конфигом.
 При старте обучения `train.py` проверяет точный порядок классов и берёт
-статистику текста и dense-разметки из metadata, не перечитывая для этого все
+статистику текста и OCR-разметки из metadata, не перечитывая для этого все
 чанки. Отчёт сохраняется в:
 
 ```text
@@ -714,8 +710,8 @@ generation_config.yaml
 Первый файл является снимком текущего training-конфига, второй берётся из
 выбранного каталога чанков. Вместе с checkpoint и `metadata.yaml` датасета это
 фиксирует конфигурацию генерации и обучения для воспроизведения эксперимента.
-Старые датасеты без `generation_config.yaml` по-прежнему поддерживаются, но при
-старте обучения выводится предупреждение.
+Датасет без `generation_config.yaml` считается неполным и обучение с ним не
+запускается.
 
 Разбиение на батчи настраивается явно:
 
@@ -828,7 +824,6 @@ baseline:
   detector_threshold: 0.35
   deskew: true
   max_angle: 12.0
-  strict_lines: true
   line_pad: 0.08
   line_pad_px: 0.0
 
@@ -905,7 +900,7 @@ for path in ["line_1.png", "line_2.png"]:
 1. Загружаются только checkpoint-ы из присутствующих разделов конфига. Из OCR checkpoint
    берутся `alphabet`, `architecture`,
    `num_classes`, `image_height`, `channels`, режим loss/target и параметры
-   legacy crop. Модель создается через `fcn_architectures.create_model`,
+   OCR target crop. Модель создается через `fcn_architectures.create_model`,
    загружает `model_state_dict` и переводится в `eval`.
 2. Входная картинка приводится к `RGB` или `L` в зависимости от `channels`.
    В `--debug-image` этот шаг подписан как `preprocess 00 input converted`.
@@ -975,7 +970,6 @@ for path in ["line_1.png", "line_2.png"]:
 | Параметр | Что делает |
 | --- | --- |
 | `baseline.enabled` | Включает общий поиск линий, deskew и crop до раздельного preprocessing. |
-| `baseline.strict_lines` | Требует надежную пару верхней/нижней линий; `false` разрешает bbox/fallback. |
 | `baseline.line_pad` | Симметричный запас crop как доля высоты строки. |
 | `baseline.line_pad_px` | Дополнительный абсолютный запас в исходных пикселях. |
 | `baseline.detector_checkpoint` | Обязательный checkpoint нейронного top/bottom baseline-детектора. |
@@ -1002,7 +996,7 @@ for path in ["line_1.png", "line_2.png"]:
 `segmentator.cut_min_width: null`, используется значение из checkpoint или
 дефолт `1`.
 
-#### Legacy OCR + Segmentator Decode
+#### FCN OCR + Segmentator Decode
 
 Эти параметры используются только если `ocr.decode.enabled: true`.
 
@@ -1029,18 +1023,17 @@ for path in ["line_1.png", "line_2.png"]:
    что их углы согласованы.
 6. Угол deskew вычисляется по обеим линиям как взвешенное среднее их углов.
    Вес каждой линии равен `confidence * profile_coverage`. Если углы расходятся
-   сильнее `max(2°, min(6°, baseline_max_angle / 2))`, строгая детекция
+   сильнее `max(2°, min(6°, baseline_max_angle / 2))`, детекция
    отклоняется. Иначе картинка поворачивается на общий угол, фон новых полей
    заполняется медианным цветом рамки, после чего обе baseline ищутся ещё раз
    на повернутом изображении.
-7. В строгом режиме crop строится после поворота только по паре верх/низ:
+7. Crop строится после поворота только по паре верх/низ:
    верхняя граница берется по верхней линии, нижняя - по нижней линии, без
    расширения через bbox текста. `baseline_line_pad` добавляет небольшой
    симметричный запас относительно `max(расстояние между линиями, bbox-высота
    foreground)`, а `baseline_line_pad_px` добавляет гарантированный пиксельный
    запас. Если после поворота пару линий найти не удалось, baseline crop не
-   применяется. При `strict_lines: false` crop может быть расширен bbox-областью
-   самой нейросетевой heatmap, но эвристический detector не используется.
+   применяется.
 
 В `--debug-image` для baseline показываются overlay с нижней красной и верхней
 синей линиями, heatmap mask и crop, а в текстовом блоке пишутся angle,
