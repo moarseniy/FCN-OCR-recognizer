@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from evaluate_baselines import build_jobs, evaluate_detector, optimize
 from fcn_ocr import BaselineDetector
-from fcn_ocr.evaluation_config import expand_evaluation_parameters, load_evaluation_yaml
+from fcn_ocr.evaluation.config import expand_evaluation_parameters, load_evaluation_yaml
 from train import load_training_config, resolve_checkpoint_dir, run_training
 
 

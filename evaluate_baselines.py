@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
-import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -11,11 +9,16 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from fcn_ocr import BaselineDetector, InferenceConfig
-from fcn_ocr.evaluation_config import parse_args_with_evaluation_config
-from tool.evaluation import interpolate_polyline, polyline_x_bounds
+from fcn_ocr import BaselineDetector
+from fcn_ocr.evaluation import interpolate_polyline, polyline_x_bounds
+from fcn_ocr.evaluation.config import parse_args_with_evaluation_config
+from fcn_ocr.evaluation.optuna import create_study, optimize_with_progress
+from fcn_ocr.evaluation.reporting import (
+    append_tsv_row,
+    save_and_print_inference_command,
+    write_csv_rows,
+)
 from tool.markup import annotated_items, load_document, safe_image_path
-from tool.optuna_progress import optimize_with_progress
 
 
 def build_jobs(
@@ -194,11 +197,7 @@ def evaluate_detector(
         "elapsed": elapsed,
     }
     if output_csv is not None:
-        output_csv.parent.mkdir(parents=True, exist_ok=True)
-        with output_csv.open("w", encoding="utf-8", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=list(rows[0].keys()) if rows else ["image"])
-            writer.writeheader()
-            writer.writerows(rows)
+        write_csv_rows(rows, output_csv)
     if verbose:
         print_metrics(metrics, output_csv)
     return metrics
@@ -223,19 +222,25 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None) -> None:
 
 
 def append_trial(path: Path, trial_number: int, metrics: dict[str, Any]) -> None:
-    is_new = not path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        if is_new:
-            file.write(
-                "trial\tthreshold\tsuccess_rate\tcombined_mae_px\t"
-                "normalized_mae\tfailure_penalized_normalized_mae\n"
-            )
-        file.write(
-            f"{trial_number}\t{metrics['threshold']:.8f}\t{metrics['success_rate']:.8f}\t"
-            f"{metrics['combined_mae_px']:.8f}\t{metrics['normalized_mae']:.8f}\t"
-            f"{metrics['failure_penalized_normalized_mae']:.8f}\n"
-        )
+    append_tsv_row(
+        path,
+        (
+            "trial",
+            "threshold",
+            "success_rate",
+            "combined_mae_px",
+            "normalized_mae",
+            "failure_penalized_normalized_mae",
+        ),
+        (
+            trial_number,
+            f"{metrics['threshold']:.8f}",
+            f"{metrics['success_rate']:.8f}",
+            f"{metrics['combined_mae_px']:.8f}",
+            f"{metrics['normalized_mae']:.8f}",
+            f"{metrics['failure_penalized_normalized_mae']:.8f}",
+        ),
+    )
 
 
 def optimize(
@@ -251,16 +256,10 @@ def optimize(
     storage: str | None,
     progress: bool = False,
 ) -> dict[str, Any]:
-    try:
-        import optuna
-    except ImportError as exc:
-        raise RuntimeError("Optuna is not installed. Install it with: pip install optuna") from exc
-    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
-    study = optuna.create_study(
+    study = create_study(
         direction="minimize",
         study_name=study_name,
         storage=storage,
-        load_if_exists=bool(storage and study_name),
     )
 
     def objective(trial) -> float:
@@ -312,20 +311,7 @@ def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], i
                 Path(args.inference_ocr_checkpoint).expanduser().resolve()
             ),
         }
-    config = InferenceConfig.model_validate(config_data)
-    config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
-    config.save(config_path)
-    command = [
-        "python",
-        "inference.py",
-        "--config",
-        str(config_path),
-        "--image",
-        str(image_path) if image_path is not None else "<IMAGE_PATH>",
-    ]
-    print(f"Inference config saved to:  {config_path}")
-    print("\n=== Inference command ===")
-    print(shlex.join(command))
+    save_and_print_inference_command(config_data, args.out, image_path)
 
 
 def parse_args() -> argparse.Namespace:

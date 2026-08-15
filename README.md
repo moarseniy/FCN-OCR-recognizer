@@ -14,7 +14,8 @@ python -m pytest
 
 Набор фиксирует текущие контракты OCR-разметки, краевых пробелов,
 геометрических аугментаций и targets, baseline crop, вертикальных cuts,
-cells/DP-декодирования и соответствия inference/evaluation.
+cells/DP-декодирования, evaluation-метрик, fixed/range Optuna-параметров и
+соответствия inference/evaluation.
 
 ## Runtime modules
 
@@ -28,6 +29,20 @@ runtime-пайплайна разделены по ответственност�
 - `fcn_ocr/decoding.py` содержит обычный, cells- и DP-декодеры;
 - `fcn_ocr/recognizer.py` связывает модель с этими стадиями и предоставляет inference API;
 - `fcn_ocr/pipeline.py` один раз запускает общий baseline и координирует OCR с сегментатором.
+
+Общая инфраструктура замеров находится в `fcn_ocr/evaluation/`:
+
+- `config.py` строго читает evaluation YAML и раскрывает fixed/range параметры;
+- `samples.py` загружает доступную часть Label Studio выборки;
+- `metrics.py` содержит единые расчёты OCR и cuts метрик;
+- `geometry.py` сопоставляет ручные и предсказанные линии;
+- `optuna.py` управляет studies, параметрами и progress bar;
+- `reporting.py` пишет CSV/TSV и готовый inference-конфиг.
+
+Файлы `evaluate_ocr.py`, `evaluate_segmentator.py` и
+`evaluate_baselines.py` остаются CLI-точками входа и используют этот общий
+слой. Отсутствующие в указанной папке изображения Label Studio полностью
+исключаются из выборки; `limit` применяется уже к найденным файлам.
 
 Эти модули не являются отдельными режимами: они образуют один и тот же
 pipeline и используют общий строгий формат checkpoint.

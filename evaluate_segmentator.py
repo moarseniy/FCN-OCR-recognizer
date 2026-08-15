@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from copy import deepcopy
-import json
-import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -13,25 +10,29 @@ import numpy as np
 from PIL import Image
 import torch
 
-from fcn_ocr import InferenceConfig, VerticalSegmentator
-from fcn_ocr.evaluation_config import parse_args_with_evaluation_config
-from tool.evaluation import match_sorted_points
+from fcn_ocr import VerticalSegmentator
+from fcn_ocr.evaluation import (
+    CUT_RESULT_FIELDS,
+    compute_cut_metrics,
+    label_studio_samples,
+    load_json_document,
+)
+from fcn_ocr.evaluation.config import parse_args_with_evaluation_config
+from fcn_ocr.evaluation.optuna import (
+    create_study,
+    optimize_with_progress,
+    require_float_parameter,
+    require_int_parameter,
+    select_compatible_trial,
+    validate_float_range,
+    validate_int_range,
+)
+from fcn_ocr.evaluation.reporting import (
+    append_tsv_row,
+    save_and_print_inference_command,
+    write_csv_rows,
+)
 from tool.markup import annotated_items, is_manual_markup, safe_image_path
-from tool.optuna_progress import optimize_with_progress
-
-
-def get_gt_text(task: dict[str, Any]) -> str:
-    for annotation in task.get("annotations", []):
-        for result in annotation.get("result", []):
-            text_items = result.get("value", {}).get("text", [])
-            if text_items:
-                return str(text_items[0]).strip()
-    return ""
-
-
-def get_image_name(task: dict[str, Any]) -> str:
-    image_path = task.get("data", {}).get("image", "")
-    return Path(image_path).name
 
 
 def build_rows_and_jobs(
@@ -39,39 +40,29 @@ def build_rows_and_jobs(
     images_dir: Path | None,
     limit: int | None,
 ) -> tuple[list[dict[str, Any]], list[tuple[int, Path]]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        tasks = json.load(file)
+    document = load_json_document(json_path)
 
-    if is_manual_markup(tasks):
+    if is_manual_markup(document):
         images_root = (
             images_dir.expanduser().resolve()
             if images_dir is not None
-            else Path(tasks["images_root"]).expanduser().resolve()
+            else Path(document["images_root"]).expanduser().resolve()
         )
-        return build_manual_rows_and_jobs(tasks, images_root, limit)
+        return build_manual_rows_and_jobs(document, images_root, limit)
 
     if images_dir is None:
         raise ValueError(
             "--images is required for Label Studio JSON; "
             "manual markup JSON can use its stored images_root"
         )
-    images_dir = images_dir.expanduser().resolve()
-
-    if limit is not None:
-        tasks = tasks[:limit]
-
     rows: list[dict[str, Any]] = []
     jobs: list[tuple[int, Path]] = []
-
-    for task in tasks:
-        image_name = get_image_name(task)
-        image_path = images_dir / image_name
-        gt = get_gt_text(task)
+    for sample in label_studio_samples(document, images_dir.expanduser().resolve(), limit):
         row = {
-            "task_id": task.get("id"),
-            "image": image_name,
-            "gt": gt,
-            "gt_len": len(gt),
+            "task_id": sample.task_id,
+            "image": sample.image_name,
+            "gt": sample.text,
+            "gt_len": len(sample.text),
             "pred_len": 0,
             "cut_count": 0,
             "length_error": 0,
@@ -85,9 +76,7 @@ def build_rows_and_jobs(
             "cut_mae_px": 0.0,
             "error": "",
         }
-        if not image_path.exists():
-            continue
-        jobs.append((len(rows), image_path))
+        jobs.append((len(rows), sample.image_path))
         rows.append(row)
 
     return rows, jobs
@@ -278,112 +267,6 @@ def cut_positions_to_source(
     return mapped
 
 
-def compute_metrics(
-    rows: list[dict[str, Any]],
-    elapsed: float,
-    cut_tolerance_px: float,
-) -> dict[str, Any]:
-    total = len(rows)
-    evaluated = sum(1 for row in rows if not row["error"])
-    exact = 0
-    total_abs_error = 0
-    total_signed_error = 0
-    total_gt_len = 0
-    expected_cuts = 0
-    predicted_cuts = 0
-    matched_cuts = 0
-    total_cut_error = 0.0
-    manual_samples = 0
-
-    for row in rows:
-        if row["error"]:
-            row["length_error"] = -row["gt_len"]
-            row["abs_length_error"] = abs(row["length_error"])
-            continue
-        else:
-            row["length_error"] = row["pred_len"] - row["gt_len"]
-            row["abs_length_error"] = abs(row["length_error"])
-            exact += int(row["length_error"] == 0)
-
-        total_abs_error += row["abs_length_error"]
-        total_signed_error += row["length_error"]
-        total_gt_len += row["gt_len"]
-
-        gt_cuts = [float(value) for value in row.get("gt_cuts", [])]
-        if gt_cuts and not row["error"]:
-            manual_samples += 1
-            pred_cuts = [float(value) for value in row.get("pred_cuts", [])]
-            matches = match_sorted_points(gt_cuts, pred_cuts, cut_tolerance_px)
-            row["matched_cuts"] = len(matches)
-            row["false_positive_cuts"] = len(pred_cuts) - len(matches)
-            row["false_negative_cuts"] = len(gt_cuts) - len(matches)
-            row["cut_mae_px"] = (
-                sum(match.error for match in matches) / len(matches)
-                if matches
-                else 0.0
-            )
-            expected_cuts += len(gt_cuts)
-            predicted_cuts += len(pred_cuts)
-            matched_cuts += len(matches)
-            total_cut_error += sum(match.error for match in matches)
-
-    cut_precision = matched_cuts / predicted_cuts if predicted_cuts else 0.0
-    cut_recall = matched_cuts / expected_cuts if expected_cuts else 0.0
-    cut_f1 = (
-        2.0 * cut_precision * cut_recall / (cut_precision + cut_recall)
-        if cut_precision + cut_recall > 0.0
-        else 0.0
-    )
-
-    return {
-        "total_samples": total,
-        "evaluated_samples": evaluated,
-        "exact_length_matches": exact,
-        "length_accuracy": exact / evaluated if evaluated else 0.0,
-        "average_abs_length_error": total_abs_error / evaluated if evaluated else 0.0,
-        "total_abs_length_error": total_abs_error,
-        "average_signed_length_error": total_signed_error / evaluated if evaluated else 0.0,
-        "normalized_length_error": total_abs_error / total_gt_len if total_gt_len else 0.0,
-        "manual_cut_samples": manual_samples,
-        "expected_cuts": expected_cuts,
-        "predicted_cuts": predicted_cuts,
-        "matched_cuts": matched_cuts,
-        "cut_precision": cut_precision,
-        "cut_recall": cut_recall,
-        "cut_f1": cut_f1,
-        "cut_mae_px": total_cut_error / matched_cuts if matched_cuts else 0.0,
-        "cut_tolerance_px": float(cut_tolerance_px),
-        "elapsed": elapsed,
-        "speed": evaluated / elapsed if elapsed > 0 else 0.0,
-    }
-
-
-def write_rows_csv(rows: list[dict[str, Any]], output_csv: Path) -> None:
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    with output_csv.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=[
-                "task_id",
-                "image",
-                "gt",
-                "gt_len",
-                "pred_len",
-                "cut_count",
-                "length_error",
-                "abs_length_error",
-                "cuts",
-                "gt_cuts",
-                "pred_cuts",
-                "matched_cuts",
-                "false_positive_cuts",
-                "false_negative_cuts",
-                "cut_mae_px",
-                "error",
-            ],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> None:
@@ -506,7 +389,7 @@ def evaluate_with_segmentator(
     for row_index, error in errors.items():
         rows[row_index]["error"] = error
 
-    metrics = compute_metrics(rows, elapsed, cut_tolerance_px=cut_tolerance_px)
+    metrics = compute_cut_metrics(rows, elapsed, cut_tolerance_px=cut_tolerance_px)
     metrics["segmentator_mode"] = getattr(segmentator, "target_format", "cut_projection")
     metrics["cut_threshold"] = float(segmentator.cut_threshold)
     metrics["cut_min_width"] = int(segmentator.cut_min_width)
@@ -526,7 +409,7 @@ def evaluate_with_segmentator(
     metrics["baseline_detector_threshold"] = float(segmentator.baseline_detector_threshold)
 
     if output_csv is not None:
-        write_rows_csv(rows, output_csv)
+        write_csv_rows(rows, output_csv, CUT_RESULT_FIELDS)
     if verbose:
         print_metrics(metrics, output_csv)
     return metrics
@@ -607,36 +490,61 @@ def evaluate_prepared(
 
 
 def append_trial_log(path: Path, trial_number: int, metrics: dict[str, Any], metric_name: str) -> None:
-    is_new_file = not path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        if is_new_file:
-            file.write(
-                "trial\tcut_threshold\tcut_min_width\tcut_max_width\tcut_smooth_radius\t"
-                "scale_x\ty_pad\tx_pad\t"
-                "baseline_crop\tbaseline_line_pad\t"
-                "baseline_line_pad_px\tbaseline_deskew\tbaseline_max_angle\t"
-                "baseline_detector_threshold\t"
-                "metric\tlength_accuracy\taverage_abs_length_error\ttotal_abs_length_error\t"
-                "average_signed_length_error\tnormalized_length_error\tcut_precision\tcut_recall\t"
-                "cut_f1\tcut_mae_px\tspeed\n"
-            )
-        file.write(
-            f"{trial_number}\t{metrics['cut_threshold']:.8f}\t{metrics['cut_min_width']}\t"
-            f"{metrics['cut_max_width']}\t{metrics['cut_smooth_radius']}\t"
-            f"{metrics['scale_x']:.8f}\t{metrics['y_pad']:.8f}\t{metrics['x_pad']:.8f}\t"
-            f"{int(metrics['baseline_crop'])}\t"
-            f"{metrics['baseline_line_pad']:.8f}\t"
-            f"{metrics['baseline_line_pad_px']:.8f}\t"
-            f"{int(metrics['baseline_deskew'])}\t"
-            f"{metrics['baseline_max_angle']:.8f}\t{metrics['baseline_detector_threshold']:.8f}\t"
-            f"{metrics[metric_name]:.8f}\t"
-            f"{metrics['length_accuracy']:.8f}\t{metrics['average_abs_length_error']:.8f}\t"
-            f"{metrics['total_abs_length_error']}\t{metrics['average_signed_length_error']:.8f}\t"
-            f"{metrics['normalized_length_error']:.8f}\t{metrics['cut_precision']:.8f}\t"
-            f"{metrics['cut_recall']:.8f}\t{metrics['cut_f1']:.8f}\t"
-            f"{metrics['cut_mae_px']:.8f}\t{metrics['speed']:.6f}\n"
-        )
+    columns = (
+        "trial",
+        "cut_threshold",
+        "cut_min_width",
+        "cut_max_width",
+        "cut_smooth_radius",
+        "scale_x",
+        "y_pad",
+        "x_pad",
+        "baseline_crop",
+        "baseline_line_pad",
+        "baseline_line_pad_px",
+        "baseline_deskew",
+        "baseline_max_angle",
+        "baseline_detector_threshold",
+        "metric",
+        "length_accuracy",
+        "average_abs_length_error",
+        "total_abs_length_error",
+        "average_signed_length_error",
+        "normalized_length_error",
+        "cut_precision",
+        "cut_recall",
+        "cut_f1",
+        "cut_mae_px",
+        "speed",
+    )
+    values = (
+        trial_number,
+        f"{metrics['cut_threshold']:.8f}",
+        metrics["cut_min_width"],
+        metrics["cut_max_width"],
+        metrics["cut_smooth_radius"],
+        f"{metrics['scale_x']:.8f}",
+        f"{metrics['y_pad']:.8f}",
+        f"{metrics['x_pad']:.8f}",
+        int(metrics["baseline_crop"]),
+        f"{metrics['baseline_line_pad']:.8f}",
+        f"{metrics['baseline_line_pad_px']:.8f}",
+        int(metrics["baseline_deskew"]),
+        f"{metrics['baseline_max_angle']:.8f}",
+        f"{metrics['baseline_detector_threshold']:.8f}",
+        f"{metrics[metric_name]:.8f}",
+        f"{metrics['length_accuracy']:.8f}",
+        f"{metrics['average_abs_length_error']:.8f}",
+        metrics["total_abs_length_error"],
+        f"{metrics['average_signed_length_error']:.8f}",
+        f"{metrics['normalized_length_error']:.8f}",
+        f"{metrics['cut_precision']:.8f}",
+        f"{metrics['cut_recall']:.8f}",
+        f"{metrics['cut_f1']:.8f}",
+        f"{metrics['cut_mae_px']:.8f}",
+        f"{metrics['speed']:.6f}",
+    )
+    append_tsv_row(path, columns, values)
 
 
 def optimize(
@@ -697,47 +605,8 @@ def optimize(
     cut_tolerance_px: float = 3.0,
     progress: bool = False,
 ) -> dict[str, Any]:
-    try:
-        import optuna
-    except ImportError as exc:
-        raise RuntimeError("Optuna is not installed. Install it with: pip install optuna") from exc
-    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
-
     if trials < 1:
         raise ValueError("trials must be >= 1")
-
-    def validate_float_range(
-        name: str,
-        minimum: float | None,
-        maximum: float | None,
-        *,
-        lower: float | None = None,
-        upper: float | None = None,
-    ) -> None:
-        if (minimum is None) != (maximum is None):
-            raise ValueError(f"{name} tuning requires both min and max")
-        if minimum is None or maximum is None:
-            return
-        if minimum > maximum:
-            raise ValueError(f"{name} tuning requires min <= max")
-        if lower is not None and minimum < lower:
-            raise ValueError(f"{name} tuning minimum must be >= {lower}")
-        if upper is not None and maximum > upper:
-            raise ValueError(f"{name} tuning maximum must be <= {upper}")
-
-    def validate_int_range(
-        name: str,
-        minimum: int | None,
-        maximum: int | None,
-        *,
-        lower: int,
-    ) -> None:
-        if (minimum is None) != (maximum is None):
-            raise ValueError(f"{name} tuning requires both min and max")
-        if minimum is None or maximum is None:
-            return
-        if minimum < lower or maximum < minimum:
-            raise ValueError(f"{name} bounds must satisfy {lower} <= min <= max")
 
     validate_float_range("cut_threshold", cut_threshold_min, cut_threshold_max, lower=0.0, upper=1.0)
     validate_int_range("cut_min_width", cut_min_width_min, cut_min_width_max, lower=1)
@@ -752,32 +621,6 @@ def optimize(
             raise ValueError("x_pad tuning bounds must be >= 0")
         if x_pad_min > x_pad_max:
             raise ValueError("--optuna-x-pad-min must be <= --optuna-x-pad-max")
-
-    def suggest_float_or_fixed(
-        trial,
-        name: str,
-        fixed: float | None,
-        minimum: float | None,
-        maximum: float | None,
-    ) -> float:
-        if minimum is not None and maximum is not None:
-            return float(trial.suggest_float(name, minimum, maximum))
-        if fixed is None or isinstance(fixed, bool):
-            raise ValueError(f"{name} must be fixed or have an Optuna range")
-        return float(fixed)
-
-    def suggest_int_or_fixed(
-        trial,
-        name: str,
-        fixed: int | None,
-        minimum: int | None,
-        maximum: int | None,
-    ) -> int:
-        if minimum is not None and maximum is not None:
-            return int(trial.suggest_int(name, minimum, maximum))
-        if fixed is None or isinstance(fixed, bool):
-            raise ValueError(f"{name} must be fixed or have an Optuna range")
-        return int(fixed)
 
     fixed_params: dict[str, Any] = {}
     if cut_threshold_min is None:
@@ -858,11 +701,10 @@ def optimize(
         baseline_detector_threshold=baseline_detector_threshold,
     )
     direction = "maximize" if metric_name in {"length_accuracy", "cut_precision", "cut_recall", "cut_f1"} else "minimize"
-    study = optuna.create_study(
+    study = create_study(
         direction=direction,
         study_name=study_name,
         storage=storage,
-        load_if_exists=bool(storage and study_name),
     )
     print(
         "The segmentator summary above shows neutral initialization; "
@@ -916,37 +758,39 @@ def optimize(
             if bool(trial_baseline_crop) and tune_baseline_deskew
             else baseline_deskew
         )
-        trial_cut_threshold = suggest_float_or_fixed(
+        trial_cut_threshold = require_float_parameter(
             trial,
             "cut_threshold",
             cut_threshold,
             cut_threshold_min,
             cut_threshold_max,
         )
-        trial_cut_min_width = suggest_int_or_fixed(
+        trial_cut_min_width = require_int_parameter(
             trial,
             "cut_min_width",
             cut_min_width,
             cut_min_width_min,
             cut_min_width_max,
         )
-        trial_cut_max_width = suggest_int_or_fixed(
+        trial_cut_max_width = require_int_parameter(
             trial,
             "cut_max_width",
             cut_max_width,
             cut_max_width_min,
             cut_max_width_max,
         )
-        trial_cut_smooth_radius = suggest_int_or_fixed(
+        trial_cut_smooth_radius = require_int_parameter(
             trial,
             "cut_smooth_radius",
             cut_smooth_radius,
             cut_smooth_radius_min,
             cut_smooth_radius_max,
         )
-        trial_scale_x = suggest_float_or_fixed(trial, "scale_x", scale_x, scale_x_min, scale_x_max)
-        trial_y_pad = suggest_float_or_fixed(trial, "y_pad", y_pad, y_pad_min, y_pad_max)
-        trial_x_pad = suggest_float_or_fixed(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
+        trial_scale_x = require_float_parameter(
+            trial, "scale_x", scale_x, scale_x_min, scale_x_max
+        )
+        trial_y_pad = require_float_parameter(trial, "y_pad", y_pad, y_pad_min, y_pad_max)
+        trial_x_pad = require_float_parameter(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
         configure_segmentator(
             segmentator,
             cut_threshold=trial_cut_threshold,
@@ -1005,40 +849,11 @@ def optimize(
         enabled=progress,
     )
 
-    def compatible_with_fixed_params(trial) -> bool:
-        if trial.value is None:
-            return False
-        if any(name not in trial.params for name in required_trial_params):
-            return False
-        for name, fixed in fixed_params.items():
-            if fixed is None or name not in trial.params:
-                continue
-            trial_value = trial.params[name]
-            if isinstance(fixed, bool):
-                if bool(trial_value) != fixed:
-                    return False
-            elif isinstance(fixed, (int, float)) and not isinstance(fixed, bool):
-                if abs(float(trial_value) - float(fixed)) > 1e-12:
-                    return False
-            elif trial_value != fixed:
-                return False
-        return True
-
-    compatible_trials = [
-        trial
-        for trial in study.trials
-        if trial.state.is_finished() and compatible_with_fixed_params(trial)
-    ]
-    if not compatible_trials:
-        raise RuntimeError(
-            "No completed Optuna trials are compatible with the fixed parameters "
-            "from the current evaluation config. Use a new optuna_study_name or "
-            "remove optuna_storage."
-        )
-    best_trial = (
-        max(compatible_trials, key=lambda trial: float(trial.value))
-        if direction == "maximize"
-        else min(compatible_trials, key=lambda trial: float(trial.value))
+    best_trial = select_compatible_trial(
+        study,
+        direction=direction,
+        required_params=required_trial_params,
+        fixed_params=fixed_params,
     )
     best_params = dict(best_trial.params)
     for name, fixed in fixed_params.items():
@@ -1313,22 +1128,9 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             ),
             "decode": {"enabled": True},
         }
-    inference_config = InferenceConfig.model_validate(config_data)
-    config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
-    inference_config.save(config_path)
-    command = [
-        "python",
-        "inference.py",
-        "--config",
-        str(config_path),
-        "--image",
-        image_path,
-    ]
-    print(f"Inference config saved to:  {config_path}")
-    print("\n=== Inference command ===")
     if args.inference_ocr_checkpoint is None:
-        print(f"Set ocr.checkpoint in {config_path} before running:")
-    print(shlex.join(command))
+        print("Generated config contains only baseline and segmentator stages.")
+    save_and_print_inference_command(config_data, args.out, image_path)
 
 
 def main() -> None:

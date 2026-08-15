@@ -28,8 +28,7 @@ def match_sorted_points(
     rows = len(expected_values) + 1
     cols = len(predicted_values) + 1
     scores: list[list[tuple[int, float]]] = [
-        [(0, 0.0) for _ in range(cols)]
-        for _ in range(rows)
+        [(0, 0.0) for _ in range(cols)] for _ in range(rows)
     ]
     choices = [["" for _ in range(cols)] for _ in range(rows)]
 
@@ -102,4 +101,3 @@ def polyline_x_bounds(points: list[list[float]]) -> tuple[float, float]:
         raise ValueError("A baseline polyline requires at least two points")
     xs = [float(point[0]) for point in points]
     return min(xs), max(xs)
-

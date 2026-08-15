@@ -1,63 +1,27 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from copy import deepcopy
 import json
-import shlex
 import time
 from pathlib import Path
 from typing import Any, Sequence
 
 from fcn_ocr import InferenceConfig, OCRPipeline
-from fcn_ocr.evaluation_config import parse_args_with_evaluation_config
-from tool.optuna_progress import optimize_with_progress
-
-
-def levenshtein(a: str, b: str) -> int:
-    n, m = len(a), len(b)
-    if n < m:
-        return levenshtein(b, a)
-
-    previous = list(range(m + 1))
-    for i, char_a in enumerate(a, 1):
-        current = [i]
-        for j, char_b in enumerate(b, 1):
-            current.append(
-                min(
-                    previous[j] + 1,
-                    current[j - 1] + 1,
-                    previous[j - 1] + (char_a != char_b),
-                )
-            )
-        previous = current
-    return previous[m]
-
-
-def char_accuracy(gt: str, pred: str) -> float:
-    if not gt:
-        return 1.0 if not pred else 0.0
-
-    distance = levenshtein(gt, pred)
-    return max(0.0, 1.0 - distance / len(gt))
-
-
-def exact_match(gt: str, pred: str) -> bool:
-    return gt == pred
-
-
-def get_gt_text(task: dict[str, Any]) -> str:
-    for annotation in task.get("annotations", []):
-        for result in annotation.get("result", []):
-            text_items = result.get("value", {}).get("text", [])
-            if text_items:
-                return str(text_items[0]).strip()
-    return ""
-
-
-def get_image_name(task: dict[str, Any]) -> str:
-    image_path = task.get("data", {}).get("image", "")
-    return Path(image_path).name
+from fcn_ocr.evaluation import OCR_RESULT_FIELDS, compute_ocr_metrics, load_label_studio_samples
+from fcn_ocr.evaluation.config import parse_args_with_evaluation_config
+from fcn_ocr.evaluation.optuna import (
+    best_or_fixed,
+    create_study,
+    optimize_with_progress,
+    suggest_float_or_fixed,
+    suggest_int_or_fixed,
+)
+from fcn_ocr.evaluation.reporting import (
+    append_tsv_row,
+    save_and_print_inference_command,
+    write_csv_rows,
+)
 
 
 def build_rows_and_jobs(
@@ -65,22 +29,13 @@ def build_rows_and_jobs(
     images_dir: Path,
     limit: int | None,
 ) -> tuple[list[dict[str, Any]], list[tuple[int, Path]]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        tasks = json.load(file)
-
-    if limit is not None:
-        tasks = tasks[:limit]
-
     rows: list[dict[str, Any]] = []
     jobs: list[tuple[int, Path]] = []
-
-    for task in tasks:
-        image_name = get_image_name(task)
-        image_path = images_dir / image_name
+    for sample in load_label_studio_samples(json_path, images_dir, limit):
         row = {
-            "task_id": task.get("id"),
-            "image": image_name,
-            "gt": get_gt_text(task),
+            "task_id": sample.task_id,
+            "image": sample.image_name,
+            "gt": sample.text,
             "pred": "",
             "exact_match": 0,
             "char_accuracy": 0.0,
@@ -89,76 +44,10 @@ def build_rows_and_jobs(
             "pred_len": 0,
             "error": "",
         }
-
-        if not image_path.exists():
-            continue
-        jobs.append((len(rows), image_path))
+        jobs.append((len(rows), sample.image_path))
         rows.append(row)
 
     return rows, jobs
-
-
-def compute_metrics(rows: list[dict[str, Any]], elapsed: float) -> dict[str, Any]:
-    total = 0
-    exact_ok = 0
-    total_lev = 0
-    total_gt_chars = 0
-    total_char_acc = 0.0
-
-    for row in rows:
-        gt = row["gt"]
-        pred = row["pred"]
-        lev = levenshtein(gt, pred)
-        c_acc = char_accuracy(gt, pred)
-        is_exact = exact_match(gt, pred)
-
-        row["exact_match"] = int(is_exact)
-        row["char_accuracy"] = round(c_acc, 6)
-        row["levenshtein"] = lev
-        row["gt_len"] = len(gt)
-        row["pred_len"] = len(pred)
-
-        total += 1
-        exact_ok += int(is_exact)
-        total_lev += lev
-        total_gt_chars += len(gt)
-        total_char_acc += c_acc
-
-    recognized = sum(1 for row in rows if not row["error"])
-    return {
-        "total_samples": total,
-        "recognized_samples": recognized,
-        "exact_matches": exact_ok,
-        "line_accuracy": exact_ok / total if total else 0.0,
-        "average_char_accuracy": total_char_acc / total if total else 0.0,
-        "global_char_accuracy": max(0.0, 1.0 - total_lev / total_gt_chars) if total_gt_chars else 0.0,
-        "average_levenshtein": total_lev / total if total else 0.0,
-        "total_levenshtein": total_lev,
-        "elapsed": elapsed,
-        "speed": recognized / elapsed if elapsed > 0 else 0.0,
-    }
-
-
-def write_rows_csv(rows: list[dict[str, Any]], output_csv: Path) -> None:
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    with output_csv.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=[
-                "task_id",
-                "image",
-                "gt",
-                "pred",
-                "exact_match",
-                "char_accuracy",
-                "levenshtein",
-                "gt_len",
-                "pred_len",
-                "error",
-            ],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> None:
@@ -332,7 +221,7 @@ def evaluate_prepared(
     for row_index, error in errors.items():
         rows[row_index]["error"] = error
 
-    metrics = compute_metrics(rows, elapsed)
+    metrics = compute_ocr_metrics(rows, elapsed)
     metrics.update(batch_metrics)
     metrics["scale_x"] = float(scale_x)
     metrics["y_pad"] = float(y_pad)
@@ -369,7 +258,7 @@ def evaluate_prepared(
         metrics["segmentator_cut_smooth_radius"] = int(segmentator_cut_smooth_radius or 0)
 
     if output_csv is not None:
-        write_rows_csv(rows, output_csv)
+        write_csv_rows(rows, output_csv, OCR_RESULT_FIELDS)
 
     if verbose:
         print_metrics(metrics, output_csv)
@@ -410,57 +299,38 @@ def append_trial_log(
     metric_name: str,
     trial_params: dict[str, Any] | None = None,
 ) -> None:
-    is_new_file = not path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        if is_new_file:
-            file.write(
-                "trial\tparams\tmetric\tmetric_value\tline_accuracy\taverage_char_accuracy\t"
-                "global_char_accuracy\taverage_levenshtein\ttotal_levenshtein\tspeed\n"
-            )
-        params = json.dumps(
-            trial_params if trial_params is not None else _trial_params_snapshot(metrics),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        file.write(
-            f"{trial_number}\t{params}\t{metric_name}\t{metrics[metric_name]:.8f}\t"
-            f"{metrics['line_accuracy']:.8f}\t{metrics['average_char_accuracy']:.8f}\t"
-            f"{metrics['global_char_accuracy']:.8f}\t{metrics['average_levenshtein']:.8f}\t"
-            f"{metrics['total_levenshtein']}\t{metrics['speed']:.6f}\n"
-        )
-
-
-def _suggest_float_or_fixed(
-    trial,
-    name: str,
-    fixed: float | None,
-    min_value: float | None,
-    max_value: float | None,
-) -> float | None:
-    if min_value is None and max_value is None:
-        return fixed
-    if min_value is None or max_value is None:
-        raise ValueError(f"{name} tuning requires both min and max")
-    return float(trial.suggest_float(name, float(min_value), float(max_value)))
-
-
-def _suggest_int_or_fixed(
-    trial,
-    name: str,
-    fixed: int | None,
-    min_value: int | None,
-    max_value: int | None,
-) -> int | None:
-    if min_value is None and max_value is None:
-        return fixed
-    if min_value is None or max_value is None:
-        raise ValueError(f"{name} tuning requires both min and max")
-    return int(trial.suggest_int(name, int(min_value), int(max_value)))
-
-
-def _best_or_fixed(best_params: dict[str, Any], name: str, fixed: Any) -> Any:
-    return best_params[name] if name in best_params else fixed
+    params = json.dumps(
+        trial_params if trial_params is not None else _trial_params_snapshot(metrics),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    append_tsv_row(
+        path,
+        (
+            "trial",
+            "params",
+            "metric",
+            "metric_value",
+            "line_accuracy",
+            "average_char_accuracy",
+            "global_char_accuracy",
+            "average_levenshtein",
+            "total_levenshtein",
+            "speed",
+        ),
+        (
+            trial_number,
+            params,
+            metric_name,
+            f"{metrics[metric_name]:.8f}",
+            f"{metrics['line_accuracy']:.8f}",
+            f"{metrics['average_char_accuracy']:.8f}",
+            f"{metrics['global_char_accuracy']:.8f}",
+            f"{metrics['average_levenshtein']:.8f}",
+            metrics["total_levenshtein"],
+            f"{metrics['speed']:.6f}",
+        ),
+    )
 
 
 def optimize_preprocess(
@@ -537,22 +407,15 @@ def optimize_preprocess(
     min_score_width_max: int | None = None,
     progress: bool = False,
 ) -> dict[str, Any]:
-    try:
-        import optuna
-    except ImportError as exc:
-        raise RuntimeError("Optuna is not installed. Install it with: pip install optuna") from exc
-    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
-
     if trials < 1:
         raise ValueError("trials must be >= 1")
 
     base_rows, jobs = build_rows_and_jobs(json_path, images_dir, limit)
     direction = "minimize" if metric_name in {"average_levenshtein", "total_levenshtein"} else "maximize"
-    study = optuna.create_study(
+    study = create_study(
         direction=direction,
         study_name=study_name,
         storage=storage,
-        load_if_exists=bool(storage and study_name),
     )
 
     def objective(trial) -> float:
@@ -570,9 +433,9 @@ def optimize_preprocess(
 
         scale_x = trial.suggest_float("scale_x", scale_x_min, scale_x_max)
         y_pad = trial.suggest_float("y_pad", y_pad_min, y_pad_max)
-        current_x_pad = _suggest_float_or_fixed(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
+        current_x_pad = suggest_float_or_fixed(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
         current_baseline_detector_threshold = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "baseline_detector_threshold",
                 baseline_detector_threshold,
@@ -583,7 +446,7 @@ def optimize_preprocess(
             else baseline_detector_threshold
         )
         current_baseline_line_pad = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "baseline_line_pad",
                 baseline_line_pad,
@@ -594,7 +457,7 @@ def optimize_preprocess(
             else baseline_line_pad
         )
         current_baseline_line_pad_px = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "baseline_line_pad_px",
                 baseline_line_pad_px,
@@ -605,7 +468,7 @@ def optimize_preprocess(
             else baseline_line_pad_px
         )
         current_segmentator_scale_x = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "segmentator_scale_x",
                 segmentator_scale_x,
@@ -616,7 +479,7 @@ def optimize_preprocess(
             else segmentator_scale_x
         )
         current_segmentator_y_pad = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "segmentator_y_pad",
                 segmentator_y_pad,
@@ -627,7 +490,7 @@ def optimize_preprocess(
             else segmentator_y_pad
         )
         current_segmentator_x_pad = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "segmentator_x_pad",
                 segmentator_x_pad,
@@ -638,7 +501,7 @@ def optimize_preprocess(
             else segmentator_x_pad
         )
         current_segmentator_cut_threshold = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "segmentator_cut_threshold",
                 segmentator_cut_threshold,
@@ -649,7 +512,7 @@ def optimize_preprocess(
             else segmentator_cut_threshold
         )
         current_segmentator_cut_min_width = (
-            _suggest_int_or_fixed(
+            suggest_int_or_fixed(
                 trial,
                 "segmentator_cut_min_width",
                 segmentator_cut_min_width,
@@ -660,7 +523,7 @@ def optimize_preprocess(
             else segmentator_cut_min_width
         )
         current_segmentator_cut_max_width = (
-            _suggest_int_or_fixed(
+            suggest_int_or_fixed(
                 trial,
                 "segmentator_cut_max_width",
                 segmentator_cut_max_width,
@@ -671,7 +534,7 @@ def optimize_preprocess(
             else segmentator_cut_max_width
         )
         current_segmentator_cut_smooth_radius = (
-            _suggest_int_or_fixed(
+            suggest_int_or_fixed(
                 trial,
                 "segmentator_cut_smooth_radius",
                 segmentator_cut_smooth_radius,
@@ -682,7 +545,7 @@ def optimize_preprocess(
             else segmentator_cut_smooth_radius
         )
         current_center_fraction = (
-            _suggest_float_or_fixed(
+            suggest_float_or_fixed(
                 trial,
                 "center_fraction",
                 center_fraction,
@@ -693,7 +556,7 @@ def optimize_preprocess(
             else center_fraction
         )
         current_min_score_width = (
-            _suggest_int_or_fixed(
+            suggest_int_or_fixed(
                 trial,
                 "min_score_width",
                 min_score_width,
@@ -782,46 +645,46 @@ def optimize_preprocess(
         device=device,
         scale_x=float(best_params["scale_x"]),
         y_pad=float(best_params["y_pad"]),
-        x_pad=float(_best_or_fixed(best_params, "x_pad", x_pad)),
+        x_pad=float(best_or_fixed(best_params, "x_pad", x_pad)),
         batch_size=batch_size,
         log_every=log_every,
         verbose=True,
         baseline_crop=baseline_crop,
         baseline_deskew=baseline_deskew,
         baseline_max_angle=baseline_max_angle,
-        baseline_line_pad=float(_best_or_fixed(best_params, "baseline_line_pad", baseline_line_pad)),
-        baseline_line_pad_px=float(_best_or_fixed(best_params, "baseline_line_pad_px", baseline_line_pad_px)),
+        baseline_line_pad=float(best_or_fixed(best_params, "baseline_line_pad", baseline_line_pad)),
+        baseline_line_pad_px=float(best_or_fixed(best_params, "baseline_line_pad_px", baseline_line_pad_px)),
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=float(
-            _best_or_fixed(best_params, "baseline_detector_threshold", baseline_detector_threshold)
+            best_or_fixed(best_params, "baseline_detector_threshold", baseline_detector_threshold)
         ),
         segmentator_checkpoint=segmentator_checkpoint,
         decode_with_segmentator=decode_with_segmentator,
         segmentator_scale_x=float(
-            _best_or_fixed(best_params, "segmentator_scale_x", segmentator_scale_x)
+            best_or_fixed(best_params, "segmentator_scale_x", segmentator_scale_x)
         ),
         segmentator_y_pad=float(
-            _best_or_fixed(best_params, "segmentator_y_pad", segmentator_y_pad)
+            best_or_fixed(best_params, "segmentator_y_pad", segmentator_y_pad)
         ),
         segmentator_x_pad=float(
-            _best_or_fixed(best_params, "segmentator_x_pad", segmentator_x_pad)
+            best_or_fixed(best_params, "segmentator_x_pad", segmentator_x_pad)
         ),
-        segmentator_cut_threshold=_best_or_fixed(
+        segmentator_cut_threshold=best_or_fixed(
             best_params,
             "segmentator_cut_threshold",
             segmentator_cut_threshold,
         ),
-        segmentator_cut_min_width=_best_or_fixed(
+        segmentator_cut_min_width=best_or_fixed(
             best_params,
             "segmentator_cut_min_width",
             segmentator_cut_min_width,
         ),
-        segmentator_cut_max_width=_best_or_fixed(
+        segmentator_cut_max_width=best_or_fixed(
             best_params,
             "segmentator_cut_max_width",
             segmentator_cut_max_width,
         ),
-        segmentator_cut_smooth_radius=_best_or_fixed(
+        segmentator_cut_smooth_radius=best_or_fixed(
             best_params,
             "segmentator_cut_smooth_radius",
             segmentator_cut_smooth_radius,
@@ -829,14 +692,14 @@ def optimize_preprocess(
         decode_method=decode_method,
         decode_top_k=decode_top_k,
         center_fraction=float(
-            _best_or_fixed(
+            best_or_fixed(
                 best_params,
                 "center_fraction",
                 center_fraction,
             )
         ),
         min_score_width=int(
-            _best_or_fixed(
+            best_or_fixed(
                 best_params,
                 "min_score_width",
                 min_score_width,
@@ -1447,20 +1310,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "cut_max_width": metrics["segmentator_cut_max_width"],
             "cut_smooth_radius": metrics["segmentator_cut_smooth_radius"],
         }
-    inference_config = InferenceConfig.model_validate(config_data)
-    config_path = Path(args.out).expanduser().resolve().with_suffix(".inference.yaml")
-    inference_config.save(config_path)
-    command = [
-        "python",
-        "inference.py",
-        "--config",
-        str(config_path),
-        "--image",
-        image_path,
-    ]
-    print(f"Inference config saved to:  {config_path}")
-    print("\n=== Inference command ===")
-    print(shlex.join(command))
+    save_and_print_inference_command(config_data, args.out, image_path)
 
 
 def run_evaluation(
