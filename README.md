@@ -16,6 +16,22 @@ python -m pytest
 геометрических аугментаций и targets, baseline crop, вертикальных cuts,
 cells/DP-декодирования и соответствия inference/evaluation.
 
+## Runtime modules
+
+Публичной точкой входа одиночной модели остается `TextRecognizer`, но детали
+runtime-пайплайна разделены по ответственности:
+
+- `fcn_ocr/checkpoint.py` строго проверяет checkpoint и создает указанную FCN;
+- `fcn_ocr/preprocessing.py` выполняет padding, resize, `scale_x` и перенос координат;
+- `fcn_ocr/baseline_processing.py` детектирует две линии, делает deskew и crop;
+- `fcn_ocr/cut_processing.py` сопоставляет cut-координаты с выходом OCR и считает width prior;
+- `fcn_ocr/decoding.py` содержит обычный, cells- и DP-декодеры;
+- `fcn_ocr/recognizer.py` связывает модель с этими стадиями и предоставляет inference API;
+- `fcn_ocr/pipeline.py` один раз запускает общий baseline и координирует OCR с сегментатором.
+
+Эти модули не являются отдельными режимами: они образуют один и тот же
+pipeline и используют общий строгий формат checkpoint.
+
 ## Dataset metadata
 
 `metadata.yaml` является обязательным контрактом офлайн-датасета. В нём
