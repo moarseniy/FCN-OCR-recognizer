@@ -17,10 +17,7 @@ from .dataset import SingleLineDatasetConfig
 
 
 def load_torch_chunk(path: Path) -> dict[str, Any]:
-    try:
-        return torch.load(path, map_location="cpu", weights_only=False, mmap=True)
-    except (RuntimeError, TypeError):
-        return torch.load(path, map_location="cpu", weights_only=False)
+    return torch.load(str(path), map_location="cpu", weights_only=False, mmap=True)
 
 
 def validate_chunk_payload(

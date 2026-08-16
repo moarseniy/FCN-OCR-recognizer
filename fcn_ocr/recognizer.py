@@ -95,8 +95,12 @@ class TextRecognizer(
         )
         self.image_height = int(checkpoint_config["image_height"])
         self.preprocess_fill = int(checkpoint_config["background"])
-        self.ocr_crop_left = int(checkpoint_config["ocr_crop_left"])
-        self.ocr_crop_right = int(checkpoint_config["ocr_crop_right"])
+        if self.loss_mode == "fcn_ocr":
+            self.ocr_crop_left = int(checkpoint_config["ocr_crop_left"])
+            self.ocr_crop_right = int(checkpoint_config["ocr_crop_right"])
+        else:
+            self.ocr_crop_left = 0
+            self.ocr_crop_right = 0
 
         self.model = loaded.model
 

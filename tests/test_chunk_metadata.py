@@ -202,7 +202,7 @@ def test_removed_config_vocabulary_is_rejected() -> None:
             {
                 "architecture": "fcn_ocr",
                 "chunks_dir": "/unused",
-                "loss_mode": "legacy_logreg",
+                "loss_mode": "removed_task",
             }
         )
 

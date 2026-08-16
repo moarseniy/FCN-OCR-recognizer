@@ -32,7 +32,12 @@ from fcn_architectures import (
     create_model,
     normalize_architecture_name,
 )
-from loss import baseline_heatmap_loss, cut_projection_loss, fcn_ocr_loss
+from fcn_training import (
+    TrainingTask,
+    all_training_task_config_fields,
+    available_training_tasks,
+    get_training_task,
+)
 
 from datetime import datetime
 import os
@@ -40,14 +45,11 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 SUPPORTED_SCHEDULERS = ("none", "reduce_on_plateau", "cosine", "step")
 SUPPORTED_OPTIMIZERS = ("adam", "adamw", "sgd", "rmsprop")
-SUPPORTED_LOSS_MODES = ("fcn_ocr", "cut_projection", "baseline_heatmap")
-SUPPORTED_CUT_PROJECTION_LOSSES = ("mse", "smooth_l1", "bce")
-SUPPORTED_BASELINE_HEATMAP_LOSSES = ("bce", "mse", "smooth_l1")
 TRAINING_CONFIG_FILENAME = "training_config.yaml"
 
 
@@ -163,29 +165,27 @@ class TrainingConfig(BaseModel):
     @classmethod
     def loss_mode_must_be_supported(cls, value: str) -> str:
         value = value.lower()
-        if value not in SUPPORTED_LOSS_MODES:
-            raise ValueError(f"loss_mode must be one of {SUPPORTED_LOSS_MODES}")
+        supported = available_training_tasks()
+        if value not in supported:
+            raise ValueError(f"loss_mode must be one of {supported}")
         return value
 
-    @field_validator("cut_projection_loss")
+    @field_validator("cut_projection_loss", "baseline_heatmap_loss")
     @classmethod
-    def cut_projection_loss_must_be_supported(cls, value: str) -> str:
-        value = value.lower()
-        if value not in SUPPORTED_CUT_PROJECTION_LOSSES:
-            raise ValueError(
-                f"cut_projection_loss must be one of {SUPPORTED_CUT_PROJECTION_LOSSES}"
-            )
-        return value
+    def task_loss_name_must_be_normalized(cls, value: str) -> str:
+        return value.lower()
 
-    @field_validator("baseline_heatmap_loss")
-    @classmethod
-    def baseline_heatmap_loss_must_be_supported(cls, value: str) -> str:
-        value = value.lower()
-        if value not in SUPPORTED_BASELINE_HEATMAP_LOSSES:
+    @model_validator(mode="after")
+    def task_fields_must_match_loss_mode(self) -> "TrainingConfig":
+        task = get_training_task(self.loss_mode)
+        explicit_task_fields = self.model_fields_set & all_training_task_config_fields()
+        unexpected = sorted(explicit_task_fields - task.config_fields)
+        if unexpected:
             raise ValueError(
-                f"baseline_heatmap_loss must be one of {SUPPORTED_BASELINE_HEATMAP_LOSSES}"
+                f"training task {task.name!r} does not accept config fields: {unexpected}"
             )
-        return value
+        task.validate_config(self)
+        return self
 
     @field_validator("augmentation_probabilities")
     @classmethod
@@ -209,18 +209,6 @@ class TrainingConfig(BaseModel):
         if unknown:
             raise ValueError(f"unknown augmentation configs: {unknown}")
         return value
-
-
-def model_num_classes(alphabet: str, loss_mode: str) -> int:
-    loss_mode = loss_mode.lower()
-    if loss_mode == "cut_projection":
-        return 1
-    if loss_mode == "baseline_heatmap":
-        return 2
-    if loss_mode == "fcn_ocr":
-        return len(alphabet)
-    raise ValueError(f"Unsupported loss_mode: {loss_mode}")
-
 
 def save_checkpoint(
     model,
@@ -279,7 +267,7 @@ def build_checkpoint(
     val_losses,
     scheduler=None,
 ):
-    loss_mode = str(config["loss_mode"]).lower()
+    task = get_training_task(config["loss_mode"])
     architecture = normalize_architecture_name(str(config["architecture"]))
     architecture_params = dict(config["architecture_params"])
     return {
@@ -297,9 +285,9 @@ def build_checkpoint(
             "architecture": architecture,
             "architecture_params": architecture_params,
             "in_channels": config["channels"],
-            "num_classes": model_num_classes(alphabet, loss_mode),
-            "loss_mode": loss_mode,
-            "target_format": loss_mode,
+            "num_classes": task.num_outputs(alphabet),
+            "loss_mode": task.name,
+            "target_format": task.target_format,
         },
         "train_losses": train_losses,
         "val_losses": val_losses,
@@ -441,182 +429,6 @@ def step_scheduler(
     return old_lr, current_lr(optimizer)
 
 
-def output_width_for_model(model, width: int) -> int:
-    if hasattr(model, "output_width_for_input_width"):
-        return int(model.output_width_for_input_width(width))
-
-    output_width = int(width)
-    for module in model.modules():
-        if not isinstance(module, torch.nn.Conv2d):
-            continue
-
-        kernel = module.kernel_size[1]
-        stride = module.stride[1]
-        padding = module.padding[1]
-        dilation = module.dilation[1]
-        output_width = (
-            output_width + 2 * padding - dilation * (kernel - 1) - 1
-        ) // stride + 1
-    return output_width
-
-
-def validate_model_target_width(
-    model, config: TrainingConfig, dataset_config: SingleLineDatasetConfig
-) -> None:
-    output_width = output_width_for_model(model, dataset_config.image_width)
-    print(
-        f"Model output width: {output_width} for input width {dataset_config.image_width}"
-    )
-
-    if config.loss_mode == "baseline_heatmap":
-        print(
-            f"Baseline heatmap target shape: 2x{dataset_config.image_height}x{dataset_config.image_width}"
-        )
-        if (
-            config.baseline_heatmap_strict_size
-            and output_width != dataset_config.image_width
-        ):
-            raise ValueError(
-                "baseline_heatmap_strict_size requires model output width to match image width, "
-                f"but architecture={config.architecture!r} gives T={output_width} while "
-                f"targets have width {dataset_config.image_width}. Use a width-preserving "
-                "2D architecture such as baseline_detector_fcn, or set baseline_heatmap_strict_size: false."
-            )
-        was_training = model.training
-        parameter = next(model.parameters(), None)
-        device = parameter.device if parameter is not None else torch.device("cpu")
-        try:
-            model.eval()
-            with torch.no_grad():
-                dummy = torch.zeros(
-                    1,
-                    dataset_config.channels,
-                    dataset_config.image_height,
-                    dataset_config.image_width,
-                    device=device,
-                )
-                output = model(dummy)
-        finally:
-            if was_training:
-                model.train()
-        print(f"Model output shape: {tuple(output.shape)}")
-        if output.dim() != 4 or output.size(1) != 2:
-            raise ValueError(
-                "baseline_heatmap requires a model output shaped (B, 2, H, W), "
-                f"got {tuple(output.shape)} from architecture={config.architecture!r}."
-            )
-        if config.baseline_heatmap_strict_size and output.shape[-2:] != (
-            dataset_config.image_height,
-            dataset_config.image_width,
-        ):
-            raise ValueError(
-                "baseline_heatmap_strict_size requires model output HxW to match target HxW, "
-                f"got output={tuple(output.shape[-2:])}, "
-                f"target={(dataset_config.image_height, dataset_config.image_width)}."
-            )
-        return
-
-    if config.loss_mode == "cut_projection":
-        target_width = (
-            dataset_config.image_width
-            - config.cut_projection_crop_left
-            - config.cut_projection_crop_right
-        )
-        if target_width <= 0:
-            raise ValueError(
-                "Cut projection target crop is empty: "
-                f"image_width={dataset_config.image_width}, "
-                f"cut_projection_crop_left={config.cut_projection_crop_left}, "
-                f"cut_projection_crop_right={config.cut_projection_crop_right}"
-            )
-        print(f"Cut projection target width: {target_width}")
-        if config.cut_projection_strict_width and output_width != target_width:
-            raise ValueError(
-                "cut_projection_strict_width requires model output width to match target width, "
-                f"but architecture={config.architecture!r} gives T={output_width} while "
-                f"targets have width {target_width}. Use a width-preserving architecture such as "
-                "vertical_segmentator_fcn, or set cut_projection_strict_width: false."
-            )
-        return
-
-    if config.loss_mode != "fcn_ocr":
-        return
-
-    target_width = (
-        dataset_config.image_width - config.ocr_crop_left - config.ocr_crop_right
-    )
-    if target_width <= 0:
-        raise ValueError(
-            "FCN OCR target crop is empty: "
-            f"image_width={dataset_config.image_width}, "
-            f"ocr_crop_left={config.ocr_crop_left}, "
-            f"ocr_crop_right={config.ocr_crop_right}"
-        )
-    print(f"FCN OCR target width: {target_width}")
-
-    if not config.ocr_strict_width or output_width == target_width:
-        return
-
-    raise ValueError(
-        "ocr_strict_width requires model output width to match target width, "
-        f"but architecture={config.architecture!r} gives T={output_width} while "
-        f"targets have width {target_width}. Set ocr_strict_width: false to use "
-        "majority-bin target alignment."
-    )
-
-
-def compute_loss(
-    logits,
-    targets,
-    loss_mode="fcn_ocr",
-    ocr_crop_left=6,
-    ocr_crop_right=5,
-    ocr_strict_width=False,
-    ocr_target_min_majority=0.6,
-    ocr_space_index=None,
-    ocr_space_weight=1.0,
-    cut_projection_crop_left=0,
-    cut_projection_crop_right=0,
-    cut_projection_strict_width=True,
-    cut_projection_loss_name="mse",
-    cut_projection_positive_weight=1.0,
-    baseline_heatmap_strict_size=True,
-    baseline_heatmap_loss_name="bce",
-    baseline_heatmap_positive_weight=4.0,
-):
-    loss_mode = loss_mode.lower()
-    if loss_mode == "fcn_ocr":
-        return fcn_ocr_loss(
-            logits,
-            targets,
-            crop_left=ocr_crop_left,
-            crop_right=ocr_crop_right,
-            strict_width=ocr_strict_width,
-            label_min_majority=ocr_target_min_majority,
-            space_index=ocr_space_index,
-            space_weight=ocr_space_weight,
-        )
-    if loss_mode == "cut_projection":
-        return cut_projection_loss(
-            logits,
-            targets,
-            crop_left=cut_projection_crop_left,
-            crop_right=cut_projection_crop_right,
-            strict_width=cut_projection_strict_width,
-            loss=cut_projection_loss_name,
-            positive_weight=cut_projection_positive_weight,
-        )
-    if loss_mode == "baseline_heatmap":
-        return baseline_heatmap_loss(
-            logits,
-            targets,
-            strict_size=baseline_heatmap_strict_size,
-            loss=baseline_heatmap_loss_name,
-            positive_weight=baseline_heatmap_positive_weight,
-        )
-    raise ValueError(f"Unsupported loss_mode: {loss_mode}")
-
-
 def prepare_batch(imgs, targets, device):
     imgs = imgs.to(device, non_blocking=True)
     if imgs.dtype == torch.uint8:
@@ -627,17 +439,6 @@ def prepare_batch(imgs, targets, device):
     return imgs, targets
 
 
-def augmentation_target_format(loss_mode: str) -> str:
-    loss_mode = loss_mode.lower()
-    if loss_mode == "cut_projection":
-        return "cut_projection"
-    if loss_mode == "baseline_heatmap":
-        return "baseline_heatmap"
-    if loss_mode == "fcn_ocr":
-        return "fcn_ocr"
-    raise ValueError(f"Unsupported loss_mode: {loss_mode}")
-
-
 def validate(
     model,
     loader,
@@ -646,21 +447,10 @@ def validate(
     preview_saver=None,
     log_every=0,
     augmenter=None,
-    loss_mode="fcn_ocr",
-    ocr_crop_left=6,
-    ocr_crop_right=5,
-    ocr_strict_width=False,
-    ocr_target_min_majority=0.6,
-    ocr_space_index=None,
-    ocr_space_weight=1.0,
-    cut_projection_crop_left=0,
-    cut_projection_crop_right=0,
-    cut_projection_strict_width=True,
-    cut_projection_loss_name="mse",
-    cut_projection_positive_weight=1.0,
-    baseline_heatmap_strict_size=True,
-    baseline_heatmap_loss_name="bce",
-    baseline_heatmap_positive_weight=4.0,
+    *,
+    task: TrainingTask,
+    task_config: TrainingConfig,
+    dataset_config: SingleLineDatasetConfig,
 ):
     """Валидация модели"""
     model.eval()
@@ -679,9 +469,8 @@ def validate(
 
             imgs, targets = prepare_batch(imgs, targets, device)
             if augmenter is not None:
-                target_format = augmentation_target_format(loss_mode)
                 imgs, targets = augmenter.augment_batch(
-                    imgs, targets, target_format
+                    imgs, targets, task.target_format
                 )
 
             if preview_saver is not None:
@@ -689,24 +478,8 @@ def validate(
 
             logits = model(imgs)
 
-            loss = compute_loss(
-                logits,
-                targets,
-                loss_mode=loss_mode,
-                ocr_crop_left=ocr_crop_left,
-                ocr_crop_right=ocr_crop_right,
-                ocr_strict_width=ocr_strict_width,
-                ocr_target_min_majority=ocr_target_min_majority,
-                ocr_space_index=ocr_space_index,
-                ocr_space_weight=ocr_space_weight,
-                cut_projection_crop_left=cut_projection_crop_left,
-                cut_projection_crop_right=cut_projection_crop_right,
-                cut_projection_strict_width=cut_projection_strict_width,
-                cut_projection_loss_name=cut_projection_loss_name,
-                cut_projection_positive_weight=cut_projection_positive_weight,
-                baseline_heatmap_strict_size=baseline_heatmap_strict_size,
-                baseline_heatmap_loss_name=baseline_heatmap_loss_name,
-                baseline_heatmap_positive_weight=baseline_heatmap_positive_weight,
+            loss = task.compute_loss(
+                logits, targets, task_config, dataset_config
             )
             total_loss += loss.item()
             batches += 1
@@ -741,21 +514,10 @@ def train_one_epoch(
     preview_saver=None,
     log_every=0,
     augmenter=None,
-    loss_mode="fcn_ocr",
-    ocr_crop_left=6,
-    ocr_crop_right=5,
-    ocr_strict_width=False,
-    ocr_target_min_majority=0.6,
-    ocr_space_index=None,
-    ocr_space_weight=1.0,
-    cut_projection_crop_left=0,
-    cut_projection_crop_right=0,
-    cut_projection_strict_width=True,
-    cut_projection_loss_name="mse",
-    cut_projection_positive_weight=1.0,
-    baseline_heatmap_strict_size=True,
-    baseline_heatmap_loss_name="bce",
-    baseline_heatmap_positive_weight=4.0,
+    *,
+    task: TrainingTask,
+    task_config: TrainingConfig,
+    dataset_config: SingleLineDatasetConfig,
 ):
     model.train()
     total_loss = 0.0
@@ -772,32 +534,17 @@ def train_one_epoch(
 
         imgs, targets = prepare_batch(imgs, targets, device)
         if augmenter is not None:
-            target_format = augmentation_target_format(loss_mode)
-            imgs, targets = augmenter.augment_batch(imgs, targets, target_format)
+            imgs, targets = augmenter.augment_batch(
+                imgs, targets, task.target_format
+            )
 
         if preview_saver is not None:
             preview_saver.save_batch(imgs, targets)
 
         logits = model(imgs)
 
-        loss = compute_loss(
-            logits,
-            targets,
-            loss_mode=loss_mode,
-            ocr_crop_left=ocr_crop_left,
-            ocr_crop_right=ocr_crop_right,
-            ocr_strict_width=ocr_strict_width,
-            ocr_target_min_majority=ocr_target_min_majority,
-            ocr_space_index=ocr_space_index,
-            ocr_space_weight=ocr_space_weight,
-            cut_projection_crop_left=cut_projection_crop_left,
-            cut_projection_crop_right=cut_projection_crop_right,
-            cut_projection_strict_width=cut_projection_strict_width,
-            cut_projection_loss_name=cut_projection_loss_name,
-            cut_projection_positive_weight=cut_projection_positive_weight,
-            baseline_heatmap_strict_size=baseline_heatmap_strict_size,
-            baseline_heatmap_loss_name=baseline_heatmap_loss_name,
-            baseline_heatmap_positive_weight=baseline_heatmap_positive_weight,
+        loss = task.compute_loss(
+            logits, targets, task_config, dataset_config
         )
 
         # print(torch.isnan(loss), torch.isinf(loss))
@@ -1082,7 +829,9 @@ def dataset_config_from_chunk_metadata(
 def effective_training_config_data(
     config: TrainingConfig, dataset_config: SingleLineDatasetConfig
 ) -> dict:
-    data = config.model_dump()
+    task = get_training_task(config.loss_mode)
+    foreign_task_fields = all_training_task_config_fields() - task.config_fields
+    data = config.model_dump(exclude=foreign_task_fields)
     data.update(
         {
             "alphabet": dataset_config.alphabet,
@@ -1100,25 +849,18 @@ def effective_training_config_data(
 def load_dataset_from_config(
     config: TrainingConfig,
 ) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
-    if config.loss_mode == "cut_projection":
-        target_format = "cut_projection"
-    elif config.loss_mode == "baseline_heatmap":
-        target_format = "baseline_heatmap"
-    elif config.loss_mode == "fcn_ocr":
-        target_format = "fcn_ocr"
-    else:
-        raise ValueError(f"Unsupported loss_mode: {config.loss_mode}")
+    task = get_training_task(config.loss_mode)
 
     chunks_dir = resolve_chunks_dir(config.chunks_dir)
     config.chunks_dir = str(chunks_dir)
     metadata = load_chunk_metadata(chunks_dir)
-    metadata.require_target(target_format)
+    metadata.require_target(task.target_format)
     dataset_config = dataset_config_from_chunk_metadata(config, metadata)
     dataset = ChunkedLineDataset(
         chunks_dir,
         cache_size=config.chunk_cache_size,
         config=dataset_config,
-        target_format=target_format,
+        target_format=task.target_format,
     )
     print(f"Dataset source: chunks ({chunks_dir})")
     print(
@@ -1315,6 +1057,7 @@ def run_training(
 ) -> dict[str, Any]:
     config_path = Path(config_path).expanduser().resolve()
     args, _ = load_training_config(config_path)
+    task = get_training_task(args.loss_mode)
     print("START!")
 
     checkpoint_dir = (
@@ -1361,45 +1104,17 @@ def run_training(
     print(f"Validation samples: {len(val_dataset)}")
 
     alphabet = dataset_config.alphabet
-    num_classes = model_num_classes(alphabet, args.loss_mode)
-    ocr_space_index = None
-    if args.loss_mode == "fcn_ocr" and dataset_config.space_char in alphabet:
-        ocr_space_index = alphabet.index(dataset_config.space_char)
+    num_classes = task.num_outputs(alphabet)
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
-    print("Loss mode: ", args.loss_mode)
+    print("Training task: ", task.name)
+    print("Target format: ", task.target_format)
     print("Output classes: ", num_classes)
     print("Architecture: ", args.architecture)
     if args.architecture_params:
         print("Architecture params: ", args.architecture_params)
-    if args.loss_mode == "cut_projection":
-        print("Batch targets: cut projection heatmaps from generator/chunks")
-        print(
-            f"Cut projection crop: [{args.cut_projection_crop_left}, "
-            f"-{args.cut_projection_crop_right}]"
-        )
-        print(
-            f"Cut projection loss: {args.cut_projection_loss} "
-            f"positive_weight={args.cut_projection_positive_weight:g}"
-        )
-    elif args.loss_mode == "baseline_heatmap":
-        print("Batch targets: two-channel top/bottom baseline heatmaps from chunks")
-        print(
-            f"Baseline heatmap loss: {args.baseline_heatmap_loss} "
-            f"positive_weight={args.baseline_heatmap_positive_weight:g} "
-            f"strict_size={args.baseline_heatmap_strict_size}"
-        )
-    else:
-        print(f"FCN OCR target crop: [{args.ocr_crop_left}, -{args.ocr_crop_right}]")
-        print(
-            "FCN OCR target alignment: majority_bins "
-            f"min_majority={args.ocr_target_min_majority:g}"
-        )
-        print(
-            f"FCN OCR space weight: {args.ocr_space_weight:g} "
-            f"(space index: {ocr_space_index})"
-        )
-        print("Batch targets: one OCR class per input X-position")
+    for line in task.summary_lines(args, dataset_config):
+        print(line)
 
     train_loader = make_data_loader(
         dataset,
@@ -1473,7 +1188,7 @@ def run_training(
         num_classes=num_classes,
         **args.architecture_params,
     ).to(device)
-    validate_model_target_width(model, args, dataset_config)
+    task.validate_model(model, args, dataset_config)
 
     optimizer = create_optimizer(model, args)
     print_optimizer_summary(args)
@@ -1532,21 +1247,9 @@ def run_training(
                 train_preview_saver,
                 args.log_every,
                 train_augmenter,
-                args.loss_mode,
-                args.ocr_crop_left,
-                args.ocr_crop_right,
-                args.ocr_strict_width,
-                args.ocr_target_min_majority,
-                ocr_space_index,
-                args.ocr_space_weight,
-                args.cut_projection_crop_left,
-                args.cut_projection_crop_right,
-                args.cut_projection_strict_width,
-                args.cut_projection_loss,
-                args.cut_projection_positive_weight,
-                args.baseline_heatmap_strict_size,
-                args.baseline_heatmap_loss,
-                args.baseline_heatmap_positive_weight,
+                task=task,
+                task_config=args,
+                dataset_config=dataset_config,
             )
             train_loss = train_stats["loss"]
             train_losses.append(train_loss)
@@ -1559,21 +1262,9 @@ def run_training(
                 val_preview_saver,
                 args.log_every,
                 val_augmenter,
-                args.loss_mode,
-                args.ocr_crop_left,
-                args.ocr_crop_right,
-                args.ocr_strict_width,
-                args.ocr_target_min_majority,
-                ocr_space_index,
-                args.ocr_space_weight,
-                args.cut_projection_crop_left,
-                args.cut_projection_crop_right,
-                args.cut_projection_strict_width,
-                args.cut_projection_loss,
-                args.cut_projection_positive_weight,
-                args.baseline_heatmap_strict_size,
-                args.baseline_heatmap_loss,
-                args.baseline_heatmap_positive_weight,
+                task=task,
+                task_config=args,
+                dataset_config=dataset_config,
             )
             val_loss = val_stats["loss"]
             val_losses.append(val_loss)
