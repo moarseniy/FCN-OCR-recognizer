@@ -21,7 +21,7 @@ from fcn_ocr import (
     save_debug_image,
     tensor_to_pil,
 )
-from synth_generators.line_generator.dataset import SingleLineDataset, SingleLineDatasetConfig
+from fcn_synth_generator.dataset import SingleLineDataset, SingleLineDatasetConfig
 
 
 __all__ = [

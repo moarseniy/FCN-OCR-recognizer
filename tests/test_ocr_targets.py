@@ -4,7 +4,7 @@ import torch
 import pytest
 
 from loss import _align_logits_and_labels, fcn_ocr_targets_to_labels
-from synth_generators.line_generator.dataset import (
+from fcn_synth_generator.dataset import (
     SingleLineDataset,
     SingleLineDatasetConfig,
 )

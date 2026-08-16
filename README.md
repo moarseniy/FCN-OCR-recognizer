@@ -58,9 +58,11 @@ targets, manifest чанков и статистика классов. Конф�
 мигрируются: их нужно заново создать через `generate_dataset`, чтобы чанки и
 контракт гарантированно соответствовали одному и тому же коду генератора.
 
-## Synthetic line generator
+## FCN synth generator
 
-Генератор находится в `synth_generators/line_generator`.
+Единственный пакет синтетической генерации находится в
+`fcn_synth_generator/`. Его конфиги и ресурсы расположены рядом с кодом в
+`configs/`, `fonts/` и `backgrounds/`.
 
 Он сохраняет элементы в формате, который подходит текущей FCN-идее:
 
@@ -88,13 +90,13 @@ Training получает этот алфавит только из `metadata.ya
 
 Основные конфиги для эксперимента `101` теперь разделены по назначению:
 
-- `synth_generators/line_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `ocr_targets`, без соседних строк;
-- `synth_generators/line_generator/configs/eng_101_cuts.yaml` — cuts-сегментатор: чистая основная строка, `cut_projection_targets`, без соседних строк;
-- `synth_generators/line_generator/configs/eng_101_baselines.yaml` — baseline detector: `baseline_targets`, соседние верхние/нижние строки как вертикальный мусор.
+- `fcn_synth_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `ocr_targets`, без соседних строк;
+- `fcn_synth_generator/configs/eng_101_cuts.yaml` — cuts-сегментатор: чистая основная строка, `cut_projection_targets`, без соседних строк;
+- `fcn_synth_generator/configs/eng_101_baselines.yaml` — baseline detector: `baseline_targets`, соседние верхние/нижние строки как вертикальный мусор.
 
 Дополнительные минимальные примеры:
 
-- `synth_generators/line_generator/configs/eng_001.yaml` — генерация;
+- `fcn_synth_generator/configs/eng_001.yaml` — генерация;
 - `configs/train/eng_train_001.yaml` — обучение.
 
 Конфиги в корне проекта сгруппированы по назначению:
@@ -286,30 +288,30 @@ augmentations:
 Сохранить один пример изображения по указанному тексту:
 
 ```bash
-python -m synth_generators.line_generator.render_text \
-  --text "ABC 123" \
-  --config synth_generators/line_generator/configs/eng_001.yaml \
+python -m fcn_synth_generator.render_text \
+  --text "012 345" \
+  --config fcn_synth_generator/configs/eng_001.yaml \
   --output synthetic_line_preview.png
 ```
 
 Сохранить чистый датасет на диск в виде `uint8` torch-чанков:
 
 ```bash
-python -m synth_generators.line_generator.generate_dataset \
-  --config synth_generators/line_generator/configs/eng_001.yaml
+python -m fcn_synth_generator.generate_dataset \
+  --config fcn_synth_generator/configs/eng_001.yaml
 ```
 
 Для раздельной генерации данных под OCR, cuts и baseline:
 
 ```bash
-python -m synth_generators.line_generator.generate_dataset \
-  --config synth_generators/line_generator/configs/eng_101.yaml
+python -m fcn_synth_generator.generate_dataset \
+  --config fcn_synth_generator/configs/eng_101.yaml
 
-python -m synth_generators.line_generator.generate_dataset \
-  --config synth_generators/line_generator/configs/eng_101_cuts.yaml
+python -m fcn_synth_generator.generate_dataset \
+  --config fcn_synth_generator/configs/eng_101_cuts.yaml
 
-python -m synth_generators.line_generator.generate_dataset \
-  --config synth_generators/line_generator/configs/eng_101_baselines.yaml
+python -m fcn_synth_generator.generate_dataset \
+  --config fcn_synth_generator/configs/eng_101_baselines.yaml
 ```
 
 В generation-конфиге можно задавать межсимвольные интервалы. Значения
@@ -436,7 +438,7 @@ generation-конфиг под фиксированным именем `generati
 обучение:
 
 ```bash
-python synth_generators/line_generator/render_text.py \
+python -m fcn_synth_generator.render_text \
   --chunks-dir data/eng_001 \
   --index 0 \
   --config configs/train/eng_train_001.yaml \
@@ -538,7 +540,7 @@ cut_projection_positive_weight: 4.0
 ```
 
 Пример конфига: `configs/train/eng_train_101_cuts.yaml`.
-Соответствующий generation-конфиг: `synth_generators/line_generator/configs/eng_101_cuts.yaml`.
+Соответствующий generation-конфиг: `fcn_synth_generator/configs/eng_101_cuts.yaml`.
 Порог и параметры postprocess (`cut_threshold`, ограничения ширины и
 сглаживание) в обучении не участвуют. Они задаются при
 `evaluate_segmentator.py` и сохраняются в отдельном inference-конфиге.
@@ -554,7 +556,7 @@ baseline_heatmap_positive_weight: 6.0
 
 Пример конфига: `configs/train/eng_train_101_baselines.yaml`.
 Соответствующий generation-конфиг:
-`synth_generators/line_generator/configs/eng_101_baselines.yaml`.
+`fcn_synth_generator/configs/eng_101_baselines.yaml`.
 
 Обучение baseline-детектора с оценкой на ручной разметке после каждой эпохи:
 
@@ -566,7 +568,7 @@ python train_baselines_with_eval.py \
 В `configs/evaluation/eng_train_101_baselines_eval.yaml` задаются:
 
 - `train_config`: обычный training-конфиг с `loss_mode: baseline_heatmap`;
-- `markup_json`: разметка из `tool.annotation_server`;
+- `markup_json`: разметка из `tools.annotation.server`;
 - `images_dir`: опциональная замена папки изображений из JSON;
 - `threshold`: фиксированный порог детектора для сравнения эпох;
 - `evaluate_every`: период оценки в эпохах;
@@ -621,10 +623,12 @@ python evaluate_segmentator.py \
 ### Ручная разметка cuts и baseline
 
 Для точной оценки вертикального сегментатора и детектора baseline есть
-браузерный инструмент:
+браузерный инструмент в `tools/annotation/`. Папка `tools/` предназначена для
+независимых служебных приложений и допускает добавление новых инструментов без
+смешивания их модулей и ресурсов:
 
 ```bash
-python -m tool.annotation_server \
+python -m tools.annotation.server \
   --images /path/to/images \
   --output output/manual_markup.json \
   --open-browser
@@ -691,7 +695,7 @@ python evaluate_baselines.py \
 В training-конфиге задаются `chunks_dir`, optimizer, learning rate, batch size,
 workers, checkpoint path, preview-настройки и GPU-аугментации. Online-генерация
 во время обучения удалена: данные нужно сначала сохранить чанками через
-`synth_generators.line_generator.generate_dataset`.
+`fcn_synth_generator.generate_dataset`.
 Алфавит, размеры картинок, число каналов и `max_text_length` берутся из
 `metadata.yaml` в папке чанков и не могут переопределяться training-конфигом.
 При старте обучения `train.py` проверяет точный порядок классов и берёт
@@ -829,7 +833,7 @@ resume: true
 ```bash
 python inference.py \
   --config configs/inference/eng_101.yaml \
-  --generation-config synth_generators/line_generator/configs/eng_101.yaml \
+  --generation-config fcn_synth_generator/configs/eng_101.yaml \
   --sample-index 0 \
   --save-sample output/synthetic.png
 ```

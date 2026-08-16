@@ -7,16 +7,16 @@ import pytest
 import torch
 import yaml
 
-from synth_generators.line_generator.chunk_dataset import ChunkedLineDataset
-from synth_generators.line_generator.chunk_metadata import (
+from fcn_synth_generator.chunk_dataset import ChunkedLineDataset
+from fcn_synth_generator.chunk_metadata import (
     CHUNK_FORMAT,
     CHUNK_METADATA_VERSION,
     ChunkMetadata,
     load_chunk_metadata,
     save_chunk_metadata,
 )
-from synth_generators.line_generator.dataset import SingleLineDatasetConfig
-from synth_generators.line_generator.generate_dataset import build_metadata
+from fcn_synth_generator.dataset import SingleLineDatasetConfig
+from fcn_synth_generator.generate_dataset import build_metadata
 from train import (
     TrainingConfig,
     dataset_config_from_chunk_metadata,
@@ -114,7 +114,7 @@ def test_dataset_initialization_uses_manifest_counts_without_loading_chunks(
         raise AssertionError(f"chunk was loaded during initialization: {path}")
 
     monkeypatch.setattr(
-        "synth_generators.line_generator.chunk_dataset.load_torch_chunk",
+        "fcn_synth_generator.chunk_dataset.load_torch_chunk",
         fail_if_loaded,
     )
     dataset = ChunkedLineDataset(root, config=_dataset_config(metadata))

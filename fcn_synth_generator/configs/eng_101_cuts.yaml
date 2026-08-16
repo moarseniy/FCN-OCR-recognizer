@@ -3,7 +3,7 @@ space_char: " "
 channels: 1
 seed: 43
 samples: 100000
-output_dir: ../../../data
+output_dir: ../../data
 chunk_size: 1024
 num_workers: 4
 overwrite: false

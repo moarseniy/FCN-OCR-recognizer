@@ -18,7 +18,7 @@ from fcn_ocr.evaluation.reporting import (
     save_and_print_inference_command,
     write_csv_rows,
 )
-from tool.markup import annotated_items, load_document, safe_image_path
+from tools.annotation.markup import annotated_items, load_document, safe_image_path
 
 
 def build_jobs(
@@ -317,7 +317,7 @@ def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], i
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate neural top/bottom baseline detection.")
     parser.add_argument("--config", default=None, help="Evaluation YAML config.")
-    parser.add_argument("--json", default=None, help="Manual markup JSON created by tool.annotation_server.")
+    parser.add_argument("--json", default=None, help="Manual markup JSON created by tools.annotation.server.")
     parser.add_argument("--images", default=None, help="Override images directory stored in the markup JSON.")
     parser.add_argument("--checkpoint", default=None, help="Baseline detector checkpoint.")
     parser.add_argument("--out", default="output/baseline_metrics.csv")

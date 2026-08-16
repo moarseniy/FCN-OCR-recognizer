@@ -32,7 +32,7 @@ from fcn_ocr.evaluation.reporting import (
     save_and_print_inference_command,
     write_csv_rows,
 )
-from tool.markup import annotated_items, is_manual_markup, safe_image_path
+from tools.annotation.markup import annotated_items, is_manual_markup, safe_image_path
 
 
 def build_rows_and_jobs(
@@ -683,7 +683,7 @@ def optimize(
         metric_name = "cut_f1" if has_manual_cuts else "average_abs_length_error"
     if metric_name.startswith("cut_") and not has_manual_cuts:
         raise ValueError(
-            f"--optuna-metric {metric_name} requires manual markup created by tool.annotation_server"
+            f"--optuna-metric {metric_name} requires manual markup created by tools.annotation.server"
         )
     segmentator = VerticalSegmentator(
         checkpoint_path,
@@ -953,7 +953,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--json",
         default=None,
-        help="Label Studio export JSON or manual markup JSON created by tool.annotation_server.",
+        help="Label Studio export JSON or manual markup JSON created by tools.annotation.server.",
     )
     parser.add_argument(
         "--images",

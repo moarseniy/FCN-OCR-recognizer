@@ -1,7 +1,7 @@
-alphabet: " 0123456789"
+alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 space_char: " "
 samples: 100000
-output_dir: ../../../data
+output_dir: ../../data
 chunk_size: 1024
 num_workers: 4
 overwrite: false
@@ -23,7 +23,7 @@ word_spacing_multiplier_min: 0.75
 word_spacing_multiplier_max: 1.7
 channels: 3
 seed: 42
-background_dir: ../backgrounds
+background_dir: null
 background_extensions:
   - .png
   - .jpg

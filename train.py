@@ -1,19 +1,19 @@
 # train.py
-from synth_generators.line_generator.chunk_dataset import (
+from fcn_synth_generator.chunk_dataset import (
     ChunkedLineDataset,
     load_chunk_metadata,
 )
-from synth_generators.line_generator.chunk_metadata import (
+from fcn_synth_generator.chunk_metadata import (
     CHUNK_METADATA_FILENAME,
     GENERATION_CONFIG_FILENAME,
     ChunkMetadata,
 )
-from synth_generators.line_generator.dataset import (
+from fcn_synth_generator.dataset import (
     SUPPORTED_AUGMENTATIONS,
     SingleLineDatasetConfig,
 )
-from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
-from synth_generators.line_generator.run_directories import (
+from fcn_synth_generator.gpu_augmentations import GpuTextAugmenter
+from fcn_synth_generator.run_directories import (
     is_timestamped_directory,
     latest_timestamped_directory,
     timestamped_directory,

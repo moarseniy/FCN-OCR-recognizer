@@ -5,8 +5,8 @@ import random
 import pytest
 import torch
 
-from synth_generators.line_generator.dataset import SingleLineDatasetConfig
-from synth_generators.line_generator.gpu_augmentations import GpuTextAugmenter
+from fcn_synth_generator.dataset import SingleLineDatasetConfig
+from fcn_synth_generator.gpu_augmentations import GpuTextAugmenter
 
 
 def _augmenter() -> GpuTextAugmenter:
