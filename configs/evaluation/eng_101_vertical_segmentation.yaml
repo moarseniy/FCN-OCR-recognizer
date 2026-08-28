@@ -1,15 +1,15 @@
 json: ../../output/manual_markup.json
 images: null
-checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
+checkpoint: ../../checkpoints/vertical_segmentation/best_model.pth
 inference_ocr_checkpoint: null
-out: ../../output/segmentator_metrics.csv
+out: ../../output/vertical_segmentation_metrics.csv
 device: cuda
 batch_size: 64
 limit: null
 log_every: 100
 cut_tolerance_px: 3.0
 
-baseline_detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
+baseline_detector_checkpoint: ../../checkpoints/baseline_detection/best_model.pth
 
 parameters:
   cut_threshold: [0.10, 0.95]
@@ -29,7 +29,7 @@ parameters:
 optuna_trials: 300
 optuna_metric: cut_f1
 
-optuna_trials_out: ../../output/segmentator_trials.tsv
-optuna_storage: sqlite:///../../output/segmentator_v2.db
-optuna_study_name: eng_101_segmentator_v2
+optuna_trials_out: ../../output/vertical_segmentation_trials.tsv
+optuna_storage: sqlite:///../../output/vertical_segmentation_v2.db
+optuna_study_name: eng_101_vertical_segmentation_v2
 optuna_progress: true

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fcn_ocr.inference_config import BaselineInferenceConfig
+from fcn_ocr.inference_config import BaselineDetectionInferenceConfig
 from fcn_ocr.recognizer import TextRecognizer
 
 
@@ -52,4 +52,4 @@ def test_paired_baseline_crop_rejects_crossed_lines() -> None:
 
 def test_baseline_config_rejects_removed_strict_lines_switch() -> None:
     with pytest.raises(ValueError, match="strict_lines"):
-        BaselineInferenceConfig.model_validate({"strict_lines": False})
+        BaselineDetectionInferenceConfig.model_validate({"strict_lines": False})

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from evaluate_segmentator import configure_segmentator
+from evaluate_vertical_segmentation import configure_segmentator
 from fcn_ocr.segmentator import VerticalSegmentator
 
 from tests.helpers import (

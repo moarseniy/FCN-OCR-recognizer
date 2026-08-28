@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 
-ARCHITECTURE_NAME = "vertical_segmentator_fcn"
+ARCHITECTURE_NAME = "vertical_segmentation_fcn"
 
 
 def _conv_bn_relu(
@@ -29,13 +29,13 @@ def _conv_bn_relu(
     )
 
 
-class VerticalSegmentatorFCN(nn.Module):
+class VerticalSegmentationFCN(nn.Module):
     """
-    Width-preserving FCN for vertical cut projection segmentation.
+    Width-preserving FCN for vertical character-boundary segmentation.
 
     The network reduces only the vertical dimension. Output timestep T is equal
-    to the input image width, so cut projection targets can be trained without
-    horizontal resampling or OCR crop offsets.
+    to the input image width, so vertical segmentation targets can be trained
+    without horizontal resampling or OCR crop offsets.
     """
 
     def __init__(
@@ -123,7 +123,7 @@ class VerticalSegmentatorFCN(nn.Module):
 
         if y.size(2) != 1:
             raise RuntimeError(
-                "VerticalSegmentatorFCN expects output height 1 before squeezing; "
+                "VerticalSegmentationFCN expects output height 1 before squeezing; "
                 f"got output shape {tuple(y.shape)}. Check training image_height."
             )
 
@@ -134,8 +134,8 @@ class VerticalSegmentatorFCN(nn.Module):
         return int(width)
 
 
-def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> VerticalSegmentatorFCN:
-    return VerticalSegmentatorFCN(
+def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> VerticalSegmentationFCN:
+    return VerticalSegmentationFCN(
         in_channels=in_channels,
         num_classes=num_classes,
         **dict(kwargs),

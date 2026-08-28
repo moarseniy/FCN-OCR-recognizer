@@ -1,31 +1,33 @@
-chunks_dir: ../../data/eng_101
-architecture: fcn_ocr
-architecture_params: {}
+chunks_dir: ../../data/eng_101_baseline_detection
+architecture: baseline_detection_fcn
+architecture_params:
+  base_channels: 24
+  depth: 6
+  dropout: 0.05
 
 epochs: 50
-batch_size: 1024
-batch_count: 100
+batch_size: 256
+batch_count: 200
 lr: 0.001
-optimizer: adam
-weight_decay: 0.0
+optimizer: adamw
+weight_decay: 0.0001
 scheduler: reduce_on_plateau
 scheduler_factor: 0.5
 scheduler_patience: 3
 scheduler_min_lr: 0.000001
 scheduler_threshold: 0.0001
 scheduler_cooldown: 0
-checkpoint_dir: ../../checkpoints
+checkpoint_dir: ../../checkpoints/baseline_detection
 max_train_batches: null
 max_val_batches: 50
 val_fraction: 0.1
 seed: 42
 resume: false
 
-task: fcn_ocr
-fcn_ocr_crop_left: 6
-fcn_ocr_crop_right: 5
-fcn_ocr_target_min_majority: 0.6
-fcn_ocr_space_weight: 0.5
+task: baseline_detection
+baseline_detection_strict_size: true
+baseline_detection_loss: bce
+baseline_detection_positive_weight: 6.0
 
 num_workers: 0
 drop_last: false
@@ -36,57 +38,58 @@ chunk_aware_batches: true
 
 log_every: 1
 preview_samples: 5
-preview_dir: ../../output
+preview_dir: ../../output/baseline_detection
 
 gpu_augmentations: true
 gpu_augment_val: false
 augmentation_probabilities:
-  cycle_shift: 0.08
-  preprocess_geometry: 0.35
-  strong_blur: 0.18
-  motion_blur: 0.28
-  scale: 0.22
-  darkening: 0.55
+  cycle_shift: 0.20
+  preprocess_geometry: 0.45
+  strong_blur: 0.15
+  motion_blur: 0.20
+  scale: 0.20
+  darkening: 0.45
   vertical_fade: 0.30
-  noise: 0.85
-  projective: 0.12
-  rotate: 0.30
-  x_pad: 0.50
-  crop_x: 0.45
-  crop_y: 0.04
-  random_line: 0.22
-  baseline_line: 0.10
-  morphology: 0.18
-  unsharp_mask: 0.3
-  brightness: 0.4
-  contrast: 0.45
+  noise: 0.75
+  projective: 0.20
+  rotate: 0.55
+  x_pad: 0.15
+  crop_x: 0.15
+  crop_y: 0.20
+  rescale_quality: 0.25
+  random_line: 0.35
+  baseline_line: 0.15
+  morphology: 0.15
+  unsharp_mask: 0.20
+  brightness: 0.35
+  contrast: 0.35
   invert: 0.0
 augmentations:
   cycle_shift:
     max_x: 8
-    max_y: 2
+    max_y: 4
   preprocess_geometry:
-    scale_x_min: -0.18
-    scale_x_max: 0.18
-    y_pad_min: -0.08
-    y_pad_max: 0.08
+    scale_x_min: -0.12
+    scale_x_max: 0.16
+    y_pad_min: -0.20
+    y_pad_max: 0.16
     fillcolor: 255
   strong_blur:
-    radius_min: 0.8
-    radius_max: 1.8
+    radius_min: 0.6
+    radius_max: 1.6
   motion_blur:
     size_min: 3
-    size_max: 8
-    angle_min: -10.0
-    angle_max: 10.0
+    size_max: 7
+    angle_min: -8.0
+    angle_max: 8.0
   scale:
-    factor_x_min: 0.8
+    factor_x_min: 0.85
     factor_x_max: 1.15
-    factor_y_min: 0.92
-    factor_y_max: 1.08
+    factor_y_min: 0.82
+    factor_y_max: 1.18
     fillcolor: 255
   darkening:
-    factor_min: 0.35
+    factor_min: 0.40
     factor_max: 1.0
   vertical_fade:
     side: random
@@ -99,17 +102,17 @@ augmentations:
   noise:
     kind: gaussian
     std_min: 1.5
-    std_max: 12.0
+    std_max: 10.0
   projective:
-    max_dx: 4.0
-    max_dy: 1.5
+    max_dx: 5.0
+    max_dy: 3.0
     fillcolor: 255
   rotate:
-    max_degrees: 2.0
+    max_degrees: 6.0
     fillcolor: 255
   x_pad:
-    pad_min: 0.03
-    pad_max: 0.25
+    pad_min: 0.02
+    pad_max: 0.08
     pad_reference: content
     fill_mode: side_median
     resize_mode: bilinear
@@ -118,33 +121,38 @@ augmentations:
     max_right: 6
     fillcolor: 255
   crop_y:
-    max_top: 1
-    max_bottom: 1
+    max_top: 4
+    max_bottom: 4
     fillcolor: 255
+  rescale_quality:
+    factor_min: 0.35
+    factor_max: 0.75
+    down_mode: bilinear
+    up_mode: nearest
   random_line:
-    angle_degrees_min: -4.0
-    angle_degrees_max: 4.0
+    angle_degrees_min: -5.0
+    angle_degrees_max: 5.0
     line_width_min: 1.0
-    line_width_max: 2.5
+    line_width_max: 3.0
     alpha_min: 0.35
     alpha_max: 0.9
     value_min: 0.0
-    value_max: 80.0
-    y_min: 0.15
-    y_max: 0.9
+    value_max: 90.0
+    y_min: 0.0
+    y_max: 1.0
   baseline_line:
     side: random_or_both
     both_probability: 0.35
-    top_y_min: 0.18
+    top_y_min: 0.14
     top_y_max: 0.36
     bottom_y_min: 0.62
-    bottom_y_max: 0.88
+    bottom_y_max: 0.90
     angle_degrees_min: -2.5
     angle_degrees_max: 2.5
     line_width_min: 0.75
     line_width_max: 2.0
-    alpha_min: 0.25
-    alpha_max: 0.75
+    alpha_min: 0.20
+    alpha_max: 0.70
     value_min: 0.0
     value_max: 90.0
   morphology:

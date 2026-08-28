@@ -1,16 +1,16 @@
 # Paths are resolved relative to this file.
 device: cuda
 
-baseline:
+baseline_detection:
   enabled: true
-  detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
+  detector_checkpoint: ../../checkpoints/baseline_detection/best_model.pth
   detector_threshold: 0.35
   deskew: true
   max_angle: 12.0
   line_pad: 0.08
   line_pad_px: 0.0
 
-ocr:
+fcn_ocr:
   checkpoint: ../../checkpoints/eng_101/best_model.pth
   preprocessing:
     scale_x: 0.0
@@ -35,8 +35,8 @@ ocr:
         "0123456789": [0.65, 1.35]
         "~": [0.55, 1.60]
 
-segmentator:
-  checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
+vertical_segmentation:
+  checkpoint: ../../checkpoints/vertical_segmentation/best_model.pth
   preprocessing:
     scale_x: 0.0
     y_pad: 0.0

@@ -7,9 +7,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
 
+from fcn_tasks import (
+    BASELINE_DETECTION_TASK,
+    FCN_OCR_TASK,
+    VERTICAL_SEGMENTATION_TASK,
+    normalize_task_name,
+)
 
-CHUNK_FORMAT = "fcn_ocr_line_chunks"
-CHUNK_METADATA_VERSION = 2
+
+CHUNK_FORMAT = "fcn_synth_dataset"
+CHUNK_METADATA_VERSION = 1
 CHUNK_METADATA_FILENAME = "metadata.yaml"
 GENERATION_CONFIG_FILENAME = "generation_config.yaml"
 CHUNK_FILENAME_PATTERN = re.compile(r"chunk_\d{6}\.pt")
@@ -65,22 +72,22 @@ class ChunkMetadata(BaseModel):
     ink_spacing_min_char_gap_px: float = 0.0
     ink_spacing_touch_gap_px: float = Field(default=0.5, ge=0.0)
     ink_spacing_touch_probability: float = Field(default=1.0, ge=0.0, le=1.0)
-    ocr_targets: bool
-    ocr_target_edge_bounds: Literal["ink"] = "ink"
-    cut_projection_targets: bool
-    cut_projection_peak_radius: int = Field(ge=0)
-    cut_projection_include_margins: bool
-    baseline_targets: bool
-    baseline_target_radius: int = Field(ge=0)
+    fcn_ocr_targets: bool
+    fcn_ocr_target_edge_bounds: Literal["ink"] = "ink"
+    vertical_segmentation_targets: bool
+    vertical_segmentation_target_radius: int = Field(ge=0)
+    vertical_segmentation_include_margins: bool
+    baseline_detection_targets: bool
+    baseline_detection_target_radius: int = Field(ge=0)
     dtype: Literal["uint8"]
-    ocr_target_dtype: Literal["int16"] | None = None
-    cut_projection_target_dtype: Literal["uint8"] | None = None
-    baseline_target_dtype: Literal["uint8"] | None = None
+    fcn_ocr_target_dtype: Literal["int16"] | None = None
+    vertical_segmentation_target_dtype: Literal["uint8"] | None = None
+    baseline_detection_target_dtype: Literal["uint8"] | None = None
     chunk_size: int = Field(ge=1)
     chunk_count: int = Field(ge=1)
     chunks: list[ChunkManifestEntry]
     text_char_counts: dict[str, int]
-    ocr_class_counts: list[int] | None
+    fcn_ocr_class_counts: list[int] | None
     max_observed_text_length: int = Field(ge=0)
 
     @field_validator("alphabet")
@@ -140,48 +147,51 @@ class ChunkMetadata(BaseModel):
             raise ValueError(
                 "text_char_counts keys must exactly match the dataset alphabet"
             )
-        if self.ocr_class_counts is not None:
-            if len(self.ocr_class_counts) != len(self.alphabet):
-                raise ValueError("ocr_class_counts length must match alphabet length")
-            if any(count < 0 for count in self.ocr_class_counts):
-                raise ValueError("ocr_class_counts values must be non-negative")
+        if self.fcn_ocr_class_counts is not None:
+            if len(self.fcn_ocr_class_counts) != len(self.alphabet):
+                raise ValueError("fcn_ocr_class_counts length must match alphabet length")
+            if any(count < 0 for count in self.fcn_ocr_class_counts):
+                raise ValueError("fcn_ocr_class_counts values must be non-negative")
 
-        if self.ocr_targets:
-            if self.ocr_target_dtype != "int16" or self.ocr_class_counts is None:
+        if self.fcn_ocr_targets:
+            if self.fcn_ocr_target_dtype != "int16" or self.fcn_ocr_class_counts is None:
                 raise ValueError(
-                    "OCR targets require int16 dtype and ocr_class_counts"
+                    "OCR targets require int16 dtype and fcn_ocr_class_counts"
                 )
             expected_ocr_values = self.samples * self.image_width
-            if sum(self.ocr_class_counts) != expected_ocr_values:
+            if sum(self.fcn_ocr_class_counts) != expected_ocr_values:
                 raise ValueError(
-                    "ocr_class_counts sum does not match samples * image_width"
+                    "fcn_ocr_class_counts sum does not match samples * image_width"
                 )
-        elif self.ocr_target_dtype is not None or self.ocr_class_counts is not None:
+        elif self.fcn_ocr_target_dtype is not None or self.fcn_ocr_class_counts is not None:
             raise ValueError(
-                "OCR target metadata is present while ocr_targets is false"
+                "OCR target metadata is present while fcn_ocr_targets is false"
             )
 
-        expected_cut_dtype = "uint8" if self.cut_projection_targets else None
-        if self.cut_projection_target_dtype != expected_cut_dtype:
+        expected_vertical_dtype = (
+            "uint8" if self.vertical_segmentation_targets else None
+        )
+        if self.vertical_segmentation_target_dtype != expected_vertical_dtype:
             raise ValueError(
-                "cut projection target dtype does not match target presence"
+                "vertical segmentation target dtype does not match target presence"
             )
-        expected_baseline_dtype = "uint8" if self.baseline_targets else None
-        if self.baseline_target_dtype != expected_baseline_dtype:
-            raise ValueError("baseline target dtype does not match target presence")
+        expected_baseline_dtype = "uint8" if self.baseline_detection_targets else None
+        if self.baseline_detection_target_dtype != expected_baseline_dtype:
+            raise ValueError(
+                "baseline detection target dtype does not match target presence"
+            )
         return self
 
-    def require_target(self, target_format: str) -> None:
+    def require_task(self, task: str) -> None:
+        task = normalize_task_name(task)
         available = {
-            "fcn_ocr": self.ocr_targets,
-            "cut_projection": self.cut_projection_targets,
-            "baseline_heatmap": self.baseline_targets,
+            FCN_OCR_TASK: self.fcn_ocr_targets,
+            VERTICAL_SEGMENTATION_TASK: self.vertical_segmentation_targets,
+            BASELINE_DETECTION_TASK: self.baseline_detection_targets,
         }
-        if target_format not in available:
-            raise ValueError(f"Unknown target format: {target_format}")
-        if not available[target_format]:
+        if not available[task]:
             raise ValueError(
-                f"Dataset metadata does not provide required target format {target_format!r}"
+                f"Dataset metadata does not provide targets for task {task!r}"
             )
 
     def dataset_config_data(self) -> dict[str, Any]:
@@ -213,12 +223,12 @@ class ChunkMetadata(BaseModel):
             "ink_spacing_min_char_gap_px": self.ink_spacing_min_char_gap_px,
             "ink_spacing_touch_gap_px": self.ink_spacing_touch_gap_px,
             "ink_spacing_touch_probability": self.ink_spacing_touch_probability,
-            "save_ocr_targets": self.ocr_targets,
-            "save_cut_projection_targets": self.cut_projection_targets,
-            "cut_projection_peak_radius": self.cut_projection_peak_radius,
-            "cut_projection_include_margins": self.cut_projection_include_margins,
-            "save_baseline_targets": self.baseline_targets,
-            "baseline_target_radius": self.baseline_target_radius,
+            "save_fcn_ocr_targets": self.fcn_ocr_targets,
+            "save_vertical_segmentation_targets": self.vertical_segmentation_targets,
+            "vertical_segmentation_target_radius": self.vertical_segmentation_target_radius,
+            "vertical_segmentation_include_margins": self.vertical_segmentation_include_margins,
+            "save_baseline_detection_targets": self.baseline_detection_targets,
+            "baseline_detection_target_radius": self.baseline_detection_target_radius,
             "chunk_size": self.chunk_size,
         }
 
@@ -239,6 +249,12 @@ def load_chunk_metadata(
     if not isinstance(raw, dict):
         raise ValueError(f"Chunk metadata must be a YAML mapping: {metadata_path}")
 
+    dataset_format = raw.get("format")
+    if dataset_format != CHUNK_FORMAT:
+        raise ValueError(
+            f"Unsupported dataset format {dataset_format!r} in {metadata_path}. "
+            "Regenerate this dataset with the current generate_dataset command."
+        )
     version = raw.get("version")
     if version != CHUNK_METADATA_VERSION:
         raise ValueError(

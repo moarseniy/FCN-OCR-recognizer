@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import pytest
 import torch
 
 from fcn_ocr.inference_config import InferenceConfig
@@ -100,20 +101,33 @@ def _pipeline_with_fakes(recognizer, segmentator) -> OCRPipeline:
     config = InferenceConfig.model_validate(
         {
             "device": "cpu",
-            "ocr": {
+            "fcn_ocr": {
                 "checkpoint": "unused_ocr.pth",
                 "decode": {"enabled": True, "method": "cells"},
             },
-            "segmentator": {"checkpoint": "unused_segmentator.pth"},
+            "vertical_segmentation": {"checkpoint": "unused_segmentator.pth"},
         }
     )
     pipeline = OCRPipeline.__new__(OCRPipeline)
     pipeline.config = config
-    pipeline.decode = config.ocr.decode
+    pipeline.decode = config.fcn_ocr.decode
     pipeline.recognizer = recognizer
     pipeline.segmentator = segmentator
     pipeline.baseline_processor = None
     return pipeline
+
+
+@pytest.mark.parametrize("removed_section", ["ocr", "segmentator", "baseline"])
+def test_inference_config_rejects_removed_section_names(
+    removed_section: str,
+) -> None:
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        InferenceConfig.model_validate(
+            {
+                removed_section: {"checkpoint": "removed.pth"},
+                "fcn_ocr": {"checkpoint": "current.pth"},
+            }
+        )
 
 
 def test_pipeline_and_evaluation_path_return_the_same_decoded_text(

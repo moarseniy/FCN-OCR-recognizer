@@ -54,24 +54,6 @@ class FCNOCRDecodingMixin:
             decoded.append((text, raw_ids))
         return decoded
 
-    def output_width_for_input_width(self, width: int) -> int:
-        if hasattr(self.model, "output_width_for_input_width"):
-            return int(self.model.output_width_for_input_width(width))
-
-        output_width = int(width)
-        for module in self.model.modules():
-            if not isinstance(module, torch.nn.Conv2d):
-                continue
-
-            kernel = module.kernel_size[1]
-            stride = module.stride[1]
-            padding = module.padding[1]
-            dilation = module.dilation[1]
-            output_width = (
-                output_width + 2 * padding - dilation * (kernel - 1) - 1
-            ) // stride + 1
-        return output_width
-
     def analyze_logits(
         self, logits: torch.Tensor, input_shape: tuple[int, ...], top_k: int = 8
     ) -> RecognitionResult:
@@ -145,11 +127,6 @@ class FCNOCRDecodingMixin:
         segmentator_source_x: np.ndarray | None = None,
         glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
-        if self.loss_mode != "fcn_ocr":
-            raise ValueError(
-                "FCN OCR+cuts decoding expects an fcn_ocr checkpoint; "
-                f"got loss_mode={self.loss_mode!r}"
-            )
         if logits.dim() != 3 or logits.size(0) != 1:
             raise ValueError(
                 f"FCN OCR+cuts decoding expects logits shape (1, C, T), got {tuple(logits.shape)}"
@@ -347,11 +324,6 @@ class FCNOCRDecodingMixin:
         skip_cut_penalty: float = 0.35,
         glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
-        if self.loss_mode != "fcn_ocr":
-            raise ValueError(
-                "FCN OCR+cuts DP decoding expects an fcn_ocr checkpoint; "
-                f"got loss_mode={self.loss_mode!r}"
-            )
         if logits.dim() != 3 or logits.size(0) != 1:
             raise ValueError(
                 f"FCN OCR+cuts DP decoding expects logits shape (1, C, T), got {tuple(logits.shape)}"

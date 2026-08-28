@@ -15,7 +15,7 @@ class InferencePreprocessingConfig(BaseModel):
     x_pad: float = Field(default=0.0, ge=0.0)
 
 
-class BaselineInferenceConfig(BaseModel):
+class BaselineDetectionInferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
@@ -64,7 +64,7 @@ class OCRDecodeConfig(BaseModel):
     glyph_width_prior: GlyphWidthPriorConfig = Field(default_factory=GlyphWidthPriorConfig)
 
 
-class OCRInferenceConfig(BaseModel):
+class FCNOCRInferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checkpoint: Path
@@ -72,7 +72,7 @@ class OCRInferenceConfig(BaseModel):
     decode: OCRDecodeConfig = Field(default_factory=OCRDecodeConfig)
 
 
-class SegmentatorInferenceConfig(BaseModel):
+class VerticalSegmentationInferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checkpoint: Path
@@ -93,20 +93,36 @@ class InferenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device: str | None = None
-    baseline: BaselineInferenceConfig | None = None
-    ocr: OCRInferenceConfig | None = None
-    segmentator: SegmentatorInferenceConfig | None = None
+    baseline_detection: BaselineDetectionInferenceConfig | None = None
+    fcn_ocr: FCNOCRInferenceConfig | None = None
+    vertical_segmentation: VerticalSegmentationInferenceConfig | None = None
     debug: DebugInferenceConfig = Field(default_factory=DebugInferenceConfig)
 
     @model_validator(mode="after")
     def validate_pipeline(self) -> "InferenceConfig":
-        has_baseline = self.baseline is not None and self.baseline.enabled
-        if not has_baseline and self.ocr is None and self.segmentator is None:
-            raise ValueError("Inference config must enable at least one stage: baseline, segmentator, or ocr")
-        if self.ocr is not None and self.ocr.decode.enabled and self.segmentator is None:
-            raise ValueError("ocr.decode.enabled requires a segmentator section")
-        if has_baseline and self.baseline.detector_checkpoint is None:
-            raise ValueError("An enabled baseline stage requires detector_checkpoint")
+        baseline = self.baseline_detection
+        has_baseline_detection = baseline is not None and baseline.enabled
+        if (
+            not has_baseline_detection
+            and self.fcn_ocr is None
+            and self.vertical_segmentation is None
+        ):
+            raise ValueError(
+                "Inference config must enable at least one task: "
+                "baseline_detection, vertical_segmentation, or fcn_ocr"
+            )
+        if (
+            self.fcn_ocr is not None
+            and self.fcn_ocr.decode.enabled
+            and self.vertical_segmentation is None
+        ):
+            raise ValueError(
+                "fcn_ocr.decode.enabled requires a vertical_segmentation section"
+            )
+        if has_baseline_detection and baseline.detector_checkpoint is None:
+            raise ValueError(
+                "An enabled baseline_detection section requires detector_checkpoint"
+            )
         return self
 
     @classmethod
@@ -127,17 +143,21 @@ class InferenceConfig(BaseModel):
             return (config_dir / path).resolve() if not path.is_absolute() else path.resolve()
 
         updates: dict[str, Any] = {}
-        if self.baseline is not None:
-            updates["baseline"] = self.baseline.model_copy(
-                update={"detector_checkpoint": resolve(self.baseline.detector_checkpoint)}
+        if self.baseline_detection is not None:
+            updates["baseline_detection"] = self.baseline_detection.model_copy(
+                update={
+                    "detector_checkpoint": resolve(
+                        self.baseline_detection.detector_checkpoint
+                    )
+                }
             )
-        if self.ocr is not None:
-            updates["ocr"] = self.ocr.model_copy(
-                update={"checkpoint": resolve(self.ocr.checkpoint)}
+        if self.fcn_ocr is not None:
+            updates["fcn_ocr"] = self.fcn_ocr.model_copy(
+                update={"checkpoint": resolve(self.fcn_ocr.checkpoint)}
             )
-        if self.segmentator is not None:
-            updates["segmentator"] = self.segmentator.model_copy(
-                update={"checkpoint": resolve(self.segmentator.checkpoint)}
+        if self.vertical_segmentation is not None:
+            updates["vertical_segmentation"] = self.vertical_segmentation.model_copy(
+                update={"checkpoint": resolve(self.vertical_segmentation.checkpoint)}
             )
         return self.model_copy(update=updates)
 

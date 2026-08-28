@@ -28,13 +28,13 @@ ALPHABET = " AB"
 
 
 def _chunk_payload(*, image_dtype: torch.dtype = torch.uint8) -> dict:
-    ocr_targets = torch.zeros((2, 32), dtype=torch.int16)
-    ocr_targets[0, 8:24] = 1
-    ocr_targets[1, 8:24] = 2
+    fcn_ocr_targets = torch.zeros((2, 32), dtype=torch.int16)
+    fcn_ocr_targets[0, 8:24] = 1
+    fcn_ocr_targets[1, 8:24] = 2
     return {
         "images": torch.zeros((2, 1, 16, 32), dtype=image_dtype),
         "texts": ["A", "B"],
-        "ocr_targets": ocr_targets,
+        "fcn_ocr_targets": fcn_ocr_targets,
     }
 
 
@@ -66,12 +66,12 @@ def _metadata_data(*, version: int = CHUNK_METADATA_VERSION) -> dict:
         "neighbor_line_visible_ratio_min": 0.06,
         "neighbor_line_gap_min": 0,
         "neighbor_line_gap_max": 5,
-        "ocr_targets": True,
-        "cut_projection_targets": False,
-        "cut_projection_peak_radius": 1,
-        "cut_projection_include_margins": True,
-        "baseline_targets": False,
-        "baseline_target_radius": 1,
+        "fcn_ocr_targets": True,
+        "vertical_segmentation_targets": False,
+        "vertical_segmentation_target_radius": 1,
+        "vertical_segmentation_include_margins": True,
+        "baseline_detection_targets": False,
+        "baseline_detection_target_radius": 1,
         "dtype": "uint8",
         "chunk_size": 2,
         "chunk_count": 1,
@@ -80,11 +80,11 @@ def _metadata_data(*, version: int = CHUNK_METADATA_VERSION) -> dict:
     if version == CHUNK_METADATA_VERSION:
         data.update(
             {
-                "ocr_target_dtype": "int16",
-                "cut_projection_target_dtype": None,
-                "baseline_target_dtype": None,
+                "fcn_ocr_target_dtype": "int16",
+                "vertical_segmentation_target_dtype": None,
+                "baseline_detection_target_dtype": None,
                 "text_char_counts": {" ": 0, "A": 1, "B": 1},
-                "ocr_class_counts": ocr_counts,
+                "fcn_ocr_class_counts": ocr_counts,
                 "max_observed_text_length": 1,
             }
         )
@@ -117,7 +117,11 @@ def test_dataset_initialization_uses_manifest_counts_without_loading_chunks(
         "fcn_synth_generator.chunk_dataset.load_torch_chunk",
         fail_if_loaded,
     )
-    dataset = ChunkedLineDataset(root, config=_dataset_config(metadata))
+    dataset = ChunkedLineDataset(
+        root,
+        config=_dataset_config(metadata),
+        task="fcn_ocr",
+    )
 
     assert len(dataset) == 2
     assert dataset.chunks == [{"file": "chunk_000000.pt", "samples": 2}]
@@ -129,7 +133,11 @@ def test_dataset_rejects_chunk_files_absent_from_manifest(tmp_path: Path) -> Non
     torch.save(_chunk_payload(), root / "chunk_000001.pt")
 
     with pytest.raises(ValueError, match="unexpected=.*chunk_000001.pt"):
-        ChunkedLineDataset(root, config=_dataset_config(metadata))
+        ChunkedLineDataset(
+            root,
+            config=_dataset_config(metadata),
+            task="fcn_ocr",
+        )
 
 
 def test_dataset_validates_tensor_dtype_when_chunk_is_first_read(
@@ -138,7 +146,11 @@ def test_dataset_validates_tensor_dtype_when_chunk_is_first_read(
     root = tmp_path / "chunks"
     metadata = _write_dataset(root)
     torch.save(_chunk_payload(image_dtype=torch.float32), root / "chunk_000000.pt")
-    dataset = ChunkedLineDataset(root, config=_dataset_config(metadata))
+    dataset = ChunkedLineDataset(
+        root,
+        config=_dataset_config(metadata),
+        task="fcn_ocr",
+    )
 
     with pytest.raises(ValueError, match="images dtype must be uint8"):
         _ = dataset[0]
@@ -148,9 +160,21 @@ def test_loader_rejects_old_metadata_and_requires_regeneration(tmp_path: Path) -
     root = tmp_path / "chunks"
     root.mkdir()
     with (root / "metadata.yaml").open("w", encoding="utf-8") as file:
-        yaml.safe_dump(_metadata_data(version=1), file)
+        yaml.safe_dump(_metadata_data(version=0), file)
 
     with pytest.raises(ValueError, match="Regenerate this dataset"):
+        load_chunk_metadata(root)
+
+
+def test_loader_rejects_old_dataset_format(tmp_path: Path) -> None:
+    root = tmp_path / "chunks"
+    root.mkdir()
+    data = _metadata_data()
+    data["format"] = "fcn_ocr_line_chunks"
+    with (root / "metadata.yaml").open("w", encoding="utf-8") as file:
+        yaml.safe_dump(data, file)
+
+    with pytest.raises(ValueError, match="Unsupported dataset format"):
         load_chunk_metadata(root)
 
 
@@ -164,6 +188,7 @@ def test_training_config_cannot_override_dataset_contract() -> None:
             {
                 "architecture": "fcn_ocr",
                 "chunks_dir": "/unused",
+                "task": "fcn_ocr",
                 "alphabet": " BA",
             }
         )
@@ -173,6 +198,7 @@ def test_training_config_cannot_override_dataset_contract() -> None:
         {
             "architecture": "fcn_ocr",
             "chunks_dir": "/unused",
+            "task": "fcn_ocr",
             "seed": 123,
             "augmentation_probabilities": {"x_pad": 0.5},
             "augmentations": {"x_pad": {"pad": 0.1}},
@@ -197,11 +223,21 @@ def test_removed_config_vocabulary_is_rejected() -> None:
             }
         )
 
-    with pytest.raises(ValidationError, match="loss_mode must be one of"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SingleLineDatasetConfig.model_validate(
+            {
+                "alphabet": ALPHABET,
+                "save_cut_projection_targets": True,
+                "save_baseline_targets": True,
+            }
+        )
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         TrainingConfig.model_validate(
             {
                 "architecture": "fcn_ocr",
                 "chunks_dir": "/unused",
+                "task": "fcn_ocr",
                 "loss_mode": "removed_task",
             }
         )
@@ -216,7 +252,7 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
         min_text_length=1,
         max_text_length=2,
         chunk_size=2,
-        save_ocr_targets=True,
+        save_fcn_ocr_targets=True,
     )
 
     metadata = build_metadata(
@@ -226,7 +262,7 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
                 "file": "chunk_000000.pt",
                 "samples": 2,
                 "text_char_counts": {"A": 1, "B": 1},
-                "ocr_class_counts": [32, 16, 16],
+                "fcn_ocr_class_counts": [32, 16, 16],
                 "max_observed_text_length": 1,
             }
         ],
@@ -234,8 +270,8 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
 
     assert metadata.version == CHUNK_METADATA_VERSION
     assert metadata.samples == 2
-    assert metadata.ocr_target_dtype == "int16"
-    assert metadata.ocr_class_counts == [32, 16, 16]
+    assert metadata.fcn_ocr_target_dtype == "int16"
+    assert metadata.fcn_ocr_class_counts == [32, 16, 16]
     assert metadata.text_char_counts == {" ": 0, "A": 1, "B": 1}
 
 
@@ -248,7 +284,7 @@ def test_training_loader_builds_model_input_config_only_from_metadata(
         {
             "architecture": "fcn_ocr",
             "chunks_dir": str(root),
-            "loss_mode": "fcn_ocr",
+            "task": "fcn_ocr",
             "augmentation_probabilities": {"x_pad": 0.25},
         }
     )

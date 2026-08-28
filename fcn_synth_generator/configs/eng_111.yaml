@@ -31,4 +31,4 @@ background_extensions:
   - .bmp
   - .webp
 horizontal_padding: 8
-save_ocr_targets: true
+save_fcn_ocr_targets: true

@@ -288,7 +288,7 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
         print(f"Cut tolerance:              {metrics['cut_tolerance_px']:.2f}px")
     print(f"Elapsed:                    {metrics['elapsed']:.2f}s")
     print(f"Speed:                      {metrics['speed']:.2f} img/s")
-    print(f"segmentator_mode:           {metrics.get('segmentator_mode', 'cut_projection')}")
+    print(f"Task:                       {metrics['task']}")
     print(f"cut_threshold:              {metrics['cut_threshold']:.5f}")
     print(f"cut_min_width:              {metrics['cut_min_width']}")
     print(f"cut_max_width:              {metrics['cut_max_width']}")
@@ -390,7 +390,7 @@ def evaluate_with_segmentator(
         rows[row_index]["error"] = error
 
     metrics = compute_cut_metrics(rows, elapsed, cut_tolerance_px=cut_tolerance_px)
-    metrics["segmentator_mode"] = getattr(segmentator, "target_format", "cut_projection")
+    metrics["task"] = segmentator.task
     metrics["cut_threshold"] = float(segmentator.cut_threshold)
     metrics["cut_min_width"] = int(segmentator.cut_min_width)
     metrics["cut_max_width"] = int(segmentator.cut_max_width)
@@ -1095,7 +1095,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
     image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
     config_data: dict[str, Any] = {
         "device": args.device,
-        "baseline": {
+        "baseline_detection": {
             "enabled": metrics["baseline_crop"],
             "detector_checkpoint": (
                 str(Path(metrics["baseline_detector_checkpoint"]).expanduser().resolve())
@@ -1108,7 +1108,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "line_pad": metrics["baseline_line_pad"],
             "line_pad_px": metrics["baseline_line_pad_px"],
         },
-        "segmentator": {
+        "vertical_segmentation": {
             "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
             "preprocessing": {
                 "scale_x": metrics["scale_x"],
@@ -1122,14 +1122,17 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
         },
     }
     if args.inference_ocr_checkpoint:
-        config_data["ocr"] = {
+        config_data["fcn_ocr"] = {
             "checkpoint": str(
                 Path(args.inference_ocr_checkpoint).expanduser().resolve()
             ),
             "decode": {"enabled": True},
         }
     if args.inference_ocr_checkpoint is None:
-        print("Generated config contains only baseline and segmentator stages.")
+        print(
+            "Generated config contains only baseline_detection and "
+            "vertical_segmentation sections."
+        )
     save_and_print_inference_command(config_data, args.out, image_path)
 
 

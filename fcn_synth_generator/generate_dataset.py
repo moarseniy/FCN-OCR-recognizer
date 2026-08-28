@@ -31,30 +31,30 @@ def save_chunk(
     output_dir: Path,
     chunk_idx: int,
     alphabet: str,
-    save_ocr_targets: bool = False,
+    save_fcn_ocr_targets: bool = False,
 ) -> dict[str, Any]:
     images = []
     texts = []
-    ocr_targets = []
-    cut_projection_targets = []
-    baseline_targets = []
+    fcn_ocr_targets = []
+    vertical_segmentation_targets = []
+    baseline_detection_targets = []
 
     for sample in samples:
         images.append(image_to_uint8(sample.image))
         texts.append(sample.text)
-        if save_ocr_targets:
-            if sample.ocr_target is None:
-                raise RuntimeError("sample does not contain ocr_target")
-            ocr_targets.append(sample.ocr_target.detach().cpu().to(torch.int16))
-        if sample.cut_projection_target is not None:
-            cut_projection_targets.append(
-                (sample.cut_projection_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
+        if save_fcn_ocr_targets:
+            if sample.fcn_ocr_target is None:
+                raise RuntimeError("sample does not contain fcn_ocr_target")
+            fcn_ocr_targets.append(sample.fcn_ocr_target.detach().cpu().to(torch.int16))
+        if sample.vertical_segmentation_target is not None:
+            vertical_segmentation_targets.append(
+                (sample.vertical_segmentation_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
                 .round()
                 .to(torch.uint8)
             )
-        if sample.baseline_target is not None:
-            baseline_targets.append(
-                (sample.baseline_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
+        if sample.baseline_detection_target is not None:
+            baseline_detection_targets.append(
+                (sample.baseline_detection_target.detach().cpu().clamp(0.0, 1.0) * 255.0)
                 .round()
                 .to(torch.uint8)
             )
@@ -67,37 +67,37 @@ def save_chunk(
         "images": torch.stack(images, dim=0).contiguous(),
         "texts": texts,
     }
-    ocr_class_counts = None
-    if save_ocr_targets:
-        stacked_ocr_targets = torch.stack(ocr_targets, dim=0).contiguous()
+    fcn_ocr_class_counts = None
+    if save_fcn_ocr_targets:
+        stacked_ocr_targets = torch.stack(fcn_ocr_targets, dim=0).contiguous()
         if int(stacked_ocr_targets.min()) < 0 or int(
             stacked_ocr_targets.max()
         ) >= len(alphabet):
             raise ValueError(
                 "OCR target contains an index outside the generation alphabet"
             )
-        chunk["ocr_targets"] = stacked_ocr_targets
-        ocr_class_counts = torch.bincount(
+        chunk["fcn_ocr_targets"] = stacked_ocr_targets
+        fcn_ocr_class_counts = torch.bincount(
             stacked_ocr_targets.long().flatten(),
             minlength=len(alphabet),
         ).tolist()
-    if cut_projection_targets:
-        if len(cut_projection_targets) != len(images):
-            raise RuntimeError("only some samples contain cut_projection_target")
-        chunk["cut_projection_targets"] = torch.stack(
-            cut_projection_targets, dim=0
+    if vertical_segmentation_targets:
+        if len(vertical_segmentation_targets) != len(images):
+            raise RuntimeError("only some samples contain vertical_segmentation_target")
+        chunk["vertical_segmentation_targets"] = torch.stack(
+            vertical_segmentation_targets, dim=0
         ).contiguous()
-    if baseline_targets:
-        if len(baseline_targets) != len(images):
-            raise RuntimeError("only some samples contain baseline_target")
-        chunk["baseline_targets"] = torch.stack(baseline_targets, dim=0).contiguous()
+    if baseline_detection_targets:
+        if len(baseline_detection_targets) != len(images):
+            raise RuntimeError("only some samples contain baseline_detection_target")
+        chunk["baseline_detection_targets"] = torch.stack(baseline_detection_targets, dim=0).contiguous()
 
     torch.save(chunk, output_dir / filename)
     return {
         "file": filename,
         "samples": len(images),
         "text_char_counts": dict(Counter("".join(texts))),
-        "ocr_class_counts": ocr_class_counts,
+        "fcn_ocr_class_counts": fcn_ocr_class_counts,
         "max_observed_text_length": max(len(text) for text in texts),
     }
 
@@ -150,7 +150,7 @@ def generate_chunk_worker(task: dict) -> dict:
         Path(task["output_dir"]),
         task["chunk_idx"],
         alphabet=config.alphabet,
-        save_ocr_targets=bool(task["save_ocr_targets"]),
+        save_fcn_ocr_targets=bool(task["save_fcn_ocr_targets"]),
     )
 
 
@@ -159,7 +159,7 @@ def build_metadata(
 ) -> ChunkMetadata:
     alphabet = config.alphabet
     text_char_counts: Counter[str] = Counter()
-    ocr_class_counts = [0] * len(alphabet) if config.save_ocr_targets else None
+    fcn_ocr_class_counts = [0] * len(alphabet) if config.save_fcn_ocr_targets else None
     max_observed_text_length = 0
     manifest = []
     for chunk in chunks:
@@ -169,13 +169,13 @@ def build_metadata(
             max_observed_text_length,
             int(chunk["max_observed_text_length"]),
         )
-        if ocr_class_counts is not None:
-            chunk_counts = chunk["ocr_class_counts"]
-            if chunk_counts is None or len(chunk_counts) != len(ocr_class_counts):
+        if fcn_ocr_class_counts is not None:
+            chunk_counts = chunk["fcn_ocr_class_counts"]
+            if chunk_counts is None or len(chunk_counts) != len(fcn_ocr_class_counts):
                 raise ValueError("chunk OCR class statistics do not match alphabet")
-            ocr_class_counts = [
+            fcn_ocr_class_counts = [
                 total + int(count)
-                for total, count in zip(ocr_class_counts, chunk_counts)
+                for total, count in zip(fcn_ocr_class_counts, chunk_counts)
             ]
 
     return ChunkMetadata.model_validate(
@@ -209,26 +209,26 @@ def build_metadata(
             "ink_spacing_min_char_gap_px": config.ink_spacing_min_char_gap_px,
             "ink_spacing_touch_gap_px": config.ink_spacing_touch_gap_px,
             "ink_spacing_touch_probability": config.ink_spacing_touch_probability,
-            "ocr_targets": config.save_ocr_targets,
-            "ocr_target_edge_bounds": "ink",
-            "cut_projection_targets": config.save_cut_projection_targets,
-            "cut_projection_peak_radius": config.cut_projection_peak_radius,
-            "cut_projection_include_margins": config.cut_projection_include_margins,
-            "baseline_targets": config.save_baseline_targets,
-            "baseline_target_radius": config.baseline_target_radius,
+            "fcn_ocr_targets": config.save_fcn_ocr_targets,
+            "fcn_ocr_target_edge_bounds": "ink",
+            "vertical_segmentation_targets": config.save_vertical_segmentation_targets,
+            "vertical_segmentation_target_radius": config.vertical_segmentation_target_radius,
+            "vertical_segmentation_include_margins": config.vertical_segmentation_include_margins,
+            "baseline_detection_targets": config.save_baseline_detection_targets,
+            "baseline_detection_target_radius": config.baseline_detection_target_radius,
             "dtype": "uint8",
-            "ocr_target_dtype": "int16" if config.save_ocr_targets else None,
-            "cut_projection_target_dtype": "uint8"
-            if config.save_cut_projection_targets
+            "fcn_ocr_target_dtype": "int16" if config.save_fcn_ocr_targets else None,
+            "vertical_segmentation_target_dtype": "uint8"
+            if config.save_vertical_segmentation_targets
             else None,
-            "baseline_target_dtype": "uint8" if config.save_baseline_targets else None,
+            "baseline_detection_target_dtype": "uint8" if config.save_baseline_detection_targets else None,
             "chunk_size": config.chunk_size,
             "chunk_count": len(chunks),
             "chunks": manifest,
             "text_char_counts": {
                 char: int(text_char_counts.get(char, 0)) for char in alphabet
             },
-            "ocr_class_counts": ocr_class_counts,
+            "fcn_ocr_class_counts": fcn_ocr_class_counts,
             "max_observed_text_length": max_observed_text_length,
         }
     )
@@ -262,7 +262,7 @@ def generate_chunks_sequential(
             output_dir,
             chunk_idx,
             alphabet=dataset.alphabet,
-            save_ocr_targets=dataset.config.save_ocr_targets,
+            save_fcn_ocr_targets=dataset.config.save_fcn_ocr_targets,
         )
         chunks.append(chunk)
         saved += chunk["samples"]
@@ -292,7 +292,7 @@ def generate_chunks_parallel(
                 "end": end,
                 "sample_count": end - start,
                 "output_dir": str(output_dir),
-                "save_ocr_targets": config.save_ocr_targets,
+                "save_fcn_ocr_targets": config.save_fcn_ocr_targets,
                 "config": worker_config_data(
                     config,
                     font_paths,

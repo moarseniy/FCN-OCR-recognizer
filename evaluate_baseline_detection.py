@@ -299,14 +299,14 @@ def optimize(
 def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], image_path: Path | None) -> None:
     config_data: dict[str, Any] = {
         "device": args.device,
-        "baseline": {
+        "baseline_detection": {
             "enabled": True,
             "detector_checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
             "detector_threshold": metrics["threshold"],
         },
     }
     if args.inference_ocr_checkpoint:
-        config_data["ocr"] = {
+        config_data["fcn_ocr"] = {
             "checkpoint": str(
                 Path(args.inference_ocr_checkpoint).expanduser().resolve()
             ),

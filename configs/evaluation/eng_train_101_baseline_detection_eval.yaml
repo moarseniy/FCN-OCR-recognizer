@@ -1,8 +1,8 @@
 # Paths are resolved relative to this file.
-train_config: ../train/eng_train_101_baselines.yaml
+train_config: ../train/eng_train_101_baseline_detection.yaml
 markup_json: ../../output/manual_markup.json
 images_dir: null
-output_dir: ../../output/baseline_train_eval
+output_dir: ../../output/baseline_detection_train_eval
 
 device: cuda
 limit: null
@@ -11,7 +11,7 @@ evaluate_every: 1
 # Fixed threshold gives directly comparable metrics between epochs.
 failure_penalty: 1.0
 best_metric: failure_penalized_normalized_mae
-best_checkpoint_name: best_manual_baselines_model.pth
+best_checkpoint_name: best_manual_baseline_detection_model.pth
 
 parameters:
   threshold: 0.35

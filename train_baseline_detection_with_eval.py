@@ -12,7 +12,7 @@ from typing import Any, Literal
 import torch
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from evaluate_baselines import build_jobs, evaluate_detector, optimize
+from evaluate_baseline_detection import build_jobs, evaluate_detector, optimize
 from fcn_ocr import BaselineDetector
 from fcn_ocr.evaluation.config import expand_evaluation_parameters, load_evaluation_yaml
 from train import load_training_config, resolve_checkpoint_dir, run_training
@@ -43,7 +43,7 @@ class BaselineTrainEvalConfig(BaseModel):
     threshold: float = Field(default=0.35, gt=0.0, lt=1.0)
     failure_penalty: float = Field(default=1.0, ge=0.0)
     best_metric: str = "failure_penalized_normalized_mae"
-    best_checkpoint_name: str = "best_manual_baselines_model.pth"
+    best_checkpoint_name: str = "best_manual_baseline_detection_model.pth"
 
     optuna_trials: int = Field(default=0, ge=0)
     optuna_threshold_min: float = Field(default=0.10, gt=0.0, lt=1.0)
@@ -203,21 +203,25 @@ def main() -> None:
         raise NotADirectoryError(f"Evaluation images directory not found: {config.images_dir}")
 
     train_config, _ = load_training_config(config.train_config)
-    if train_config.loss_mode != "baseline_heatmap":
+    if train_config.task != "baseline_detection":
         raise ValueError(
-            "Baseline train/evaluation requires loss_mode=baseline_heatmap; "
-            f"got {train_config.loss_mode!r}"
+            "Baseline train/evaluation requires task=baseline_detection; "
+            f"got {train_config.task!r}"
         )
 
     checkpoint_dir = resolve_checkpoint_dir(
         train_config.checkpoint_dir,
         resume=train_config.resume,
     )
-    eval_dir = Path(config.output_dir) if config.output_dir else checkpoint_dir / "evaluate_baselines"
+    eval_dir = (
+        Path(config.output_dir)
+        if config.output_dir
+        else checkpoint_dir / "evaluate_baseline_detection"
+    )
     eval_dir.mkdir(parents=True, exist_ok=True)
     summary_path = eval_dir / "eval_summary.tsv"
     best_checkpoint_path = checkpoint_dir / config.best_checkpoint_name
-    best_metadata_path = eval_dir / "best_manual_baselines.json"
+    best_metadata_path = eval_dir / "best_manual_baseline_detection.json"
 
     _, jobs = build_jobs(
         markup_path,

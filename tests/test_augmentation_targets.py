@@ -33,7 +33,7 @@ def test_x_pad_resizes_ocr_content_and_labels_new_edges_as_space() -> None:
     augmented_image, augmented_target, metadata = augmenter.augment_with_metadata(
         image,
         targets=target,
-        target_format="fcn_ocr",
+        task="fcn_ocr",
     )
 
     assert tuple(augmented_image.shape) == tuple(image.shape)
@@ -69,14 +69,14 @@ def test_x_pad_metadata_replays_the_same_geometry_on_another_target() -> None:
 
     replayed = augmenter.apply_metadata_to_targets(
         target,
-        target_format="fcn_ocr",
+        task="fcn_ocr",
         metadata=metadata,
     )
 
     assert replayed.tolist() == [[0, 0, 1, 1, 2, 0]]
 
 
-def test_crop_y_replays_on_both_baseline_heatmap_channels() -> None:
+def test_crop_y_replays_on_both_baseline_detection_channels() -> None:
     augmenter = _augmenter()
     target = torch.zeros((1, 2, 6, 4))
     target[:, 0, 1, :] = 1.0
@@ -92,7 +92,7 @@ def test_crop_y_replays_on_both_baseline_heatmap_channels() -> None:
 
     replayed = augmenter.apply_metadata_to_targets(
         target,
-        target_format="baseline_heatmap",
+        task="baseline_detection",
         metadata=metadata,
     )
 
@@ -133,11 +133,11 @@ def test_sampled_geometric_metadata_replays_exactly_on_ocr_targets(
     _, augmented_target, metadata = augmenter.augment_with_metadata(
         image,
         targets=target,
-        target_format="fcn_ocr",
+        task="fcn_ocr",
     )
     replayed_target = augmenter.apply_metadata_to_targets(
         target,
-        target_format="fcn_ocr",
+        task="fcn_ocr",
         metadata=metadata,
     )
 

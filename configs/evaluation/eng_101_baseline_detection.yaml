@@ -1,0 +1,17 @@
+json: ../../output/manual_markup.json
+images: null
+checkpoint: ../../checkpoints/baseline_detection/best_model.pth
+out: ../../output/baseline_detection_metrics.csv
+device: cuda
+limit: null
+failure_penalty: 1.0
+inference_ocr_checkpoint: null
+
+parameters:
+  threshold: [0.10, 0.90]
+
+optuna_trials: 200
+optuna_trials_out: ../../output/baseline_detection_trials.tsv
+optuna_storage: sqlite:///../../output/baseline_detection_optuna.db
+optuna_study_name: eng_101_baseline_detection_v1
+optuna_progress: true

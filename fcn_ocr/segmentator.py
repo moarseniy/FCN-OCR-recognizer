@@ -4,12 +4,14 @@ from pathlib import Path
 
 import torch
 
-from .recognizer import TextRecognizer
+from fcn_tasks import VERTICAL_SEGMENTATION_TASK
+
+from .model_runner import PreprocessedFCNRunner
 from .results import SegmentationRun, VerticalSegmentationResult
 
 
-class VerticalSegmentator(TextRecognizer):
-    """FCN segmentator for vertical cut-point projections."""
+class VerticalSegmentator(PreprocessedFCNRunner):
+    """FCN model that predicts vertical character-boundary scores."""
 
     def __init__(
         self,
@@ -32,9 +34,9 @@ class VerticalSegmentator(TextRecognizer):
         cut_smooth_radius: int | None = None,
     ):
         super().__init__(
-            checkpoint_path=checkpoint_path,
+            checkpoint_path,
+            expected_task=VERTICAL_SEGMENTATION_TASK,
             device=device,
-            verbose=False,
             scale_x=scale_x,
             y_pad=y_pad,
             x_pad=x_pad,
@@ -46,15 +48,6 @@ class VerticalSegmentator(TextRecognizer):
             baseline_detector_checkpoint=baseline_detector_checkpoint,
             baseline_detector_threshold=baseline_detector_threshold,
         )
-        if (
-            self.target_format != "cut_projection"
-            or self.loss_mode != "cut_projection"
-            or self.num_classes != 1
-        ):
-            raise ValueError(
-                "VerticalSegmentator expects a cut_projection checkpoint with one output channel; "
-                f"got target_format={self.target_format!r}, num_classes={self.num_classes}"
-            )
 
         self.cut_threshold = self._resolve_cut_threshold(cut_threshold)
         self.cut_min_width = self._resolve_non_negative_int(
@@ -107,8 +100,8 @@ class VerticalSegmentator(TextRecognizer):
         print(f"Segmentator device: {self.device}")
         print(f"Segmentator input height: {self.image_height}")
         print(f"Segmentator preprocess: scale_x={self.scale_x:+.4f}, y_pad={self.y_pad:+.4f}, x_pad={self.x_pad:.4f}")
-        print(f"Segmentator mode: {self.target_format}")
-        print("Segmentator output: cut projection, one sigmoid score per column")
+        print(f"Segmentator task: {self.task}")
+        print("Segmentator output: one character-boundary score per column")
         print(
             "Segmentator params: "
             f"cut_threshold={self.cut_threshold:.3f}, "
@@ -124,9 +117,9 @@ class VerticalSegmentator(TextRecognizer):
     ) -> VerticalSegmentationResult:
         if logits.size(1) != 1:
             raise ValueError(f"Cut segmentator expects logits with one channel, got {tuple(logits.shape)}")
-        return self._analyze_cut_projection_logits(logits, input_shape)
+        return self._analyze_vertical_segmentation_logits(logits, input_shape)
 
-    def _analyze_cut_projection_logits(
+    def _analyze_vertical_segmentation_logits(
         self,
         logits: torch.Tensor,
         input_shape: tuple[int, ...],
@@ -161,7 +154,6 @@ class VerticalSegmentator(TextRecognizer):
             cut_threshold=self.cut_threshold,
             input_shape=input_shape,
             logits_shape=tuple(logits.shape),
-            mode="cut_projection",
             cut_positions=cut_positions,
             cut_min_width=self.cut_min_width,
             cut_max_width=self.cut_max_width,
@@ -342,12 +334,5 @@ class VerticalSegmentator(TextRecognizer):
 
     @torch.no_grad()
     def segment_tensor_debug(self, image_tensor: torch.Tensor) -> VerticalSegmentationResult:
-        if image_tensor.dim() == 3:
-            image_tensor = image_tensor.unsqueeze(0)
-
-        image_tensor = image_tensor.to(self.device).float()
-        if image_tensor.max() > 1.0:
-            image_tensor = image_tensor / 255.0
-
-        logits = self.model(image_tensor)
-        return self.analyze_segmentation_logits(logits, input_shape=tuple(image_tensor.shape))
+        logits, input_shape = self.logits_from_tensor(image_tensor)
+        return self.analyze_segmentation_logits(logits, input_shape=input_shape)

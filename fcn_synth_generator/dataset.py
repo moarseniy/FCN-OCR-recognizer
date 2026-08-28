@@ -102,12 +102,12 @@ class SingleLineDatasetConfig(BaseModel):
     chunk_size: int = Field(default=1024, ge=1)
     num_workers: int = Field(default=0, ge=0)
     overwrite: bool = False
-    save_ocr_targets: bool = False
-    save_cut_projection_targets: bool = False
-    save_baseline_targets: bool = False
-    cut_projection_peak_radius: int = Field(default=1, ge=0)
-    cut_projection_include_margins: bool = True
-    baseline_target_radius: int = Field(default=1, ge=0)
+    save_fcn_ocr_targets: bool = False
+    save_vertical_segmentation_targets: bool = False
+    save_baseline_detection_targets: bool = False
+    vertical_segmentation_target_radius: int = Field(default=1, ge=0)
+    vertical_segmentation_include_margins: bool = True
+    baseline_detection_target_radius: int = Field(default=1, ge=0)
 
     @model_validator(mode="after")
     def edge_visibility_thresholds_must_be_ordered(self) -> "SingleLineDatasetConfig":
@@ -282,9 +282,9 @@ class TextRenderStyle:
 class GeneratedLineSample:
     text: str
     image: torch.Tensor
-    ocr_target: torch.Tensor | None
-    cut_projection_target: torch.Tensor | None
-    baseline_target: torch.Tensor | None
+    fcn_ocr_target: torch.Tensor | None
+    vertical_segmentation_target: torch.Tensor | None
+    baseline_detection_target: torch.Tensor | None
 
 
 class SingleLineDataset:
@@ -1061,21 +1061,21 @@ class SingleLineDataset:
         if len(spans) != len(cut_spans):
             raise ValueError("logical and cut span counts must match")
 
-        ocr_target = None
-        if self.config.save_ocr_targets:
-            ocr_target = self._encode_ocr_targets(
+        fcn_ocr_target = None
+        if self.config.save_fcn_ocr_targets:
+            fcn_ocr_target = self._encode_fcn_ocr_targets(
                 spans,
                 image.width,
                 ink_spans=cut_spans,
             )
-        cut_projection_target = None
-        if self.config.save_cut_projection_targets:
-            cut_projection_target = self._encode_cut_projection(cut_spans, image.width)
-        baseline_target = None
-        if self.config.save_baseline_targets:
+        vertical_segmentation_target = None
+        if self.config.save_vertical_segmentation_targets:
+            vertical_segmentation_target = self._encode_vertical_segmentation_target(cut_spans, image.width)
+        baseline_detection_target = None
+        if self.config.save_baseline_detection_targets:
             x_start = min(start for _, start, _ in spans)
             x_end = max(end for _, _, end in spans)
-            baseline_target = self._encode_baseline_heatmap(
+            baseline_detection_target = self._encode_baseline_detection_target(
                 baseline_top,
                 baseline_bottom,
                 image.height,
@@ -1093,12 +1093,12 @@ class SingleLineDataset:
         return GeneratedLineSample(
             text=text,
             image=tensor.contiguous(),
-            ocr_target=ocr_target,
-            cut_projection_target=cut_projection_target,
-            baseline_target=baseline_target,
+            fcn_ocr_target=fcn_ocr_target,
+            vertical_segmentation_target=vertical_segmentation_target,
+            baseline_detection_target=baseline_detection_target,
         )
 
-    def _encode_ocr_targets(
+    def _encode_fcn_ocr_targets(
         self,
         spans: list[tuple[str, float, float]],
         width: int,
@@ -1138,16 +1138,18 @@ class SingleLineDataset:
 
         return labels
 
-    def _encode_cut_projection(
+    def _encode_vertical_segmentation_target(
         self,
         spans: list[tuple[str, float, float]],
         width: int,
     ) -> torch.Tensor:
         if not spans:
-            raise ValueError("cannot encode cut projection for an empty span list")
+            raise ValueError(
+                "cannot encode vertical segmentation target for an empty span list"
+            )
 
         projection = torch.zeros(width, dtype=torch.float32)
-        radius = self.config.cut_projection_peak_radius
+        radius = self.config.vertical_segmentation_target_radius
 
         def mark_peak(center: float) -> None:
             center_index = min(width - 1, max(0, int(math.floor(center))))
@@ -1161,7 +1163,7 @@ class SingleLineDataset:
                     value = 1.0 - (abs(offset) / float(radius + 1))
                     projection[x] = max(float(projection[x]), value)
 
-        if self.config.cut_projection_include_margins:
+        if self.config.vertical_segmentation_include_margins:
             mark_peak(spans[0][1])
             mark_peak(spans[-1][2])
 
@@ -1170,7 +1172,7 @@ class SingleLineDataset:
 
         return projection
 
-    def _encode_baseline_heatmap(
+    def _encode_baseline_detection_target(
         self,
         baseline_top: float,
         baseline_bottom: float,
@@ -1180,7 +1182,7 @@ class SingleLineDataset:
         x_end: float | None = None,
     ) -> torch.Tensor:
         target = torch.zeros((2, height, width), dtype=torch.float32)
-        radius = self.config.baseline_target_radius
+        radius = self.config.baseline_detection_target_radius
         left = int(math.floor(max(0.0, x_start)))
         right = int(math.ceil(min(float(width), float(width if x_end is None else x_end))))
         if right <= left:
@@ -1274,7 +1276,7 @@ class SingleLineDataset:
         font_bbox: tuple[float, float, float, float],
     ) -> tuple[float, float, Image.Image | None]:
         font_bounds = (float(y + font_bbox[1]), float(y + font_bbox[3] - 1))
-        if not self.config.save_baseline_targets:
+        if not self.config.save_baseline_detection_targets:
             return font_bounds[0], font_bounds[1], None
 
         mask = Image.new("L", (width, height), color=0)

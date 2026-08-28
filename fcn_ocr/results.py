@@ -87,7 +87,6 @@ class VerticalSegmentationResult:
     cut_threshold: float
     input_shape: tuple[int, ...]
     logits_shape: tuple[int, ...]
-    mode: str = "cut_projection"
     cut_positions: list[int] | None = None
     cut_min_width: int | None = None
     cut_max_width: int | None = None

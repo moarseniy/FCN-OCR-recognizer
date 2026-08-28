@@ -134,7 +134,7 @@ def _weighted_cross_entropy(
     return (per_position * weights).sum() / denominator
 
 
-def _crop_projection_targets(
+def _crop_vertical_segmentation_targets(
     targets: torch.Tensor,
     crop_left: int = 0,
     crop_right: int = 0,
@@ -142,16 +142,22 @@ def _crop_projection_targets(
     if crop_left < 0 or crop_right < 0:
         raise ValueError("crop_left and crop_right must be non-negative")
     if targets.dim() != 2:
-        raise ValueError(f"cut projection targets must have shape (B, W), got {tuple(targets.shape)}")
+        raise ValueError(
+            "vertical segmentation targets must have shape (B, W), "
+            f"got {tuple(targets.shape)}"
+        )
 
     width = targets.size(1)
     right = width - crop_right if crop_right else width
     if crop_left >= right:
-        raise ValueError(f"cut projection crop [{crop_left}, -{crop_right}] is empty for target width {width}")
+        raise ValueError(
+            "vertical segmentation crop "
+            f"[{crop_left}, -{crop_right}] is empty for target width {width}"
+        )
     return targets[:, crop_left:right].float().clamp(0.0, 1.0)
 
 
-def _align_logits_and_projection(
+def _align_vertical_segmentation_logits_and_targets(
     logits: torch.Tensor,
     targets: torch.Tensor,
     strict_width: bool,
@@ -159,9 +165,15 @@ def _align_logits_and_projection(
     if logits.dim() != 3:
         raise ValueError(f"logits must have shape (B, C, T), got {tuple(logits.shape)}")
     if logits.size(1) != 1:
-        raise ValueError(f"cut_projection loss expects one output channel, got C={logits.size(1)}")
+        raise ValueError(
+            "vertical_segmentation loss expects one output channel, "
+            f"got C={logits.size(1)}"
+        )
     if targets.dim() != 2:
-        raise ValueError(f"cut projection targets must have shape (B, W), got {tuple(targets.shape)}")
+        raise ValueError(
+            "vertical segmentation targets must have shape (B, W), "
+            f"got {tuple(targets.shape)}"
+        )
     if logits.size(0) != targets.size(0):
         raise ValueError(
             f"batch mismatch between logits {tuple(logits.shape)} and targets {tuple(targets.shape)}"
@@ -175,11 +187,15 @@ def _align_logits_and_projection(
 
     if strict_width:
         raise ValueError(
-            f"cut_projection width mismatch: logits T={logits_width}, targets W={target_width}"
+            "vertical_segmentation width mismatch: "
+            f"logits T={logits_width}, targets W={target_width}"
         )
 
     if logits_width <= 0 or target_width <= 0:
-        raise ValueError(f"cut_projection got empty width: logits T={logits_width}, targets W={target_width}")
+        raise ValueError(
+            "vertical_segmentation got empty width: "
+            f"logits T={logits_width}, targets W={target_width}"
+        )
 
     resized_targets = F.interpolate(
         targets.unsqueeze(1),
@@ -190,7 +206,7 @@ def _align_logits_and_projection(
     return logits_1d, resized_targets
 
 
-def cut_projection_loss(
+def vertical_segmentation_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     crop_left: int = 0,
@@ -200,20 +216,24 @@ def cut_projection_loss(
     positive_weight: float = 1.0,
 ) -> torch.Tensor:
     """
-    Regression/classification loss for a vertical cut projection.
+    Regression/classification loss for vertical character-boundary scores.
 
     logits:  (B, 1, T)
-    targets: (B, W), values in [0, 1], where peaks mark correct cut columns.
+    targets: (B, W), values in [0, 1], where peaks mark character boundaries.
     """
     if positive_weight < 1.0:
         raise ValueError("positive_weight must be >= 1.0")
 
-    targets = _crop_projection_targets(
+    targets = _crop_vertical_segmentation_targets(
         targets.to(device=logits.device),
         crop_left=crop_left,
         crop_right=crop_right,
     )
-    logits_1d, targets = _align_logits_and_projection(logits, targets, strict_width=strict_width)
+    logits_1d, targets = _align_vertical_segmentation_logits_and_targets(
+        logits,
+        targets,
+        strict_width=strict_width,
+    )
     loss = loss.lower()
 
     if loss == "mse":
@@ -225,7 +245,9 @@ def cut_projection_loss(
     elif loss == "bce":
         per_column = F.binary_cross_entropy_with_logits(logits_1d, targets, reduction="none")
     else:
-        raise ValueError("cut projection loss must be 'mse', 'smooth_l1', or 'bce'")
+        raise ValueError(
+            "vertical segmentation loss must be 'mse', 'smooth_l1', or 'bce'"
+        )
 
     if positive_weight > 1.0:
         weights = torch.ones_like(targets)
@@ -234,7 +256,7 @@ def cut_projection_loss(
     return per_column.mean()
 
 
-def baseline_heatmap_loss(
+def baseline_detection_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     strict_size: bool = True,
@@ -242,7 +264,7 @@ def baseline_heatmap_loss(
     positive_weight: float = 4.0,
 ) -> torch.Tensor:
     """
-    Two-channel top/bottom text-line heatmap loss.
+    Two-channel top/bottom baseline detection loss.
 
     logits:  (B, 2, H, W)
     targets: (B, 2, H, W), values in [0, 1].
@@ -250,11 +272,19 @@ def baseline_heatmap_loss(
     if positive_weight < 1.0:
         raise ValueError("positive_weight must be >= 1.0")
     if logits.dim() != 4:
-        raise ValueError(f"baseline_heatmap logits must have shape (B, 2, H, W), got {tuple(logits.shape)}")
+        raise ValueError(
+            "baseline_detection logits must have shape (B, 2, H, W), "
+            f"got {tuple(logits.shape)}"
+        )
     if logits.size(1) != 2:
-        raise ValueError(f"baseline_heatmap expects two output channels, got C={logits.size(1)}")
+        raise ValueError(
+            f"baseline_detection expects two output channels, got C={logits.size(1)}"
+        )
     if targets.dim() != 4 or targets.size(1) != 2:
-        raise ValueError(f"baseline_heatmap targets must have shape (B, 2, H, W), got {tuple(targets.shape)}")
+        raise ValueError(
+            "baseline_detection targets must have shape (B, 2, H, W), "
+            f"got {tuple(targets.shape)}"
+        )
     if logits.size(0) != targets.size(0):
         raise ValueError(
             f"batch mismatch between logits {tuple(logits.shape)} and targets {tuple(targets.shape)}"
@@ -264,7 +294,8 @@ def baseline_heatmap_loss(
     if logits.shape[-2:] != targets.shape[-2:]:
         if strict_size:
             raise ValueError(
-                "baseline_heatmap strict_size requires logits and targets to have the same HxW, "
+                "baseline_detection strict_size requires logits and targets to have "
+                "the same HxW, "
                 f"got logits={tuple(logits.shape)} targets={tuple(targets.shape)}"
             )
         targets = F.interpolate(targets, size=logits.shape[-2:], mode="bilinear", align_corners=False).clamp(0.0, 1.0)
@@ -277,7 +308,9 @@ def baseline_heatmap_loss(
     elif loss == "smooth_l1":
         per_pixel = F.smooth_l1_loss(torch.sigmoid(logits), targets, reduction="none")
     else:
-        raise ValueError("baseline_heatmap loss must be 'bce', 'mse', or 'smooth_l1'")
+        raise ValueError(
+            "baseline detection loss must be 'bce', 'mse', or 'smooth_l1'"
+        )
 
     if positive_weight > 1.0:
         weights = 1.0 + (positive_weight - 1.0) * targets

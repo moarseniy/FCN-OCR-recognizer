@@ -6,17 +6,15 @@ from typing import Iterable
 from PIL import Image
 import torch
 
-from .baseline_processing import NeuralBaselineMixin
-from .checkpoint import load_fcn_checkpoint
 from .cut_processing import CutProcessingMixin
 from .decoding import FCNOCRDecodingMixin
-from .preprocessing import ImagePreprocessingMixin
+from .model_runner import PreprocessedFCNRunner
 from .results import RecognitionResult
+from fcn_tasks import FCN_OCR_TASK
 
 
 class TextRecognizer(
-    ImagePreprocessingMixin,
-    NeuralBaselineMixin,
+    PreprocessedFCNRunner,
     CutProcessingMixin,
     FCNOCRDecodingMixin,
 ):
@@ -36,76 +34,30 @@ class TextRecognizer(
         baseline_detector_checkpoint: str | Path | None = None,
         baseline_detector_threshold: float = 0.35,
     ):
-        if scale_x <= -0.95:
-            raise ValueError("scale_x must be > -0.95")
-        if y_pad <= -0.95:
-            raise ValueError("y_pad must be > -0.95")
-        if x_pad < 0.0:
-            raise ValueError("x_pad must be >= 0")
-        if baseline_line_pad < 0.0:
-            raise ValueError("baseline_line_pad must be >= 0")
-        if baseline_line_pad_px < 0.0:
-            raise ValueError("baseline_line_pad_px must be >= 0")
-        if baseline_max_angle <= 0.0:
-            raise ValueError("baseline_max_angle must be > 0")
-        if not 0.0 < baseline_detector_threshold < 1.0:
-            raise ValueError("baseline_detector_threshold must be between 0 and 1")
-
-        self.checkpoint_path = Path(checkpoint_path)
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
+        super().__init__(
+            checkpoint_path,
+            expected_task=FCN_OCR_TASK,
+            device=device,
+            scale_x=scale_x,
+            y_pad=y_pad,
+            x_pad=x_pad,
+            baseline_crop=baseline_crop,
+            baseline_deskew=baseline_deskew,
+            baseline_max_angle=baseline_max_angle,
+            baseline_line_pad=baseline_line_pad,
+            baseline_line_pad_px=baseline_line_pad_px,
+            baseline_detector_checkpoint=baseline_detector_checkpoint,
+            baseline_detector_threshold=baseline_detector_threshold,
         )
-        loaded = load_fcn_checkpoint(self.checkpoint_path, self.device)
-        self.checkpoint = loaded.payload
-        self.scale_x = float(scale_x)
-        self.y_pad = float(y_pad)
-        self.x_pad = float(x_pad)
-        self.baseline_crop = bool(baseline_crop)
-        self.baseline_deskew = bool(baseline_deskew)
-        self.baseline_max_angle = float(baseline_max_angle)
-        self.baseline_line_pad = float(baseline_line_pad)
-        self.baseline_line_pad_px = float(baseline_line_pad_px)
-        self.baseline_detector_checkpoint = (
-            Path(baseline_detector_checkpoint) if baseline_detector_checkpoint else None
-        )
-        self.baseline_detector_threshold = float(baseline_detector_threshold)
-        self.baseline_detector_model: torch.nn.Module | None = None
-        self.baseline_detector_in_channels = 1
-        self.baseline_detector_image_height = 0
-        self.baseline_detector_architecture = ""
-
-        if self.baseline_crop and self.baseline_detector_checkpoint is None:
-            raise ValueError("baseline_crop requires baseline_detector_checkpoint")
-
-        self.alphabet = loaded.alphabet
         self.idx_to_char = {idx: char for idx, char in enumerate(self.alphabet)}
-
-        checkpoint_config = loaded.training_config
-        self.architecture = loaded.architecture
-        self.architecture_params = loaded.architecture_params
-        self.in_channels = loaded.in_channels
-        self.num_classes = loaded.num_classes
-        self.loss_mode = loaded.loss_mode
-        self.target_format = loaded.target_format
-        self.space_char = str(checkpoint_config["space_char"])
+        self.space_char = str(self.training_config["space_char"])
         self.space_idx = (
             self.alphabet.index(self.space_char)
             if self.space_char in self.alphabet
             else None
         )
-        self.image_height = int(checkpoint_config["image_height"])
-        self.preprocess_fill = int(checkpoint_config["background"])
-        if self.loss_mode == "fcn_ocr":
-            self.ocr_crop_left = int(checkpoint_config["ocr_crop_left"])
-            self.ocr_crop_right = int(checkpoint_config["ocr_crop_right"])
-        else:
-            self.ocr_crop_left = 0
-            self.ocr_crop_right = 0
-
-        self.model = loaded.model
-
-        if self.baseline_detector_checkpoint is not None:
-            self._load_baseline_detector()
+        self.ocr_crop_left = int(self.training_config["fcn_ocr_crop_left"])
+        self.ocr_crop_right = int(self.training_config["fcn_ocr_crop_right"])
 
         if verbose:
             self.print_summary()
@@ -120,9 +72,8 @@ class TextRecognizer(
         if self.architecture_params:
             print(f"Architecture params: {self.architecture_params}")
         print(f"Alphabet size: {len(self.alphabet)}")
-        print(f"Loss mode: {self.loss_mode}")
-        if self.loss_mode == "fcn_ocr":
-            print(f"FCN OCR crop: [{self.ocr_crop_left}, -{self.ocr_crop_right}]")
+        print(f"Task: {self.task}")
+        print(f"FCN OCR crop: [{self.ocr_crop_left}, -{self.ocr_crop_right}]")
         print(f"Preprocess scale_x: {self.scale_x:+.4f}")
         print(f"Preprocess y_pad:   {self.y_pad:+.4f}")
         print(f"Preprocess x_pad:   {self.x_pad:.4f}")
@@ -140,20 +91,6 @@ class TextRecognizer(
                     f"threshold={self.baseline_detector_threshold:.3f} "
                     f"architecture={self.baseline_detector_architecture}"
                 )
-
-    @torch.no_grad()
-    def logits_from_tensor(
-        self, image_tensor: torch.Tensor
-    ) -> tuple[torch.Tensor, tuple[int, ...]]:
-        if image_tensor.dim() == 3:
-            image_tensor = image_tensor.unsqueeze(0)
-
-        image_tensor = image_tensor.to(self.device).float()
-        if image_tensor.max() > 1.0:
-            image_tensor = image_tensor / 255.0
-
-        logits = self.model(image_tensor)
-        return logits, tuple(image_tensor.shape)
 
     @torch.no_grad()
     def recognize_tensor_debug_with_logits(

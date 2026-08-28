@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+from fcn_tasks import TASK_NAMES
+
 from .base import TrainingTask
-from .baselines import BaselineHeatmapTrainingTask
-from .cuts import CutProjectionTrainingTask
-from .ocr import OcrTrainingTask
+from .baseline_detection import BaselineDetectionTrainingTask
+from .fcn_ocr import FCNOCRTrainingTask
+from .vertical_segmentation import VerticalSegmentationTrainingTask
 
 
 _TASKS: dict[str, TrainingTask] = {
     task.name: task
     for task in (
-        OcrTrainingTask(),
-        CutProjectionTrainingTask(),
-        BaselineHeatmapTrainingTask(),
+        FCNOCRTrainingTask(),
+        VerticalSegmentationTrainingTask(),
+        BaselineDetectionTrainingTask(),
     )
 }
+if tuple(_TASKS) != TASK_NAMES:
+    raise RuntimeError("Training task registry does not match the shared task vocabulary")
 
 
 def available_training_tasks() -> tuple[str, ...]:

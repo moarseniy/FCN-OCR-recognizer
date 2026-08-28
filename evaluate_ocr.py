@@ -151,7 +151,7 @@ def evaluate_prepared(
     started_at = time.perf_counter()
     config_data: dict[str, Any] = {
         "device": device,
-        "ocr": {
+        "fcn_ocr": {
             "checkpoint": checkpoint_path,
             "preprocessing": {
                 "scale_x": scale_x,
@@ -174,7 +174,7 @@ def evaluate_prepared(
         "debug": {"top_k": decode_top_k},
     }
     if baseline_crop:
-        config_data["baseline"] = {
+        config_data["baseline_detection"] = {
             "enabled": True,
             "detector_checkpoint": baseline_detector_checkpoint,
             "detector_threshold": baseline_detector_threshold,
@@ -184,7 +184,7 @@ def evaluate_prepared(
             "line_pad_px": baseline_line_pad_px,
         }
     if decode_with_segmentator:
-        config_data["segmentator"] = {
+        config_data["vertical_segmentation"] = {
             "checkpoint": segmentator_checkpoint,
             "preprocessing": {
                 "scale_x": segmentator_scale_x,
@@ -1020,9 +1020,9 @@ def _first_defined(*values: Any) -> Any:
 
 def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
     config = InferenceConfig.load(args.inference_config) if args.inference_config else None
-    baseline = config.baseline if config is not None else None
-    ocr = config.ocr if config is not None else None
-    segmentator = config.segmentator if config is not None else None
+    baseline = config.baseline_detection if config is not None else None
+    ocr = config.fcn_ocr if config is not None else None
+    segmentator = config.vertical_segmentation if config is not None else None
     decode = ocr.decode if ocr is not None else None
 
     args.device = _first_defined(args.device, config.device if config else None)
@@ -1031,7 +1031,10 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
         ocr.checkpoint if ocr is not None else None,
     )
     if args.checkpoint is None:
-        raise ValueError("--checkpoint is required unless --inference-config contains an ocr section")
+        raise ValueError(
+            "--checkpoint is required unless --inference-config contains "
+            "an fcn_ocr section"
+        )
 
     ocr_preprocess = ocr.preprocessing if ocr is not None else None
     args.scale_x = float(
@@ -1258,7 +1261,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
     has_segmentator = bool(metrics.get("segmentator_checkpoint"))
     config_data: dict[str, Any] = {
         "device": args.device,
-        "baseline": {
+        "baseline_detection": {
             "enabled": metrics["baseline_crop"],
             "detector_checkpoint": (
                 str(Path(metrics["baseline_detector_checkpoint"]).expanduser().resolve())
@@ -1271,7 +1274,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "line_pad": metrics["baseline_line_pad"],
             "line_pad_px": metrics["baseline_line_pad_px"],
         },
-        "ocr": {
+        "fcn_ocr": {
             "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
             "preprocessing": {
                 "scale_x": metrics["scale_x"],
@@ -1296,7 +1299,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
         },
     }
     if has_segmentator:
-        config_data["segmentator"] = {
+        config_data["vertical_segmentation"] = {
             "checkpoint": str(
                 Path(metrics["segmentator_checkpoint"]).expanduser().resolve()
             ),

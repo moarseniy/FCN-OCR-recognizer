@@ -7,6 +7,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 import torch
 
+from fcn_tasks import BASELINE_DETECTION_TASK
+
 from .checkpoint import load_fcn_checkpoint
 from .results import PreprocessDebug
 
@@ -21,10 +23,10 @@ class NeuralBaselineMixin:
             )
 
         loaded = load_fcn_checkpoint(self.baseline_detector_checkpoint, self.device)
-        if loaded.loss_mode != "baseline_heatmap":
+        if loaded.task != BASELINE_DETECTION_TASK:
             raise ValueError(
-                "Baseline detector checkpoint must be trained with loss_mode=baseline_heatmap; "
-                f"got loss_mode={loaded.loss_mode!r}"
+                "Baseline detector checkpoint must use task=baseline_detection; "
+                f"got task={loaded.task!r}"
             )
 
         self.baseline_detector_model = loaded.model
@@ -276,8 +278,11 @@ class NeuralBaselineMixin:
         heatmaps, cleaned_mask, foreground_pixels, scale_x, scale_y = (
             self._baseline_detector_heatmaps(image)
         )
-        top_line = self._line_from_baseline_heatmap(heatmaps[0], "neural_top")
-        bottom_line = self._line_from_baseline_heatmap(heatmaps[1], "neural_bottom")
+        top_line = self._line_from_baseline_score_map(heatmaps[0], "neural_top")
+        bottom_line = self._line_from_baseline_score_map(
+            heatmaps[1],
+            "neural_bottom",
+        )
         if top_line is None or bottom_line is None:
             return {
                 "ok": False,
@@ -425,7 +430,7 @@ class NeuralBaselineMixin:
                 )
 
         heatmaps = probs[0].detach().cpu().numpy()
-        cleaned_mask = self._baseline_heatmap_mask(heatmaps, image.size)
+        cleaned_mask = self._baseline_score_mask(heatmaps, image.size)
         foreground_pixels = int(np.count_nonzero(cleaned_mask))
         return heatmaps, cleaned_mask, foreground_pixels, float(scale_x), float(scale_y)
 
@@ -465,7 +470,7 @@ class NeuralBaselineMixin:
             detector_image.size,
         )
 
-    def _line_from_baseline_heatmap(
+    def _line_from_baseline_score_map(
         self, heatmap: np.ndarray, method: str
     ) -> dict[str, Any] | None:
         if heatmap.ndim != 2 or heatmap.size == 0:
@@ -519,7 +524,7 @@ class NeuralBaselineMixin:
         scaled["inlier_mask"] = np.asarray(line["inlier_mask"], dtype=bool)
         return scaled
 
-    def _baseline_heatmap_mask(
+    def _baseline_score_mask(
         self, heatmaps: np.ndarray, output_size: tuple[int, int]
     ) -> np.ndarray:
         combined = np.max(heatmaps, axis=0)

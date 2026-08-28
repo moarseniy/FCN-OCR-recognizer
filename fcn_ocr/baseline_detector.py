@@ -4,12 +4,15 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
-import torch
 
-from .recognizer import TextRecognizer
+from fcn_tasks import BASELINE_DETECTION_TASK
+
+from .baseline_processing import NeuralBaselineMixin
+from .model_runner import FCNModelRunner
+from .results import PreprocessDebug
 
 
-class BaselineDetector(TextRecognizer):
+class BaselineDetector(FCNModelRunner, NeuralBaselineMixin):
     """Standalone neural top/bottom baseline detector."""
 
     def __init__(
@@ -25,9 +28,17 @@ class BaselineDetector(TextRecognizer):
     ) -> None:
         if not 0.0 < threshold < 1.0:
             raise ValueError("threshold must be between 0 and 1")
+        if max_angle <= 0.0:
+            raise ValueError("max_angle must be > 0")
+        if line_pad < 0.0 or line_pad_px < 0.0:
+            raise ValueError("line padding must be >= 0")
 
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        self.baseline_detector_checkpoint = Path(checkpoint_path)
+        super().__init__(
+            checkpoint_path,
+            expected_task=BASELINE_DETECTION_TASK,
+            device=device,
+        )
+        self.baseline_detector_checkpoint = self.checkpoint_path
         self.baseline_detector_threshold = float(threshold)
         self.baseline_crop = True
         self.baseline_deskew = bool(deskew)
@@ -35,11 +46,10 @@ class BaselineDetector(TextRecognizer):
         self.baseline_line_pad_px = float(line_pad_px)
         self.baseline_max_angle = float(max_angle)
         self.preprocess_fill = int(background)
-        self.baseline_detector_model = None
-        self.baseline_detector_in_channels = 1
-        self.baseline_detector_image_height = 0
-        self.baseline_detector_architecture = ""
-        self._load_baseline_detector()
+        self.baseline_detector_model = self.model
+        self.baseline_detector_in_channels = self.in_channels
+        self.baseline_detector_image_height = int(self.training_config["image_height"])
+        self.baseline_detector_architecture = self.architecture
 
     def print_summary(self) -> None:
         print(f"Baseline detector checkpoint: {self.baseline_detector_checkpoint}")
@@ -49,3 +59,18 @@ class BaselineDetector(TextRecognizer):
     def detect(self, image: Image.Image) -> dict[str, Any]:
         source = image.convert("RGB" if self.baseline_detector_in_channels == 3 else "L")
         return self._detect_baseline_neural(source)
+
+    def prepare_baseline_image(
+        self,
+        image: Image.Image,
+        collect_debug: bool = False,
+    ) -> tuple[Image.Image, PreprocessDebug]:
+        source = image.convert("RGB")
+        prepared, debug = self._apply_baseline_crop(
+            source,
+            collect_debug=collect_debug,
+        )
+        return prepared, PreprocessDebug(
+            metadata={"baseline_crop": True, **debug.metadata},
+            images=debug.images,
+        )

@@ -12,7 +12,6 @@ class TrainingTask(ABC):
     """Complete training-time contract for one target representation."""
 
     name: str
-    target_format: str
     config_fields: frozenset[str]
 
     def validate_config(self, config: Any) -> None:

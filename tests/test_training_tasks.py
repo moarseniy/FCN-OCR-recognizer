@@ -5,6 +5,7 @@ import torch
 from pydantic import ValidationError
 
 from fcn_synth_generator.dataset import SingleLineDatasetConfig
+from fcn_tasks import TASK_NAMES, task_output_channels
 from fcn_training import available_training_tasks, get_training_task
 from train import TrainingConfig, effective_training_config_data
 
@@ -22,52 +23,53 @@ def _training_config(task_name: str, **overrides) -> TrainingConfig:
     values = {
         "architecture": "fcn_ocr",
         "chunks_dir": "/unused",
-        "loss_mode": task_name,
+        "task": task_name,
     }
     values.update(overrides)
     return TrainingConfig.model_validate(values)
 
 
 def test_registry_exposes_exactly_the_current_training_tasks() -> None:
-    assert available_training_tasks() == (
-        "fcn_ocr",
-        "cut_projection",
-        "baseline_heatmap",
-    )
+    assert available_training_tasks() == TASK_NAMES
     assert get_training_task("FCN_OCR").name == "fcn_ocr"
-    with pytest.raises(ValueError, match="Unknown training task"):
-        get_training_task("removed_task")
+    for removed_name in ("cut_projection", "baseline_heatmap", "removed_task"):
+        with pytest.raises(ValueError, match="Unknown training task"):
+            get_training_task(removed_name)
 
 
 @pytest.mark.parametrize(
     ("task_name", "expected_outputs"),
     [
         ("fcn_ocr", 3),
-        ("cut_projection", 1),
-        ("baseline_heatmap", 2),
+        ("vertical_segmentation", 1),
+        ("baseline_detection", 2),
     ],
 )
-def test_task_owns_output_count_and_target_format(
+def test_task_owns_output_count(
     task_name: str,
     expected_outputs: int,
 ) -> None:
     task = get_training_task(task_name)
 
-    assert task.target_format == task_name
     assert task.num_outputs(" AB") == expected_outputs
+    assert task.num_outputs(" AB") == task_output_channels(task_name, " AB")
 
 
 @pytest.mark.parametrize("task_name", available_training_tasks())
 def test_task_computes_a_finite_differentiable_loss(task_name: str) -> None:
     dataset_config = _dataset_config()
     task = get_training_task(task_name)
-    overrides = {"ocr_crop_left": 0, "ocr_crop_right": 0} if task_name == "fcn_ocr" else {}
+    overrides = (
+        {"fcn_ocr_crop_left": 0, "fcn_ocr_crop_right": 0}
+        if task_name == "fcn_ocr"
+        else {}
+    )
     config = _training_config(task_name, **overrides)
 
     if task_name == "fcn_ocr":
         logits = torch.randn(2, 3, 8, requires_grad=True)
         targets = torch.randint(0, 3, (2, 32))
-    elif task_name == "cut_projection":
+    elif task_name == "vertical_segmentation":
         logits = torch.randn(2, 1, 32, requires_grad=True)
         targets = torch.rand(2, 32)
     else:
@@ -87,7 +89,11 @@ def test_task_validates_its_model_geometry(task_name: str) -> None:
     dataset_config = _dataset_config()
     task = get_training_task(task_name)
     overrides = (
-        {"ocr_crop_left": 0, "ocr_crop_right": 0, "ocr_strict_width": True}
+        {
+            "fcn_ocr_crop_left": 0,
+            "fcn_ocr_crop_right": 0,
+            "fcn_ocr_strict_width": True,
+        }
         if task_name == "fcn_ocr"
         else {}
     )
@@ -106,9 +112,9 @@ def test_task_validates_its_model_geometry(task_name: str) -> None:
 @pytest.mark.parametrize(
     ("task_name", "foreign_field", "value"),
     [
-        ("fcn_ocr", "cut_projection_loss", "mse"),
-        ("cut_projection", "baseline_heatmap_loss", "bce"),
-        ("baseline_heatmap", "ocr_space_weight", 0.5),
+        ("fcn_ocr", "vertical_segmentation_loss", "mse"),
+        ("vertical_segmentation", "baseline_detection_loss", "bce"),
+        ("baseline_detection", "fcn_ocr_space_weight", 0.5),
     ],
 )
 def test_training_config_rejects_fields_owned_by_another_task(
@@ -123,8 +129,12 @@ def test_training_config_rejects_fields_owned_by_another_task(
 @pytest.mark.parametrize(
     ("task_name", "loss_field", "value"),
     [
-        ("cut_projection", "cut_projection_loss", "removed_loss"),
-        ("baseline_heatmap", "baseline_heatmap_loss", "removed_loss"),
+        (
+            "vertical_segmentation",
+            "vertical_segmentation_loss",
+            "removed_loss",
+        ),
+        ("baseline_detection", "baseline_detection_loss", "removed_loss"),
     ],
 )
 def test_task_rejects_an_unknown_loss(
@@ -139,9 +149,21 @@ def test_task_rejects_an_unknown_loss(
 @pytest.mark.parametrize(
     ("task_name", "expected_prefix", "foreign_prefixes"),
     [
-        ("fcn_ocr", "ocr_", ("cut_projection_", "baseline_heatmap_")),
-        ("cut_projection", "cut_projection_", ("ocr_", "baseline_heatmap_")),
-        ("baseline_heatmap", "baseline_heatmap_", ("ocr_", "cut_projection_")),
+        (
+            "fcn_ocr",
+            "fcn_ocr_",
+            ("vertical_segmentation_", "baseline_detection_"),
+        ),
+        (
+            "vertical_segmentation",
+            "vertical_segmentation_",
+            ("fcn_ocr_", "baseline_detection_"),
+        ),
+        (
+            "baseline_detection",
+            "baseline_detection_",
+            ("fcn_ocr_", "vertical_segmentation_"),
+        ),
     ],
 )
 def test_effective_checkpoint_config_contains_only_selected_task_fields(

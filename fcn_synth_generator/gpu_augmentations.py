@@ -7,10 +7,13 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-try:
-    from .dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
-except ImportError:
-    from dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
+from fcn_tasks import (
+    BASELINE_DETECTION_TASK,
+    FCN_OCR_TASK,
+    normalize_task_name,
+)
+
+from .dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
 
 
 AugmentationParams = dict[str, Any] | None
@@ -41,12 +44,13 @@ class GpuTextAugmenter:
         self,
         images: torch.Tensor,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        task = normalize_task_name(task)
         augmented_images, augmented_targets, _ = self._augment(
             images,
             targets=targets,
-            target_format=target_format,
+            task=task,
             collect_metadata=False,
         )
         if augmented_targets is None:
@@ -57,12 +61,14 @@ class GpuTextAugmenter:
         self,
         images: torch.Tensor,
         targets: torch.Tensor | None = None,
-        target_format: str | None = None,
+        task: str | None = None,
     ) -> tuple[torch.Tensor, list[list[dict[str, Any]]]] | tuple[torch.Tensor, torch.Tensor, list[list[dict[str, Any]]]]:
+        if targets is not None and task is None:
+            raise ValueError("task is required when augmentation targets are provided")
         augmented, augmented_targets, metadata = self._augment(
             images,
             targets=targets,
-            target_format=target_format,
+            task=task,
             collect_metadata=True,
         )
         if targets is not None:
@@ -74,10 +80,11 @@ class GpuTextAugmenter:
     def apply_metadata_to_targets(
         self,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         metadata: list[list[dict[str, Any]]],
     ) -> torch.Tensor:
         """Replay sampled geometric augmentations on another target tensor."""
+        task = normalize_task_name(task)
         if targets.size(0) != len(metadata):
             raise ValueError(
                 f"target batch size {targets.size(0)} does not match metadata batch size {len(metadata)}"
@@ -99,9 +106,9 @@ class GpuTextAugmenter:
                 params_by_sample.append(params)
                 has_params = has_params or params is not None
             if has_params:
-                output = self._apply_target_one(name, output, target_format, params_by_sample)
+                output = self._apply_target_one(name, output, task, params_by_sample)
 
-        if target_format.lower() != "fcn_ocr":
+        if task != FCN_OCR_TASK:
             output = output.clamp(0.0, 1.0)
         return output
 
@@ -110,7 +117,7 @@ class GpuTextAugmenter:
         images: torch.Tensor,
         collect_metadata: bool,
         targets: torch.Tensor | None = None,
-        target_format: str | None = None,
+        task: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, list[list[dict[str, Any]]] | None]:
         metadata: list[list[dict[str, Any]]] | None = [[] for _ in range(images.size(0))] if collect_metadata else None
         if not self.enabled() or images.numel() == 0:
@@ -119,7 +126,7 @@ class GpuTextAugmenter:
 
         output = images
         output_targets = targets
-        target_format = target_format.lower() if target_format is not None else None
+        task = normalize_task_name(task) if task is not None else None
         for name in SUPPORTED_AUGMENTATIONS:
             probability = self.probabilities.get(name, 0.0)
             if probability <= 0.0:
@@ -139,11 +146,11 @@ class GpuTextAugmenter:
             )
             output = output.clone()
             output[mask] = augmented
-            if output_targets is not None and target_format is not None:
+            if output_targets is not None and task is not None:
                 augmented_targets = self._apply_target_one(
                     name,
                     output_targets[mask],
-                    target_format,
+                    task,
                     params_by_sample,
                 )
                 output_targets = output_targets.clone()
@@ -212,49 +219,49 @@ class GpuTextAugmenter:
         self,
         name: str,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         params_by_sample: list[AugmentationParams] | None,
     ) -> torch.Tensor:
         if params_by_sample is None:
             return targets
         if name == "cycle_shift":
-            return self._cycle_shift_targets(targets, target_format, params_by_sample)
+            return self._cycle_shift_targets(targets, task, params_by_sample)
         if name == "preprocess_geometry":
             return self._affine_targets(
                 targets,
-                target_format,
+                task,
                 self._theta_from_preprocess_geometry(targets, params_by_sample),
             )
         if name == "scale":
             return self._affine_targets(
                 targets,
-                target_format,
+                task,
                 self._theta_from_scale(targets, params_by_sample),
             )
         if name == "rotate":
             return self._affine_targets(
                 targets,
-                target_format,
+                task,
                 self._theta_from_rotate(targets, params_by_sample),
             )
         if name == "projective":
             return self._affine_targets(
                 targets,
-                target_format,
+                task,
                 self._theta_from_projective(targets, params_by_sample),
             )
         if name == "x_pad":
-            return self._x_pad_targets(targets, target_format, params_by_sample)
+            return self._x_pad_targets(targets, task, params_by_sample)
         if name == "crop_x":
-            return self._crop_x_targets(targets, target_format, params_by_sample)
+            return self._crop_x_targets(targets, task, params_by_sample)
         if name == "crop_y":
-            return self._crop_y_targets(targets, target_format, params_by_sample)
+            return self._crop_y_targets(targets, task, params_by_sample)
         return targets
 
     def _cycle_shift_targets(
         self,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         params_by_sample: list[AugmentationParams],
     ) -> torch.Tensor:
         output = targets.clone()
@@ -263,7 +270,7 @@ class GpuTextAugmenter:
                 continue
             shift_x = int(params.get("shift_x", 0))
             shift_y = int(params.get("shift_y", 0))
-            if target_format == "baseline_heatmap":
+            if task == BASELINE_DETECTION_TASK:
                 if shift_x != 0 or shift_y != 0:
                     output[index] = torch.roll(targets[index], shifts=(shift_y, shift_x), dims=(-2, -1))
             elif shift_x != 0:
@@ -273,7 +280,7 @@ class GpuTextAugmenter:
     def _crop_x_targets(
         self,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         params_by_sample: list[AugmentationParams],
     ) -> torch.Tensor:
         output = targets.clone()
@@ -281,7 +288,7 @@ class GpuTextAugmenter:
         if width <= 0:
             return output
 
-        if target_format == "baseline_heatmap":
+        if task == BASELINE_DETECTION_TASK:
             return self._crop_x_targets_2d(targets, params_by_sample)
 
         for index, params in enumerate(params_by_sample):
@@ -294,23 +301,23 @@ class GpuTextAugmenter:
             if left + right >= width:
                 right = max(0, width - left - 1)
             cropped = targets[index : index + 1, left : width - right]
-            output[index : index + 1] = self._resize_targets_1d(cropped, width, target_format)
+            output[index : index + 1] = self._resize_targets_1d(cropped, width, task)
         return output
 
     def _x_pad_targets(
         self,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         params_by_sample: list[AugmentationParams],
     ) -> torch.Tensor:
         width = int(targets.size(-1))
         if width <= 0:
             return targets
 
-        if target_format == "baseline_heatmap":
+        if task == BASELINE_DETECTION_TASK:
             return self._x_pad_targets_2d(targets, params_by_sample)
 
-        fill = self._target_fill_value(target_format)
+        fill = self._target_fill_value(task)
         output = torch.full_like(targets, fill)
         for index, params in enumerate(params_by_sample):
             if not params:
@@ -324,23 +331,24 @@ class GpuTextAugmenter:
             if left + right >= width:
                 right = max(0, width - left - 1)
             inner_width = max(1, width - left - right)
-            resized = self._resize_targets_1d(targets[index : index + 1], inner_width, target_format)
+            resized = self._resize_targets_1d(targets[index : index + 1], inner_width, task)
             output[index : index + 1, left : left + inner_width] = resized
         return output
 
     def _affine_targets(
         self,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         theta: torch.Tensor,
     ) -> torch.Tensor:
         if targets.numel() == 0:
             return targets
 
-        if target_format == "baseline_heatmap":
+        if task == BASELINE_DETECTION_TASK:
             if targets.dim() != 4:
                 raise ValueError(
-                    "baseline_heatmap augmentation targets must have shape (B, 2, H, W), "
+                    "baseline detection augmentation targets must have shape "
+                    "(B, 2, H, W), "
                     f"got {tuple(targets.shape)}"
                 )
             grid = F.affine_grid(theta, targets.shape, align_corners=False)
@@ -353,9 +361,9 @@ class GpuTextAugmenter:
             )
             return warped.clamp(0.0, 1.0).to(dtype=targets.dtype)
 
-        is_ocr = target_format == "fcn_ocr"
+        is_ocr = task == FCN_OCR_TASK
         mode = "nearest" if is_ocr else "bilinear"
-        fill = self._target_fill_value(target_format)
+        fill = self._target_fill_value(task)
         target_map = targets.to(dtype=torch.float32).unsqueeze(1).unsqueeze(2)
         grid = F.affine_grid(theta, target_map.shape, align_corners=False)
         warped = F.grid_sample(target_map, grid, mode=mode, padding_mode="zeros", align_corners=False)
@@ -376,9 +384,9 @@ class GpuTextAugmenter:
         self,
         targets: torch.Tensor,
         width: int,
-        target_format: str,
+        task: str,
     ) -> torch.Tensor:
-        is_ocr = target_format == "fcn_ocr"
+        is_ocr = task == FCN_OCR_TASK
         mode = "nearest" if is_ocr else "linear"
         target_map = targets.to(dtype=torch.float32).unsqueeze(1)
         if is_ocr:
@@ -419,10 +427,10 @@ class GpuTextAugmenter:
     def _crop_y_targets(
         self,
         targets: torch.Tensor,
-        target_format: str,
+        task: str,
         params_by_sample: list[AugmentationParams],
     ) -> torch.Tensor:
-        if target_format != "baseline_heatmap":
+        if task != BASELINE_DETECTION_TASK:
             return targets
 
         output = targets.clone()
@@ -1435,8 +1443,8 @@ class GpuTextAugmenter:
     def _fill_value(self, params: dict[str, Any]) -> float:
         return float(params.get("fillcolor", self.config.background)) / 255.0
 
-    def _target_fill_value(self, target_format: str) -> float:
-        return float(self.space_index if target_format == "fcn_ocr" else 0.0)
+    def _target_fill_value(self, task: str) -> float:
+        return float(self.space_index if task == FCN_OCR_TASK else 0.0)
 
     @staticmethod
     def _x_pad_configured(params: dict[str, Any]) -> bool:

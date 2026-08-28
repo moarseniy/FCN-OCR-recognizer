@@ -38,6 +38,11 @@ from fcn_training import (
     available_training_tasks,
     get_training_task,
 )
+from fcn_checkpoint_contract import (
+    CHECKPOINT_FORMAT,
+    CHECKPOINT_VERSION,
+    validate_checkpoint_contract,
+)
 
 from datetime import datetime
 import os
@@ -75,20 +80,20 @@ class TrainingConfig(BaseModel):
     rmsprop_alpha: float = Field(default=0.99, gt=0.0, lt=1.0)
     rmsprop_momentum: float = Field(default=0.0, ge=0.0)
     rmsprop_eps: float = Field(default=1e-8, gt=0.0)
-    loss_mode: str = "fcn_ocr"
-    ocr_crop_left: int = Field(default=6, ge=0)
-    ocr_crop_right: int = Field(default=5, ge=0)
-    ocr_strict_width: bool = False
-    ocr_target_min_majority: float = Field(default=0.6, ge=0.0, le=1.0)
-    ocr_space_weight: float = Field(default=1.0, gt=0.0)
-    cut_projection_crop_left: int = Field(default=0, ge=0)
-    cut_projection_crop_right: int = Field(default=0, ge=0)
-    cut_projection_strict_width: bool = True
-    cut_projection_loss: str = "mse"
-    cut_projection_positive_weight: float = Field(default=1.0, ge=1.0)
-    baseline_heatmap_strict_size: bool = True
-    baseline_heatmap_loss: str = "bce"
-    baseline_heatmap_positive_weight: float = Field(default=4.0, ge=1.0)
+    task: str
+    fcn_ocr_crop_left: int = Field(default=6, ge=0)
+    fcn_ocr_crop_right: int = Field(default=5, ge=0)
+    fcn_ocr_strict_width: bool = False
+    fcn_ocr_target_min_majority: float = Field(default=0.6, ge=0.0, le=1.0)
+    fcn_ocr_space_weight: float = Field(default=1.0, gt=0.0)
+    vertical_segmentation_crop_left: int = Field(default=0, ge=0)
+    vertical_segmentation_crop_right: int = Field(default=0, ge=0)
+    vertical_segmentation_strict_width: bool = True
+    vertical_segmentation_loss: str = "mse"
+    vertical_segmentation_positive_weight: float = Field(default=1.0, ge=1.0)
+    baseline_detection_strict_size: bool = True
+    baseline_detection_loss: str = "bce"
+    baseline_detection_positive_weight: float = Field(default=4.0, ge=1.0)
     scheduler: str = "reduce_on_plateau"
     scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     scheduler_patience: int = Field(default=3, ge=0)
@@ -161,23 +166,23 @@ class TrainingConfig(BaseModel):
             raise ValueError(f"architecture must be one of {available_architectures()}")
         return value
 
-    @field_validator("loss_mode")
+    @field_validator("task")
     @classmethod
-    def loss_mode_must_be_supported(cls, value: str) -> str:
+    def task_must_be_supported(cls, value: str) -> str:
         value = value.lower()
         supported = available_training_tasks()
         if value not in supported:
-            raise ValueError(f"loss_mode must be one of {supported}")
+            raise ValueError(f"task must be one of {supported}")
         return value
 
-    @field_validator("cut_projection_loss", "baseline_heatmap_loss")
+    @field_validator("vertical_segmentation_loss", "baseline_detection_loss")
     @classmethod
     def task_loss_name_must_be_normalized(cls, value: str) -> str:
         return value.lower()
 
     @model_validator(mode="after")
-    def task_fields_must_match_loss_mode(self) -> "TrainingConfig":
-        task = get_training_task(self.loss_mode)
+    def task_fields_must_match_selected_task(self) -> "TrainingConfig":
+        task = get_training_task(self.task)
         explicit_task_fields = self.model_fields_set & all_training_task_config_fields()
         unexpected = sorted(explicit_task_fields - task.config_fields)
         if unexpected:
@@ -267,10 +272,12 @@ def build_checkpoint(
     val_losses,
     scheduler=None,
 ):
-    task = get_training_task(config["loss_mode"])
+    task = get_training_task(config["task"])
     architecture = normalize_architecture_name(str(config["architecture"]))
     architecture_params = dict(config["architecture_params"])
     return {
+        "format": CHECKPOINT_FORMAT,
+        "version": CHECKPOINT_VERSION,
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -286,8 +293,7 @@ def build_checkpoint(
             "architecture_params": architecture_params,
             "in_channels": config["channels"],
             "num_classes": task.num_outputs(alphabet),
-            "loss_mode": task.name,
-            "target_format": task.target_format,
+            "task": task.name,
         },
         "train_losses": train_losses,
         "val_losses": val_losses,
@@ -470,7 +476,7 @@ def validate(
             imgs, targets = prepare_batch(imgs, targets, device)
             if augmenter is not None:
                 imgs, targets = augmenter.augment_batch(
-                    imgs, targets, task.target_format
+                    imgs, targets, task.name
                 )
 
             if preview_saver is not None:
@@ -535,7 +541,7 @@ def train_one_epoch(
         imgs, targets = prepare_batch(imgs, targets, device)
         if augmenter is not None:
             imgs, targets = augmenter.augment_batch(
-                imgs, targets, task.target_format
+                imgs, targets, task.name
             )
 
         if preview_saver is not None:
@@ -596,11 +602,15 @@ def describe_target_for_preview(target):
                 int(target[1].amax(dim=1).argmax().item()) if target.numel() else -1
             )
             max_value = float(target.max().item()) if target.numel() else 0.0
-            return f"<baseline_heatmap top_y={top_y} bottom_y={bottom_y} max={max_value:.3f}>"
+            return (
+                "<baseline_detection "
+                f"top_y={top_y} bottom_y={bottom_y} max={max_value:.3f}>"
+            )
         peak_count = int((target > 0.5).sum().item())
         max_value = float(target.max().item()) if target.numel() else 0.0
         return (
-            f"<cut_projection peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
+            "<vertical_segmentation "
+            f"peaks={peak_count}/{target.numel()} max={max_value:.3f}>"
         )
     return "<fcn_ocr>"
 
@@ -829,7 +839,7 @@ def dataset_config_from_chunk_metadata(
 def effective_training_config_data(
     config: TrainingConfig, dataset_config: SingleLineDatasetConfig
 ) -> dict:
-    task = get_training_task(config.loss_mode)
+    task = get_training_task(config.task)
     foreign_task_fields = all_training_task_config_fields() - task.config_fields
     data = config.model_dump(exclude=foreign_task_fields)
     data.update(
@@ -849,18 +859,18 @@ def effective_training_config_data(
 def load_dataset_from_config(
     config: TrainingConfig,
 ) -> tuple[torch.utils.data.Dataset, SingleLineDatasetConfig]:
-    task = get_training_task(config.loss_mode)
+    task = get_training_task(config.task)
 
     chunks_dir = resolve_chunks_dir(config.chunks_dir)
     config.chunks_dir = str(chunks_dir)
     metadata = load_chunk_metadata(chunks_dir)
-    metadata.require_target(task.target_format)
+    metadata.require_task(task.name)
     dataset_config = dataset_config_from_chunk_metadata(config, metadata)
     dataset = ChunkedLineDataset(
         chunks_dir,
         cache_size=config.chunk_cache_size,
         config=dataset_config,
-        target_format=task.target_format,
+        task=task.name,
     )
     print(f"Dataset source: chunks ({chunks_dir})")
     print(
@@ -939,7 +949,7 @@ def validate_and_log_alphabet(
     text_counts = metadata.text_char_counts
     if text_counts is None or metadata.max_observed_text_length is None:
         raise ValueError("Current metadata must contain text statistics")
-    ocr_counts = metadata.ocr_class_counts
+    ocr_counts = metadata.fcn_ocr_class_counts
     unused_chars = [char for char in alphabet if text_counts.get(char, 0) == 0]
 
     stats_path = Path(checkpoint_dir) / "alphabet_stats.tsv"
@@ -962,7 +972,7 @@ def validate_and_log_alphabet(
     print("  Per-char counts:")
     for class_index, char in enumerate(alphabet):
         ocr_suffix = (
-            "" if ocr_counts is None else f", ocr_targets={ocr_counts[class_index]}"
+            "" if ocr_counts is None else f", fcn_ocr_targets={ocr_counts[class_index]}"
         )
         print(
             f"    [{class_index:>3}] {printable_char(char):>9}: "
@@ -1057,7 +1067,7 @@ def run_training(
 ) -> dict[str, Any]:
     config_path = Path(config_path).expanduser().resolve()
     args, _ = load_training_config(config_path)
-    task = get_training_task(args.loss_mode)
+    task = get_training_task(args.task)
     print("START!")
 
     checkpoint_dir = (
@@ -1108,7 +1118,6 @@ def run_training(
     print("Alphabet: ", alphabet)
     print("Alphabet length: ", len(alphabet))
     print("Training task: ", task.name)
-    print("Target format: ", task.target_format)
     print("Output classes: ", num_classes)
     print("Architecture: ", args.architecture)
     if args.architecture_params:
@@ -1210,13 +1219,33 @@ def run_training(
     if args.resume and latest_checkpoint.exists():
         print("Found latest checkpoint, loading...")
         checkpoint = torch.load(latest_checkpoint, map_location=device)
+        checkpoint_model_config = validate_checkpoint_contract(checkpoint)
+        if checkpoint_model_config.task != task.name:
+            raise ValueError(
+                "Resume checkpoint task mismatch: "
+                f"checkpoint={checkpoint_model_config.task}, config={task.name}"
+            )
+        if checkpoint["alphabet"] != alphabet:
+            raise ValueError("Resume checkpoint alphabet differs from dataset alphabet")
         checkpoint_architecture = normalize_architecture_name(
-            checkpoint["model_config"]["architecture"]
+            checkpoint_model_config.architecture
         )
         if checkpoint_architecture != args.architecture:
             raise ValueError(
                 "Resume checkpoint architecture mismatch: "
                 f"checkpoint={checkpoint_architecture}, config={args.architecture}"
+            )
+        if checkpoint_model_config.architecture_params != args.architecture_params:
+            raise ValueError(
+                "Resume checkpoint architecture_params differ from training config"
+            )
+        if checkpoint_model_config.in_channels != dataset_config.channels:
+            raise ValueError(
+                "Resume checkpoint input channels differ from dataset channels"
+            )
+        if checkpoint_model_config.num_classes != num_classes:
+            raise ValueError(
+                "Resume checkpoint output classes differ from the selected task"
             )
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

@@ -39,8 +39,8 @@ runtime-пайплайна разделены по ответственност�
 - `optuna.py` управляет studies, параметрами и progress bar;
 - `reporting.py` пишет CSV/TSV и готовый inference-конфиг.
 
-Файлы `evaluate_ocr.py`, `evaluate_segmentator.py` и
-`evaluate_baselines.py` остаются CLI-точками входа и используют этот общий
+Файлы `evaluate_ocr.py`, `evaluate_vertical_segmentation.py` и
+`evaluate_baseline_detection.py` остаются CLI-точками входа и используют этот общий
 слой. Отсутствующие в указанной папке изображения Label Studio полностью
 исключаются из выборки; `limit` применяется уже к найденным файлам.
 
@@ -49,9 +49,9 @@ pipeline и используют общий строгий формат checkpoi
 
 Обучающие задачи собраны в `fcn_training/tasks/`:
 
-- `ocr.py` описывает `fcn_ocr` и dense OCR targets;
-- `cuts.py` описывает одномерную `cut_projection`;
-- `baselines.py` описывает двухканальную `baseline_heatmap`.
+- `fcn_ocr.py` описывает `fcn_ocr`;
+- `vertical_segmentation.py` описывает `vertical_segmentation`;
+- `baseline_detection.py` описывает `baseline_detection`.
 
 Каждая задача одним контрактом задаёт формат target, число выходов модели,
 loss, допустимые параметры конфига и проверку геометрии модели. `train.py`
@@ -79,18 +79,18 @@ targets, manifest чанков и статистика классов. Конф�
 
 - `images`: тензор `N x C x H x W` в `uint8`;
 - `texts`: исходная текстовая разметка;
-- опционально `ocr_targets`, `cut_projection_targets` и `baseline_targets` для конкретных
-  режимов обучения.
+- опционально `fcn_ocr_targets`, `vertical_segmentation_targets` и `baseline_detection_targets` для конкретных
+  задач обучения.
 
-Основной OCR-режим — `loss_mode: fcn_ocr`. В этом режиме `final` имеет
-`len(alphabet)` выходов, а `ocr_targets` содержат один класс для каждой
-X-позиции входного изображения. После `ocr_crop_left/right` разметка
+Основной OCR-режим — `task: fcn_ocr`. В этом режиме `final` имеет
+`len(alphabet)` выходов, а `fcn_ocr_targets` содержат один класс для каждой
+X-позиции входного изображения. После `fcn_ocr_crop_left/right` разметка
 сводится к ширине выхода сети через majority-bin выравнивание.
-Для вертикального сегментатора используется `loss_mode: cut_projection`:
+Для вертикального сегментатора используется `task: vertical_segmentation`:
 `final` имеет 1 выход, а таргет содержит одномерную heatmap-проекцию с пиками
 в координатах правильных разрезов между символами.
-Для нейронного детектора базовых линий используется `loss_mode:
-baseline_heatmap`: сеть выдает 2D heatmap `2 x H x W`, где канал 0 отвечает за
+Для нейронного детектора базовых линий используется `task:
+baseline_detection`: сеть выдает 2D heatmap `2 x H x W`, где канал 0 отвечает за
 верхнюю линию текстового поля, а канал 1 - за нижнюю.
 
 В generation-конфиге `alphabet` задает символы и точный порядок классов.
@@ -101,9 +101,9 @@ Training получает этот алфавит только из `metadata.ya
 
 Основные конфиги для эксперимента `101` теперь разделены по назначению:
 
-- `fcn_synth_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `ocr_targets`, без соседних строк;
-- `fcn_synth_generator/configs/eng_101_cuts.yaml` — cuts-сегментатор: чистая основная строка, `cut_projection_targets`, без соседних строк;
-- `fcn_synth_generator/configs/eng_101_baselines.yaml` — baseline detector: `baseline_targets`, соседние верхние/нижние строки как вертикальный мусор.
+- `fcn_synth_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `fcn_ocr_targets`, без соседних строк;
+- `fcn_synth_generator/configs/eng_101_vertical_segmentation.yaml` — вертикальная сегментация: чистая основная строка, `vertical_segmentation_targets`, без соседних строк;
+- `fcn_synth_generator/configs/eng_101_baseline_detection.yaml` — детекция базовых линий: `baseline_detection_targets`, соседние верхние/нижние строки как вертикальный мусор.
 
 Дополнительные минимальные примеры:
 
@@ -312,17 +312,18 @@ python -m fcn_synth_generator.generate_dataset \
   --config fcn_synth_generator/configs/eng_001.yaml
 ```
 
-Для раздельной генерации данных под OCR, cuts и baseline:
+Для раздельной генерации данных под FCN OCR, вертикальную сегментацию и
+детекцию базовых линий:
 
 ```bash
 python -m fcn_synth_generator.generate_dataset \
   --config fcn_synth_generator/configs/eng_101.yaml
 
 python -m fcn_synth_generator.generate_dataset \
-  --config fcn_synth_generator/configs/eng_101_cuts.yaml
+  --config fcn_synth_generator/configs/eng_101_vertical_segmentation.yaml
 
 python -m fcn_synth_generator.generate_dataset \
-  --config fcn_synth_generator/configs/eng_101_baselines.yaml
+  --config fcn_synth_generator/configs/eng_101_baseline_detection.yaml
 ```
 
 В generation-конфиге можно задавать межсимвольные интервалы. Значения
@@ -344,43 +345,43 @@ word_spacing_multiplier_max: 1.7
 разметки включается в generation-конфиге отдельно:
 
 ```yaml
-save_ocr_targets: true
+save_fcn_ocr_targets: true
 ```
 
 для OCR `fcn_ocr`,
 
 ```yaml
-save_cut_projection_targets: true
-cut_projection_peak_radius: 1
-cut_projection_include_margins: true
+save_vertical_segmentation_targets: true
+vertical_segmentation_target_radius: 1
+vertical_segmentation_include_margins: true
 ```
 
-для вертикального cuts-сегментатора,
+для задачи вертикальной сегментации,
 
 ```yaml
-save_baseline_targets: true
-baseline_target_radius: 1
+save_baseline_detection_targets: true
+baseline_detection_target_radius: 1
 ```
 
 для top/bottom baseline detector.
 
-Тогда в чанки попадет `ocr_targets` (`N x W`) — класс символа для
+Тогда в чанки попадет `fcn_ocr_targets` (`N x W`) — класс символа для
 каждой X-колонки исходного кропа. Фон до ink bbox первого глифа и после ink bbox
 последнего глифа размечается классом пробела; боковые bearing-поля шрифта не
-приписываются крайним буквам. Если включен `save_cut_projection_targets`,
-в чанки попадет `cut_projection_targets` (`N x W`, `uint8`) — heatmap
+приписываются крайним буквам. Если включен `save_vertical_segmentation_targets`,
+в чанки попадет `vertical_segmentation_targets` (`N x W`, `uint8`) — heatmap
 правильных вертикальных разрезов. Каждый внутренний разрез ставится посередине
 между видимыми границами соседних глифов, а не между их типографическими
 advance-интервалами. Пробел не имеет видимого контура, поэтому для него
 используется его логическая ширина; он по-прежнему считается отдельным символом.
-`cut_projection_include_margins: true` добавляет левую и правую границы всей
+`vertical_segmentation_include_margins: true` добавляет левую и правую границы всей
 строки. Они обязательны для декодирования `|A|B|C|`: четыре cut-линии задают
 три символные ячейки.
 При обучении loss делает crop и при необходимости пересэмплирует эту разметку
 к выходной ширине сети `T`. Для
-`vertical_segmentator_fcn` ширина выхода сохраняется 1:1, поэтому в конфиге
-используются crop `0/0` и strict-width. Если включен `save_baseline_targets`, в чанки попадет
-`baseline_targets` (`N x 2 x H x W`, `uint8`) — две горизонтальные heatmap-линии
+`vertical_segmentation_fcn` ширина выхода сохраняется 1:1, поэтому в конфиге
+используются crop `0/0` и strict-width. Если включен `save_baseline_detection_targets`, в чанки попадет
+`baseline_detection_targets` (`N x 2 x H x W`, `uint8`) — две горизонтальные score-линии
 для верхней и нижней границы основной строки. Их координаты вычисляются по
 крайним ненулевым пикселям отдельной растровой маски основной строки, поэтому
 метрики шрифта, фон и соседние мусорные строки на границы не влияют. Для
@@ -410,7 +411,7 @@ neighbor_line_gap_max: 5
 высоте, crop-ratio и gap, генератор оставляет одну из них вместо
 искусственного увеличения промежутков.
 
-Для OCR и cuts-сегментатора можно дополнительно фильтровать реальные
+Для FCN OCR и вертикальной сегментации можно дополнительно фильтровать реальные
 горизонтальные расстояния между соседними видимыми non-space глифами после
 рендера и после нарезки на кропы:
 
@@ -457,7 +458,7 @@ python -m fcn_synth_generator.render_text \
   --output output/render_chunk.png
 ```
 
-`render_text` преобразует `ocr_targets` вместе с изображением и под полем
+`render_text` преобразует `fcn_ocr_targets` вместе с изображением и под полем
 `text` выводит поколоночную разметку как `␠[start:end]`. Крайние пробельные
 классы также показываются в самом поле `text`. `--show-full-markup` дополнительно
 рисует cut-линии зелёным, а верхнюю и нижнюю baseline — красным и синим.
@@ -478,25 +479,25 @@ architecture_params: {}
 ```
 
 Архитектура не привязана к задаче: один и тот же файл можно использовать и для
-OCR, и для вертикального сегментатора. Роль задается остальными полями конфига:
-`loss_mode`, числом классов и разметкой в чанках.
+OCR, и для вертикального сегментатора. Роль задаётся обязательным полем `task`,
+числом выходных каналов и разметкой в чанках.
 
 Для экспериментов с вертикальным сегментатором есть пример архитектуры, которая
 сохраняет горизонтальное разрешение выхода 1:1 с входной картинкой:
 
 ```yaml
-architecture: vertical_segmentator_fcn
+architecture: vertical_segmentation_fcn
 architecture_params:
   base_channels: 16
   temporal_kernel: 5
   dropout: 0.05
 ```
 
-Для детекции базовых линий есть `baseline_detector_fcn`: она сохраняет и
+Для детекции базовых линий есть `baseline_detection_fcn`: она сохраняет и
 ширину, и высоту, а на выходе дает два канала top/bottom heatmap:
 
 ```yaml
-architecture: baseline_detector_fcn
+architecture: baseline_detection_fcn
 architecture_params:
   base_channels: 24
   depth: 6
@@ -505,7 +506,9 @@ architecture_params:
 
 Имя архитектуры сохраняется в checkpoint, поэтому `inference.py`,
 `evaluate_ocr.py` и `VerticalSegmentator` автоматически собирают такую же сеть
-при загрузке модели. Checkpoint без полного `model_config` не поддерживается.
+при загрузке модели. Checkpoint имеет обязательные `format`, `version` и
+строгий `model_config` с единственным идентификатором `task`. Старые checkpoint
+с `loss_mode`/`target_format` не поддерживаются, их модели нужно переобучить.
 
 Для более тяжелых FCN-экспериментов добавлены:
 
@@ -515,70 +518,71 @@ architecture_params:
   горизонтального stride=2 в `conv2`; для 48x64 дает более плотный выход
   `T=48` вместо `T=19`.
 - `residual_temporal_fcn`: width-preserving FCN с residual-блоками и temporal
-  convolutions по X. Для OCR ее удобнее запускать с `ocr_crop_left: 0`,
-  `ocr_crop_right: 0`, `ocr_strict_width: true`; для cuts она также
-  совместима с `cut_projection_strict_width: true`.
+  convolutions по X. Для OCR ее удобнее запускать с `fcn_ocr_crop_left: 0`,
+  `fcn_ocr_crop_right: 0`, `fcn_ocr_strict_width: true`; для вертикальной
+  сегментации она также совместима с
+  `vertical_segmentation_strict_width: true`.
 
 Готовые примеры: `configs/train/eng_train_101_wide.yaml`,
 `configs/train/eng_train_101_highres.yaml`,
 `configs/train/eng_train_101_residual.yaml`,
-`configs/train/eng_train_101_cuts_residual.yaml`.
+`configs/train/eng_train_101_vertical_segmentation_residual.yaml`.
 
-Для обучения FCN OCR на чанках с `ocr_targets`:
+Для обучения FCN OCR на чанках с `fcn_ocr_targets`:
 
 ```yaml
-loss_mode: fcn_ocr
-ocr_crop_left: 6
-ocr_crop_right: 5
-ocr_target_min_majority: 0.6
-ocr_space_weight: 0.5
+task: fcn_ocr
+fcn_ocr_crop_left: 6
+fcn_ocr_crop_right: 5
+fcn_ocr_target_min_majority: 0.6
+fcn_ocr_space_weight: 0.5
 ```
 
-Majority-bin выравнивание делит `ocr_targets` на интервалы под выходные позиции,
+Majority-bin выравнивание делит `fcn_ocr_targets` на интервалы под выходные позиции,
 берет класс большинства и игнорирует позицию, если большинство слабее
-`ocr_target_min_majority`.
-`ocr_space_weight` уменьшает или увеличивает вклад класса пробела в OCR-loss.
+`fcn_ocr_target_min_majority`.
+`fcn_ocr_space_weight` уменьшает или увеличивает вклад класса пробела в OCR-loss.
 
 Для обучения вертикального сегментатора на heatmap разрезов:
 
 ```yaml
-loss_mode: cut_projection
-cut_projection_crop_left: 0
-cut_projection_crop_right: 0
-cut_projection_strict_width: true
-cut_projection_loss: mse
-cut_projection_positive_weight: 4.0
+task: vertical_segmentation
+vertical_segmentation_crop_left: 0
+vertical_segmentation_crop_right: 0
+vertical_segmentation_strict_width: true
+vertical_segmentation_loss: mse
+vertical_segmentation_positive_weight: 4.0
 ```
 
-Пример конфига: `configs/train/eng_train_101_cuts.yaml`.
-Соответствующий generation-конфиг: `fcn_synth_generator/configs/eng_101_cuts.yaml`.
+Пример конфига: `configs/train/eng_train_101_vertical_segmentation.yaml`.
+Соответствующий generation-конфиг: `fcn_synth_generator/configs/eng_101_vertical_segmentation.yaml`.
 Порог и параметры postprocess (`cut_threshold`, ограничения ширины и
 сглаживание) в обучении не участвуют. Они задаются при
-`evaluate_segmentator.py` и сохраняются в отдельном inference-конфиге.
+`evaluate_vertical_segmentation.py` и сохраняются в отдельном inference-конфиге.
 
 Для обучения нейронного детектора верхней/нижней базовой линии:
 
 ```yaml
-loss_mode: baseline_heatmap
-baseline_heatmap_strict_size: true
-baseline_heatmap_loss: bce
-baseline_heatmap_positive_weight: 6.0
+task: baseline_detection
+baseline_detection_strict_size: true
+baseline_detection_loss: bce
+baseline_detection_positive_weight: 6.0
 ```
 
-Пример конфига: `configs/train/eng_train_101_baselines.yaml`.
+Пример конфига: `configs/train/eng_train_101_baseline_detection.yaml`.
 Соответствующий generation-конфиг:
-`fcn_synth_generator/configs/eng_101_baselines.yaml`.
+`fcn_synth_generator/configs/eng_101_baseline_detection.yaml`.
 
 Обучение baseline-детектора с оценкой на ручной разметке после каждой эпохи:
 
 ```bash
-python train_baselines_with_eval.py \
-  --config configs/evaluation/eng_train_101_baselines_eval.yaml
+python train_baseline_detection_with_eval.py \
+  --config configs/evaluation/eng_train_101_baseline_detection_eval.yaml
 ```
 
-В `configs/evaluation/eng_train_101_baselines_eval.yaml` задаются:
+В `configs/evaluation/eng_train_101_baseline_detection_eval.yaml` задаются:
 
-- `train_config`: обычный training-конфиг с `loss_mode: baseline_heatmap`;
+- `train_config`: обычный training-конфиг с `task: baseline_detection`;
 - `markup_json`: разметка из `tools.annotation.server`;
 - `images_dir`: опциональная замена папки изображений из JSON;
 - `threshold`: фиксированный порог детектора для сравнения эпох;
@@ -606,21 +610,21 @@ scheduler обучения.
 метрики:
 
 ```bash
-python train_baselines_with_eval.py \
-  --config configs/evaluation/eng_train_101_baselines_eval.yaml \
+python train_baseline_detection_with_eval.py \
+  --config configs/evaluation/eng_train_101_baseline_detection_eval.yaml \
   > output/baseline_training.log
 ```
 
 Для уже обученного cuts-чекпоинта параметры `cut_threshold`, `cut_min_width`,
-`cut_max_width` и `cut_smooth_radius` задаются в разделе `segmentator`
+`cut_max_width` и `cut_smooth_radius` задаются в разделе `vertical_segmentation`
 inference-конфига.
 
 Подобрать параметры вертикального сегментатора без OCR, сравнивая число
 предсказанных ячеек с длиной строки из Label Studio:
 
 ```bash
-python evaluate_segmentator.py \
-  --config configs/evaluation/eng_101_segmentator.yaml \
+python evaluate_vertical_segmentation.py \
+  --config configs/evaluation/eng_101_vertical_segmentation.yaml \
   --json labels.json \
   --images images
 ```
@@ -663,14 +667,15 @@ python -m tools.annotation.server \
 автоматически сохраняется в JSON в координатах исходной картинки, а переход к
 соседнему изображению всегда дожидается принудительного сохранения текущего
 результата. Любая сохранённая пригодная разметка участвует в evaluation:
-для cuts нужны минимум две вертикальные линии, для baseline нужны минимум две
+для вертикальной сегментации нужны минимум две вертикальные линии, для
+детекции базовых линий нужны минимум две
 точки у верхней и нижней полилинии.
 
-Точная оценка cuts:
+Точная оценка вертикальной сегментации:
 
 ```bash
-python evaluate_segmentator.py \
-  --config configs/evaluation/eng_101_segmentator.yaml
+python evaluate_vertical_segmentation.py \
+  --config configs/evaluation/eng_101_vertical_segmentation.yaml
 ```
 
 Для `manual_markup.json` папка изображений автоматически берётся из поля
@@ -687,19 +692,19 @@ python evaluate_segmentator.py \
 Оценка обеих baseline:
 
 ```bash
-python evaluate_baselines.py \
-  --config configs/evaluation/eng_101_baselines.yaml \
+python evaluate_baseline_detection.py \
+  --config configs/evaluation/eng_101_baseline_detection.yaml \
   --optuna-trials 0
 ```
 
 Подбор threshold:
 
 ```bash
-python evaluate_baselines.py \
-  --config configs/evaluation/eng_101_baselines.yaml
+python evaluate_baseline_detection.py \
+  --config configs/evaluation/eng_101_baseline_detection.yaml
 ```
 
-`evaluate_baselines.py` считает MAE отдельно для верхней и нижней линии,
+`evaluate_baseline_detection.py` считает MAE отдельно для верхней и нижней линии,
 общую ошибку в пикселях, ошибку относительно высоты строки, покрытие по X и
 штрафует неудачные детекции при Optuna-подборе.
 
@@ -864,16 +869,16 @@ python inference.py \
 ```yaml
 device: cuda
 
-baseline:
+baseline_detection:
   enabled: true
-  detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
+  detector_checkpoint: ../../checkpoints/baseline_detection/best_model.pth
   detector_threshold: 0.35
   deskew: true
   max_angle: 12.0
   line_pad: 0.08
   line_pad_px: 0.0
 
-ocr:
+fcn_ocr:
   checkpoint: ../../checkpoints/eng_101/best_model.pth
   preprocessing:
     scale_x: 0.0
@@ -885,8 +890,8 @@ ocr:
     center_fraction: 0.6
     min_score_width: 1
 
-segmentator:
-  checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
+vertical_segmentation:
+  checkpoint: ../../checkpoints/vertical_segmentation/best_model.pth
   preprocessing:
     scale_x: 0.0
     y_pad: 0.0
@@ -897,21 +902,21 @@ segmentator:
   cut_smooth_radius: null
 ```
 
-`null` у параметра сегментатора означает: использовать значение из его
+`null` у параметра вертикальной сегментации означает: использовать значение из ее
 training-конфига, сохраненного в checkpoint.
 
-Разделы `baseline`, `segmentator` и `ocr` независимы. Если раздел отсутствует,
+Разделы `baseline_detection`, `vertical_segmentation` и `fcn_ocr` независимы. Если раздел отсутствует,
 соответствующий этап полностью пропускается и его checkpoint не загружается.
-Дополнительно `baseline.enabled: false` отключает существующий раздел baseline.
-Раздел `ocr.decode` по умолчанию выключен; `ocr.decode.enabled: true` требует
-наличия `segmentator`.
+Дополнительно `baseline_detection.enabled: false` отключает существующий раздел.
+Раздел `fcn_ocr.decode` по умолчанию выключен; `fcn_ocr.decode.enabled: true`
+требует наличия `vertical_segmentation`.
 
 Например, минимальный конфиг только для вертикальной сегментации:
 
 ```yaml
 device: cuda
-segmentator:
-  checkpoint: ../../checkpoints/cut_segmentator/best_model.pth
+vertical_segmentation:
+  checkpoint: ../../checkpoints/vertical_segmentation/best_model.pth
   preprocessing:
     scale_x: 0.0
     y_pad: 0.0
@@ -922,9 +927,9 @@ segmentator:
 
 ```yaml
 device: cuda
-baseline:
+baseline_detection:
   enabled: true
-  detector_checkpoint: ../../checkpoints/baseline_detector/best_model.pth
+  detector_checkpoint: ../../checkpoints/baseline_detection/best_model.pth
   detector_threshold: 0.35
 ```
 
@@ -945,17 +950,17 @@ for path in ["line_1.png", "line_2.png"]:
 
 1. Загружаются только checkpoint-ы из присутствующих разделов конфига. Из OCR checkpoint
    берутся `alphabet`, `architecture`,
-   `num_classes`, `image_height`, `channels`, режим loss/target и параметры
+   `num_classes`, `image_height`, `channels`, задачу и параметры
    OCR target crop. Модель создается через `fcn_architectures.create_model`,
    загружает `model_state_dict` и переводится в `eval`.
 2. Входная картинка приводится к `RGB` или `L` в зависимости от `channels`.
    В `--debug-image` этот шаг подписан как `preprocess 00 input converted`.
-3. Если присутствует включенный раздел `baseline`, один раз запускается общий поиск верхней и
+3. Если присутствует включенный раздел `baseline_detection`, один раз запускается общий поиск верхней и
    нижней текстовых линий. После deskew линии могут уточняться на повернутой
    картинке, затем строится единый baseline crop для всех следующих этапов.
-   При отсутствии baseline исходное изображение передается дальше без crop.
+   При отсутствии `baseline_detection` исходное изображение передается дальше без crop.
 4. Полученное изображение независимо обрабатывается присутствующими профилями
-   `ocr.preprocessing` и/или `segmentator.preprocessing`.
+   `fcn_ocr.preprocessing` и/или `vertical_segmentation.preprocessing`.
 5. `x_pad` применяется до `y_pad`, resize и `scale_x`. Он добавляет слева и
    справа долю текущей ширины, но не отражает символы: поля заполняются
    медианным фоном боковой полосы исходной геометрии. В debug это
@@ -970,10 +975,10 @@ for path in ["line_1.png", "line_2.png"]:
 9. Получившиеся картинки нормализуются и подаются только в включенные модели.
 10. Cut-координаты сегментатора переводятся через карты исходных X-координат
     в систему OCR. Поэтому разные `x_pad` и `scale_x` не смещают ячейки.
-11. Если присутствует раздел `ocr`, OCR FCN возвращает logits `B x C x T`.
+11. Если присутствует раздел `fcn_ocr`, OCR FCN возвращает logits `B x C x T`.
 12. Обычный OCR decode берет `argmax` по классам на каждом timestep, схлопывает
    подряд идущие одинаковые классы и переводит индексы в символы alphabet.
-13. Если `ocr.decode.enabled: true`, OCR logits декодируются через
+13. Если `fcn_ocr.decode.enabled: true`, OCR logits декодируются через
     интервалы между cut-точками сегментатора: для каждого интервала берется средняя
     вероятность OCR-классов, а top-класс становится символом. Первая и последняя
     cut-линии являются границами текста; внешние области не декодируются.
@@ -992,7 +997,7 @@ for path in ["line_1.png", "line_2.png"]:
 - `scale_x`: нормированное растяжение/сжатие ширины после resize по высоте.
 - `y_pad`: нормированный вертикальный padding/crop до resize по высоте.
 - `x_pad`: нормированный горизонтальный padding до `y_pad`/resize/`scale_x`.
-- `baseline.enabled`: включает общий поиск нижней и верхней текстовых линий, deskew и
+- `baseline_detection.enabled`: включает общий поиск нижней и верхней текстовых линий, deskew и
   вертикальный crop.
 
 ### Inference Parameter Reference
@@ -1001,12 +1006,12 @@ for path in ["line_1.png", "line_2.png"]:
 
 | Параметр | Что делает |
 | --- | --- |
-| `ocr.preprocessing.scale_x` | Горизонтальный scale только для OCR. |
-| `ocr.preprocessing.y_pad` | Вертикальный padding/crop только для OCR. |
-| `ocr.preprocessing.x_pad` | Горизонтальный padding только для OCR. |
-| `segmentator.preprocessing.scale_x` | Горизонтальный scale только для сегментатора. |
-| `segmentator.preprocessing.y_pad` | Вертикальный padding/crop только для сегментатора. |
-| `segmentator.preprocessing.x_pad` | Горизонтальный padding только для сегментатора. |
+| `fcn_ocr.preprocessing.scale_x` | Горизонтальный scale только для OCR. |
+| `fcn_ocr.preprocessing.y_pad` | Вертикальный padding/crop только для OCR. |
+| `fcn_ocr.preprocessing.x_pad` | Горизонтальный padding только для OCR. |
+| `vertical_segmentation.preprocessing.scale_x` | Горизонтальный scale только для вертикальной сегментации. |
+| `vertical_segmentation.preprocessing.y_pad` | Вертикальный padding/crop только для вертикальной сегментации. |
+| `vertical_segmentation.preprocessing.x_pad` | Горизонтальный padding только для вертикальной сегментации. |
 | `--show-raw` | Печатает raw timestep-классы обычного OCR decode. Полезно, чтобы увидеть, где сеть держит один класс несколько timestep-ов подряд. |
 | `--debug-image` | Сохраняет трехколоночный канвас полного pipeline: baseline, segmentator, OCR, а ниже результаты и top-k confidence. |
 | `debug.top_k` | Сколько top-кандидатов по confidence выводить для каждого decoded-символа. |
@@ -1015,53 +1020,54 @@ for path in ["line_1.png", "line_2.png"]:
 
 | Параметр | Что делает |
 | --- | --- |
-| `baseline.enabled` | Включает общий поиск линий, deskew и crop до раздельного preprocessing. |
-| `baseline.line_pad` | Симметричный запас crop как доля высоты строки. |
-| `baseline.line_pad_px` | Дополнительный абсолютный запас в исходных пикселях. |
-| `baseline.detector_checkpoint` | Обязательный checkpoint нейронного top/bottom baseline-детектора. |
-| `baseline.detector_threshold` | Порог sigmoid heatmap нейронного baseline-детектора. |
-| `baseline.deskew` | Включает или отключает поворот по найденным линиям. |
-| `baseline.max_angle` | Максимальный допустимый угол baseline. |
+| `baseline_detection.enabled` | Включает общий поиск линий, deskew и crop до раздельного preprocessing. |
+| `baseline_detection.line_pad` | Симметричный запас crop как доля высоты строки. |
+| `baseline_detection.line_pad_px` | Дополнительный абсолютный запас в исходных пикселях. |
+| `baseline_detection.detector_checkpoint` | Обязательный checkpoint нейронного top/bottom baseline-детектора. |
+| `baseline_detection.detector_threshold` | Порог sigmoid score map нейронного baseline-детектора. |
+| `baseline_detection.deskew` | Включает или отключает поворот по найденным линиям. |
+| `baseline_detection.max_angle` | Максимальный допустимый угол baseline. |
 
-#### Cut Projection Segmentator
+#### Vertical Segmentation
 
-Эти параметры относятся к сегментатору с `loss_mode: cut_projection`, где сеть
-выдает одну heatmap/projection-оценку cut-линии на X-позицию.
+Сеть с `task: vertical_segmentation` выдает одну оценку границы символа на
+каждую X-позицию.
 
 | Параметр | Что делает |
 | --- | --- |
-| `segmentator.checkpoint` | Checkpoint вертикального сегментатора. |
-| `segmentator.cut_threshold` | Порог основных cut peak-ов. |
-| `segmentator.cut_min_width` | Минимальная ширина между итоговыми cut-точками; из слишком близких пиков остается более уверенный. |
-| `segmentator.cut_max_width` | Жесткая максимальная ширина; широкий внутренний интервал делится в наиболее уверенной допустимой X-позиции. `0` отключает вставку. |
-| `segmentator.cut_smooth_radius` | Радиус сглаживания cut-score перед поиском peak-ов. |
+| `vertical_segmentation.checkpoint` | Checkpoint вертикальной сегментации. |
+| `vertical_segmentation.cut_threshold` | Порог основных cut peak-ов. |
+| `vertical_segmentation.cut_min_width` | Минимальная ширина между итоговыми cut-точками; из слишком близких пиков остается более уверенный. |
+| `vertical_segmentation.cut_max_width` | Жесткая максимальная ширина; широкий внутренний интервал делится в наиболее уверенной допустимой X-позиции. `0` отключает вставку. |
+| `vertical_segmentation.cut_smooth_radius` | Радиус сглаживания cut-score перед поиском peak-ов. |
 
 Постобработка едина: scores сглаживаются, затем выбираются пики выше
 `cut_threshold`, применяется `cut_min_width`, после чего при
 `cut_max_width > 0` слишком широкие ячейки принудительно делятся. Если
-`segmentator.cut_min_width: null`, используется значение из checkpoint или
+`vertical_segmentation.cut_min_width: null`, используется значение из checkpoint или
 дефолт `1`.
 
 #### FCN OCR + Segmentator Decode
 
-Эти параметры используются только если `ocr.decode.enabled: true`.
+Эти параметры используются только если `fcn_ocr.decode.enabled: true`.
 
 | Параметр | Что делает |
 | --- | --- |
-| `ocr.decode.enabled` | Включает декодирование OCR по cut-ячейкам. |
-| `ocr.decode.top_k` | Сколько OCR class-кандидатов хранить для каждой ячейки. |
-| `ocr.decode.center_fraction` | Центральная доля ячейки для усреднения OCR-вероятностей. |
-| `ocr.decode.min_score_width` | Минимальное число OCR timestep-ов в области оценки. |
+| `fcn_ocr.decode.enabled` | Включает декодирование OCR по cut-ячейкам. |
+| `fcn_ocr.decode.top_k` | Сколько OCR class-кандидатов хранить для каждой ячейки. |
+| `fcn_ocr.decode.center_fraction` | Центральная доля ячейки для усреднения OCR-вероятностей. |
+| `fcn_ocr.decode.min_score_width` | Минимальное число OCR timestep-ов в области оценки. |
 
 ### Baseline Detector
 
 `baseline_crop` использует только нейросетевой top/bottom detector;
-`baseline.detector_checkpoint` обязателен при `baseline.enabled: true`:
+`baseline_detection.detector_checkpoint` обязателен при
+`baseline_detection.enabled: true`:
 
 1. Изображение приводится к входной высоте detector с сохранением пропорций.
 2. Сеть выдаёт две sigmoid heatmap: верхнюю и нижнюю границы текстовой строки.
 3. Для каждого X берётся наиболее уверенная Y-позиция. Колонки ниже
-   `baseline.detector_threshold` отбрасываются.
+   `baseline_detection.detector_threshold` отбрасываются.
 4. Для оставшихся точек каждой heatmap robust/RANSAC-фитом ищется линия
    `y = ax + b`. Считаются `inlier_ratio`, `profile_coverage`, residual и
    confidence.
@@ -1140,14 +1146,15 @@ python evaluate_ocr.py \
 ```
 
 В этом режиме из YAML берутся OCR checkpoint, baseline detector, вертикальный
-сегментатор, их фиксированные preprocessing/postprocessing-параметры и `ocr.decode`.
+вертикальную сегментацию, их фиксированные preprocessing/postprocessing-параметры
+и `fcn_ocr.decode`.
 Optuna меняет только параметры с явно переданными диапазонами. Явные обычные
 CLI-параметры имеют приоритет над значениями YAML; например, `--device cuda`
 можно использовать независимо от сохраненного в конфиге устройства.
 
 После evaluation рядом с CSV сохраняется готовый inference-конфиг, например
 `output/ocr_metrics.inference.yaml`, и в терминал выводится короткая команда
-запуска с ним. `evaluate_segmentator.py` и `evaluate_baselines.py` делают так
+запуска с ним. `evaluate_vertical_segmentation.py` и `evaluate_baseline_detection.py` делают так
 же.
 
 Если Optuna не установлена:

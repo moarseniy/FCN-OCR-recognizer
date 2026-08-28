@@ -55,10 +55,10 @@ class OCRPipeline:
         verbose: bool = False,
     ) -> None:
         self.config = InferenceConfig.load(config) if isinstance(config, (str, Path)) else config
-        self.decode = self.config.ocr.decode if self.config.ocr is not None else None
+        self.decode = self.config.fcn_ocr.decode if self.config.fcn_ocr is not None else None
         self.recognizer: TextRecognizer | None = None
-        if self.config.ocr is not None:
-            ocr = self.config.ocr
+        if self.config.fcn_ocr is not None:
+            ocr = self.config.fcn_ocr
             preprocess = ocr.preprocessing
             self.recognizer = TextRecognizer(
                 ocr.checkpoint,
@@ -72,8 +72,8 @@ class OCRPipeline:
             )
 
         self.segmentator: VerticalSegmentator | None = None
-        if self.config.segmentator is not None:
-            segmentator = self.config.segmentator
+        if self.config.vertical_segmentation is not None:
+            segmentator = self.config.vertical_segmentation
             preprocess = segmentator.preprocessing
             self.segmentator = VerticalSegmentator(
                 segmentator.checkpoint,
@@ -91,10 +91,12 @@ class OCRPipeline:
             )
 
         self.baseline_processor: BaselineDetector | None = None
-        baseline = self.config.baseline
+        baseline = self.config.baseline_detection
         if baseline is not None and baseline.enabled:
             if baseline.detector_checkpoint is None:
-                raise ValueError("Enabled baseline stage requires detector_checkpoint")
+                raise ValueError(
+                    "Enabled baseline_detection section requires detector_checkpoint"
+                )
             self.baseline_processor = BaselineDetector(
                 baseline.detector_checkpoint,
                 device=self.config.device,
@@ -111,7 +113,7 @@ class OCRPipeline:
             self._print_pipeline_summary()
 
     def _print_pipeline_summary(self) -> None:
-        baseline = self.config.baseline
+        baseline = self.config.baseline_detection
         print("\nInference pipeline:")
         if baseline is None or not baseline.enabled:
             print("  Shared pipeline baseline: disabled")
@@ -121,27 +123,27 @@ class OCRPipeline:
                 f"(neural detector {baseline.detector_checkpoint})"
             )
             print(
-                "    runs once before OCR/segmentator; "
+                "    runs once before fcn_ocr/vertical_segmentation; "
                 f"deskew={baseline.deskew}, "
                 f"line_pad={baseline.line_pad:.3f}, line_pad_px={baseline.line_pad_px:.1f}"
             )
         print(
-            "  OCR stage: "
+            "  FCN OCR stage: "
             f"{'enabled; receives shared baseline output' if self.recognizer is not None else 'disabled'}"
         )
         print(
-            "  Vertical segmentator stage: "
+            "  Vertical segmentation stage: "
             f"{'enabled; receives shared baseline output' if self.segmentator is not None else 'disabled'}"
         )
         if self.decode is not None and self.decode.enabled:
-            print(f"  Decode with segmentator: enabled ({self.decode.method})")
+            print(f"  Decode with vertical segmentation: enabled ({self.decode.method})")
             if self.decode.glyph_width_prior.enabled:
                 print(
                     "  Glyph width prior: "
                     f"enabled weight={self.decode.glyph_width_prior.weight:g}"
                 )
         else:
-            print("  Decode with segmentator: disabled")
+            print("  Decode with vertical segmentation: disabled")
 
     def recognize_path(
         self,
@@ -247,7 +249,9 @@ class OCRPipeline:
         log_every: int = 0,
     ) -> tuple[list[OCRPipelinePathResult], dict[str, float | int]]:
         if self.recognizer is None:
-            raise ValueError("OCRPipeline text recognition requires an ocr section")
+            raise ValueError(
+                "OCRPipeline text recognition requires an fcn_ocr section"
+            )
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
 
@@ -372,7 +376,7 @@ class OCRPipeline:
                         if self.decode is not None and self.decode.enabled:
                             if self.segmentator is None or segmentator_logits is None:
                                 raise RuntimeError(
-                                    "decode stage requires a segmentator section"
+                                    "decode stage requires a vertical_segmentation section"
                                 )
                             segmentator_input = item["segmentator_input"]
                             sample_segmentator_logits = segmentator_logits[

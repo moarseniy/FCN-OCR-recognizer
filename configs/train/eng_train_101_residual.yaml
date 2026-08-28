@@ -27,12 +27,12 @@ val_fraction: 0.1
 seed: 42
 resume: false
 
-loss_mode: fcn_ocr
-ocr_crop_left: 0
-ocr_crop_right: 0
-ocr_strict_width: true
-ocr_target_min_majority: 0.6
-ocr_space_weight: 0.5
+task: fcn_ocr
+fcn_ocr_crop_left: 0
+fcn_ocr_crop_right: 0
+fcn_ocr_strict_width: true
+fcn_ocr_target_min_majority: 0.6
+fcn_ocr_space_weight: 0.5
 
 num_workers: 0
 drop_last: false

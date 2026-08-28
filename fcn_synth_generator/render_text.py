@@ -12,6 +12,12 @@ from PIL import Image, ImageDraw, ImageFont
 import torch
 import yaml
 
+from fcn_tasks import (
+    BASELINE_DETECTION_TASK,
+    FCN_OCR_TASK,
+    VERTICAL_SEGMENTATION_TASK,
+)
+
 from .chunk_dataset import load_torch_chunk, validate_chunk_payload
 from .chunk_metadata import load_chunk_metadata
 from .dataset import SingleLineDataset, SingleLineDatasetConfig
@@ -67,7 +73,7 @@ def target_to_float(target: torch.Tensor | None) -> torch.Tensor | None:
     return output.clamp(0.0, 1.0).contiguous()
 
 
-def ocr_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
+def fcn_ocr_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
     if target is None:
         return None
     output = target.detach().cpu().long()
@@ -86,7 +92,7 @@ def load_config(
     if not isinstance(raw_config, dict):
         raise ValueError(f"Config must contain a YAML mapping: {config_path}")
 
-    is_training_config = "chunks_dir" in raw_config or "loss_mode" in raw_config
+    is_training_config = "chunks_dir" in raw_config or "task" in raw_config
     if is_training_config:
         if chunks_dir is None:
             raise ValueError(
@@ -159,9 +165,9 @@ def apply_augmentations(
     config: SingleLineDatasetConfig,
     device: torch.device,
     enabled: bool,
-    ocr_target: torch.Tensor | None = None,
-    cut_projection_target: torch.Tensor | None = None,
-    baseline_target: torch.Tensor | None = None,
+    fcn_ocr_target: torch.Tensor | None = None,
+    vertical_segmentation_target: torch.Tensor | None = None,
+    baseline_detection_target: torch.Tensor | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor | None,
@@ -170,41 +176,41 @@ def apply_augmentations(
     list[dict[str, Any]],
 ]:
     image = tensor_to_float_image(image)
-    ocr_target = ocr_target_to_long(ocr_target)
-    cut_projection_target = target_to_float(cut_projection_target)
-    baseline_target = target_to_float(baseline_target)
+    fcn_ocr_target = fcn_ocr_target_to_long(fcn_ocr_target)
+    vertical_segmentation_target = target_to_float(vertical_segmentation_target)
+    baseline_detection_target = target_to_float(baseline_detection_target)
     if not enabled:
-        return image, ocr_target, cut_projection_target, baseline_target, []
+        return image, fcn_ocr_target, vertical_segmentation_target, baseline_detection_target, []
 
     augmenter = GpuTextAugmenter(config)
     batch = image.unsqueeze(0).to(device)
     augmented, metadata = augmenter.augment_with_metadata(batch)
-    if ocr_target is not None:
-        ocr_target = (
+    if fcn_ocr_target is not None:
+        fcn_ocr_target = (
             augmenter.apply_metadata_to_targets(
-                ocr_target.unsqueeze(0).to(device),
-                "fcn_ocr",
+                fcn_ocr_target.unsqueeze(0).to(device),
+                FCN_OCR_TASK,
                 metadata,
             )[0]
             .detach()
             .cpu()
             .long()
         )
-    if cut_projection_target is not None:
-        cut_projection_target = (
+    if vertical_segmentation_target is not None:
+        vertical_segmentation_target = (
             augmenter.apply_metadata_to_targets(
-                cut_projection_target.unsqueeze(0).to(device),
-                "cut_projection",
+                vertical_segmentation_target.unsqueeze(0).to(device),
+                VERTICAL_SEGMENTATION_TASK,
                 metadata,
             )[0]
             .detach()
             .cpu()
         )
-    if baseline_target is not None:
-        baseline_target = (
+    if baseline_detection_target is not None:
+        baseline_detection_target = (
             augmenter.apply_metadata_to_targets(
-                baseline_target.unsqueeze(0).to(device),
-                "baseline_heatmap",
+                baseline_detection_target.unsqueeze(0).to(device),
+                BASELINE_DETECTION_TASK,
                 metadata,
             )[0]
             .detach()
@@ -212,9 +218,9 @@ def apply_augmentations(
         )
     return (
         augmented[0].detach().cpu(),
-        ocr_target,
-        cut_projection_target,
-        baseline_target,
+        fcn_ocr_target,
+        vertical_segmentation_target,
+        baseline_detection_target,
         metadata[0],
     )
 
@@ -248,15 +254,17 @@ def load_chunk_sample(
         images = chunk["images"]
         texts = chunk["texts"]
         local_index = index - offset
-        ocr_targets = chunk.get("ocr_targets")
-        cut_targets = chunk.get("cut_projection_targets")
-        baseline_targets = chunk.get("baseline_targets")
+        fcn_ocr_targets = chunk.get("fcn_ocr_targets")
+        vertical_segmentation_targets = chunk.get("vertical_segmentation_targets")
+        baseline_detection_targets = chunk.get("baseline_detection_targets")
         return (
             images[local_index],
             str(texts[local_index]),
-            ocr_targets[local_index] if ocr_targets is not None else None,
-            cut_targets[local_index] if cut_targets is not None else None,
-            baseline_targets[local_index] if baseline_targets is not None else None,
+            fcn_ocr_targets[local_index] if fcn_ocr_targets is not None else None,
+            vertical_segmentation_targets[local_index]
+            if vertical_segmentation_targets is not None
+            else None,
+            baseline_detection_targets[local_index] if baseline_detection_targets is not None else None,
             {
                 "chunk_file": str(path),
                 "chunk_local_index": local_index,
@@ -326,12 +334,12 @@ def _projection_centerlines(projection: np.ndarray, height: int) -> np.ndarray:
     return line_mask
 
 
-def describe_ocr_target(
-    ocr_target: torch.Tensor | None,
+def describe_fcn_ocr_target(
+    fcn_ocr_target: torch.Tensor | None,
     alphabet: str,
     space_char: str,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
-    ocr_labels = ocr_target_to_long(ocr_target)
+    ocr_labels = fcn_ocr_target_to_long(fcn_ocr_target)
     if ocr_labels is None:
         return [], False, False
     target_array = ocr_labels.numpy()
@@ -367,23 +375,23 @@ def describe_ocr_target(
 
 def overlay_full_markup(
     image: Image.Image,
-    cut_projection_target: torch.Tensor | None,
-    baseline_target: torch.Tensor | None,
+    vertical_segmentation_target: torch.Tensor | None,
+    baseline_detection_target: torch.Tensor | None,
 ) -> tuple[Image.Image, dict[str, Any]]:
     image_array = np.asarray(image.convert("RGB"), dtype=np.float32).copy()
     height, width = image_array.shape[:2]
     markup_metadata: dict[str, Any] = {
-        "cut_projection": cut_projection_target is not None,
-        "baseline": baseline_target is not None,
+        "vertical_segmentation": vertical_segmentation_target is not None,
+        "baseline_detection": baseline_detection_target is not None,
         "legend": {
-            "cut_projection": "green",
+            "vertical_segmentation": "green",
             "baseline_top": "red",
             "baseline_bottom": "blue",
         },
     }
 
-    if baseline_target is not None:
-        baseline = target_to_float(baseline_target)
+    if baseline_detection_target is not None:
+        baseline = target_to_float(baseline_detection_target)
         if baseline is None or baseline.ndim != 3 or baseline.shape[0] != 2:
             raise ValueError(
                 "baseline markup target must have shape (2, H, W), "
@@ -408,19 +416,19 @@ def overlay_full_markup(
             opacity=0.92,
         )
 
-    if cut_projection_target is not None:
-        cut_projection = target_to_float(cut_projection_target)
-        if cut_projection is None or cut_projection.ndim != 1:
+    if vertical_segmentation_target is not None:
+        vertical_scores = target_to_float(vertical_segmentation_target)
+        if vertical_scores is None or vertical_scores.ndim != 1:
             raise ValueError(
-                "cut projection markup target must have shape (W,), "
-                f"got {None if cut_projection is None else tuple(cut_projection.shape)}"
+                "vertical segmentation markup target must have shape (W,), "
+                f"got {None if vertical_scores is None else tuple(vertical_scores.shape)}"
             )
-        if cut_projection.shape[0] != width:
+        if vertical_scores.shape[0] != width:
             raise ValueError(
-                f"cut projection markup width {cut_projection.shape[0]} "
+                f"vertical segmentation markup width {vertical_scores.shape[0]} "
                 f"does not match image width {width}"
             )
-        cut_lines = _projection_centerlines(cut_projection.numpy(), height)
+        cut_lines = _projection_centerlines(vertical_scores.numpy(), height)
         _blend_line_mask(image_array, cut_lines, (30, 230, 80), opacity=0.92)
 
     return Image.fromarray(
@@ -455,9 +463,12 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
     if markup is not None:
         lines.append(
             "markup: "
-            f"cuts={'green' if markup['cut_projection'] else 'absent'}, "
-            f"top baseline={'red' if markup['baseline'] else 'absent'}, "
-            f"bottom baseline={'blue' if markup['baseline'] else 'absent'}"
+            "vertical segmentation="
+            f"{'green' if markup['vertical_segmentation'] else 'absent'}, "
+            "top baseline="
+            f"{'red' if markup['baseline_detection'] else 'absent'}, "
+            "bottom baseline="
+            f"{'blue' if markup['baseline_detection'] else 'absent'}"
         )
 
     augmentations = metadata["augmentations"]
@@ -591,26 +602,26 @@ def main() -> None:
         (
             image_tensor,
             text,
-            ocr_target,
-            cut_projection_target,
-            baseline_target,
+            fcn_ocr_target,
+            vertical_segmentation_target,
+            baseline_detection_target,
             source_metadata,
         ) = load_chunk_sample(chunks_dir, args.index)
         text = normalize_text(text, config)
         (
             image_tensor,
-            ocr_target,
-            cut_projection_target,
-            baseline_target,
+            fcn_ocr_target,
+            vertical_segmentation_target,
+            baseline_detection_target,
             augmentations,
         ) = apply_augmentations(
             image_tensor,
             config,
             device,
             enabled=not args.no_augmentations,
-            ocr_target=ocr_target,
-            cut_projection_target=cut_projection_target,
-            baseline_target=baseline_target,
+            fcn_ocr_target=fcn_ocr_target,
+            vertical_segmentation_target=vertical_segmentation_target,
+            baseline_detection_target=baseline_detection_target,
         )
         source = "chunk"
     else:
@@ -618,26 +629,26 @@ def main() -> None:
             raise RuntimeError("dataset must be initialized for text rendering")
         sample = dataset.generate_text_sample(args.text, rng)
         text = sample.text
-        ocr_target = sample.ocr_target
+        fcn_ocr_target = sample.fcn_ocr_target
         (
             image_tensor,
-            ocr_target,
-            cut_projection_target,
-            baseline_target,
+            fcn_ocr_target,
+            vertical_segmentation_target,
+            baseline_detection_target,
             augmentations,
         ) = apply_augmentations(
             sample.image,
             config,
             device,
             enabled=not args.no_augmentations,
-            ocr_target=ocr_target,
-            cut_projection_target=sample.cut_projection_target,
-            baseline_target=sample.baseline_target,
+            fcn_ocr_target=fcn_ocr_target,
+            vertical_segmentation_target=sample.vertical_segmentation_target,
+            baseline_detection_target=sample.baseline_detection_target,
         )
         source = "text"
     alphabet = config.alphabet
-    ocr_runs, has_left_space, has_right_space = describe_ocr_target(
-        ocr_target,
+    ocr_runs, has_left_space, has_right_space = describe_fcn_ocr_target(
+        fcn_ocr_target,
         alphabet,
         config.space_char,
     )
@@ -652,8 +663,8 @@ def main() -> None:
     if args.show_full_markup:
         image, full_markup = overlay_full_markup(
             image,
-            cut_projection_target=cut_projection_target,
-            baseline_target=baseline_target,
+            vertical_segmentation_target=vertical_segmentation_target,
+            baseline_detection_target=baseline_detection_target,
         )
 
     metadata = {
@@ -703,8 +714,10 @@ def main() -> None:
     if full_markup is not None:
         print(
             "Markup: "
-            f"cuts={'yes' if full_markup['cut_projection'] else 'no'}, "
-            f"baseline={'yes' if full_markup['baseline'] else 'no'}"
+            "vertical_segmentation="
+            f"{'yes' if full_markup['vertical_segmentation'] else 'no'}, "
+            "baseline_detection="
+            f"{'yes' if full_markup['baseline_detection'] else 'no'}"
         )
 
 

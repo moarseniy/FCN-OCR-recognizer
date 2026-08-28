@@ -8,9 +8,9 @@ chunk_size: 1024
 num_workers: 4
 overwrite: false
 
-save_ocr_targets: true
-save_cut_projection_targets: false
-save_baseline_targets: false
+save_fcn_ocr_targets: true
+save_vertical_segmentation_targets: false
+save_baseline_detection_targets: false
 
 image_height: 48
 image_width: 64

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 
-ARCHITECTURE_NAME = "baseline_detector_fcn"
+ARCHITECTURE_NAME = "baseline_detection_fcn"
 
 
 def _conv_bn_relu(
@@ -54,9 +54,9 @@ class ResidualDilatedBlock(nn.Module):
         return self.activation(x + self.body(x))
 
 
-class BaselineDetectorFCN(nn.Module):
+class BaselineDetectionFCN(nn.Module):
     """
-    Width/height-preserving FCN for top and bottom text-line heatmaps.
+    Width/height-preserving FCN for top and bottom baseline score maps.
 
     Output shape is (B, 2, H, W): channel 0 predicts the upper text line,
     channel 1 predicts the lower text line.
@@ -72,7 +72,7 @@ class BaselineDetectorFCN(nn.Module):
     ):
         super().__init__()
         if num_classes != 2:
-            raise ValueError("BaselineDetectorFCN expects num_classes=2")
+            raise ValueError("BaselineDetectionFCN expects num_classes=2")
         if base_channels < 8:
             raise ValueError("base_channels must be >= 8")
         if depth < 1:
@@ -116,8 +116,8 @@ class BaselineDetectorFCN(nn.Module):
         return int(width)
 
 
-def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> BaselineDetectorFCN:
-    return BaselineDetectorFCN(
+def create_model(in_channels: int, num_classes: int, **kwargs: Any) -> BaselineDetectionFCN:
+    return BaselineDetectionFCN(
         in_channels=in_channels,
         num_classes=num_classes,
         **dict(kwargs),

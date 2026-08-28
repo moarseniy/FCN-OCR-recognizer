@@ -13,7 +13,7 @@ from fcn_synth_generator.dataset import (
 def _dataset_without_rendering() -> SingleLineDataset:
     config = SingleLineDatasetConfig(
         alphabet=" AB",
-        save_ocr_targets=True,
+        save_fcn_ocr_targets=True,
     )
     dataset = SingleLineDataset.__new__(SingleLineDataset)
     dataset.config = config
@@ -25,7 +25,7 @@ def _dataset_without_rendering() -> SingleLineDataset:
 def test_ocr_target_marks_pixels_outside_visible_ink_as_space() -> None:
     dataset = _dataset_without_rendering()
 
-    labels = dataset._encode_ocr_targets(
+    labels = dataset._encode_fcn_ocr_targets(
         spans=[("A", 2.0, 5.0), ("B", 5.0, 8.0)],
         ink_spans=[("A", 2.0, 5.0), ("B", 5.0, 8.0)],
         width=10,
@@ -37,7 +37,7 @@ def test_ocr_target_marks_pixels_outside_visible_ink_as_space() -> None:
 def test_ocr_target_uses_nearest_character_between_logical_spans() -> None:
     dataset = _dataset_without_rendering()
 
-    labels = dataset._encode_ocr_targets(
+    labels = dataset._encode_fcn_ocr_targets(
         spans=[("A", 1.0, 3.0), ("B", 5.0, 7.0)],
         ink_spans=[("A", 1.0, 3.0), ("B", 5.0, 7.0)],
         width=8,
