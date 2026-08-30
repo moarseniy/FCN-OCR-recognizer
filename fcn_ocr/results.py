@@ -51,7 +51,7 @@ class CutDecodingResult:
     boundaries: list[int]
     input_width: int
     ocr_width: int
-    segmentator_width: int
+    vertical_segmentation_width: int
     decode_method: str = "cells"
     path_score: float | None = None
 

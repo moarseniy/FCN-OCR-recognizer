@@ -4,13 +4,13 @@ import argparse
 from copy import deepcopy
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from PIL import Image
 import torch
 
-from fcn_ocr import VerticalSegmentator
+from fcn_ocr import VerticalSegmenter
 from fcn_ocr.evaluation import (
     CUT_RESULT_FIELDS,
     compute_cut_metrics,
@@ -133,7 +133,7 @@ def segment_count(result) -> int:
 
 
 def segment_images(
-    segmentator: VerticalSegmentator,
+    vertical_segmentation: VerticalSegmenter,
     jobs: list[tuple[int, Path]],
     batch_size: int,
     log_every: int,
@@ -149,14 +149,14 @@ def segment_images(
     for start in range(0, len(jobs), batch_size):
         batch_jobs = jobs[start : start + batch_size]
         try:
-            batch_predictions = segment_batch(segmentator, batch_jobs)
+            batch_predictions = segment_batch(vertical_segmentation, batch_jobs)
             predictions.update(batch_predictions)
             for row_index, _ in batch_jobs:
                 errors[row_index] = ""
         except Exception as batch_error:
             for row_index, path in batch_jobs:
                 try:
-                    prediction = segment_batch(segmentator, [(row_index, path)])[row_index]
+                    prediction = segment_batch(vertical_segmentation, [(row_index, path)])[row_index]
                     predictions[row_index] = prediction
                     errors[row_index] = ""
                 except Exception as image_error:
@@ -172,7 +172,7 @@ def segment_images(
 
 @torch.no_grad()
 def segment_batch(
-    segmentator: VerticalSegmentator,
+    vertical_segmentation: VerticalSegmenter,
     batch_jobs: list[tuple[int, Path]],
 ) -> dict[int, dict[str, Any]]:
     tensors: list[torch.Tensor] = []
@@ -182,31 +182,31 @@ def segment_batch(
 
     for _, path in batch_jobs:
         with Image.open(path) as image:
-            tensor, source_x_map = segmentator.preprocess_pil_with_source_x(image)
+            tensor, source_x_map = vertical_segmentation.preprocess_pil_with_source_x(image)
         tensors.append(tensor)
         source_x_maps.append(source_x_map)
         max_width = max(max_width, tensor.size(2))
-        output_lengths.append(segmentator.output_width_for_input_width(tensor.size(2)))
+        output_lengths.append(vertical_segmentation.output_width_for_input_width(tensor.size(2)))
 
     if not tensors:
         return {}
 
     batch = torch.ones(
-        (len(tensors), segmentator.in_channels, segmentator.image_height, max_width),
+        (len(tensors), vertical_segmentation.in_channels, vertical_segmentation.image_height, max_width),
         dtype=tensors[0].dtype,
-        device=segmentator.device,
+        device=vertical_segmentation.device,
     )
     for batch_index, tensor in enumerate(tensors):
         batch[batch_index, :, :, : tensor.size(2)] = tensor
 
-    logits = segmentator.model(batch)
+    logits = vertical_segmentation.model(batch)
 
     predictions: dict[int, dict[str, Any]] = {}
     for batch_index, ((row_index, _), output_length) in enumerate(zip(batch_jobs, output_lengths)):
         sample_logits = logits[batch_index : batch_index + 1, :, :output_length]
-        result = segmentator.analyze_segmentation_logits(
+        result = vertical_segmentation.analyze_segmentation_logits(
             sample_logits,
-            input_shape=(1, segmentator.in_channels, segmentator.image_height, tensors[batch_index].size(2)),
+            input_shape=(1, vertical_segmentation.in_channels, vertical_segmentation.image_height, tensors[batch_index].size(2)),
         )
         cut_count = segment_count(result)
         pred_len = max(0, cut_count - 1) if result.raw_indices else 0
@@ -270,7 +270,7 @@ def cut_positions_to_source(
 
 
 def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> None:
-    print("=== Segmentator length evaluation ===")
+    print("=== Vertical segmentation length evaluation ===")
     print(f"Total samples:              {metrics['total_samples']}")
     print(f"Evaluated samples:          {metrics['evaluated_samples']}")
     print(f"Exact length matches:       {metrics['exact_length_matches']}")
@@ -308,8 +308,8 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
         print(f"CSV saved to:               {output_csv}")
 
 
-def configure_segmentator(
-    segmentator: VerticalSegmentator,
+def configure_vertical_segmentation(
+    vertical_segmentation: VerticalSegmenter,
     cut_threshold: float | None,
     cut_min_width: int | None,
     cut_max_width: int | None,
@@ -339,40 +339,40 @@ def configure_segmentator(
     if not 0.0 < baseline_detector_threshold < 1.0:
         raise ValueError("baseline_detector_threshold must be between 0 and 1")
 
-    segmentator.cut_threshold = segmentator._resolve_cut_threshold(cut_threshold)
-    segmentator.cut_min_width = segmentator._resolve_non_negative_int(
+    vertical_segmentation.cut_threshold = vertical_segmentation._resolve_cut_threshold(cut_threshold)
+    vertical_segmentation.cut_min_width = vertical_segmentation._resolve_non_negative_int(
         cut_min_width,
         "cut_min_width",
-        default=segmentator.cut_min_width,
+        default=vertical_segmentation.cut_min_width,
         min_value=1,
     )
-    segmentator.cut_max_width = segmentator._resolve_non_negative_int(
+    vertical_segmentation.cut_max_width = vertical_segmentation._resolve_non_negative_int(
         cut_max_width,
         "cut_max_width",
-        default=segmentator.cut_max_width,
+        default=vertical_segmentation.cut_max_width,
         min_value=0,
     )
-    segmentator.cut_smooth_radius = segmentator._resolve_non_negative_int(
+    vertical_segmentation.cut_smooth_radius = vertical_segmentation._resolve_non_negative_int(
         cut_smooth_radius,
         "cut_smooth_radius",
-        default=segmentator.cut_smooth_radius,
+        default=vertical_segmentation.cut_smooth_radius,
         min_value=0,
     )
-    segmentator.scale_x = float(scale_x)
-    segmentator.y_pad = float(y_pad)
-    segmentator.x_pad = float(x_pad)
-    segmentator.baseline_crop = bool(baseline_crop)
-    segmentator.baseline_line_pad = float(baseline_line_pad)
-    segmentator.baseline_line_pad_px = float(baseline_line_pad_px)
-    segmentator.baseline_deskew = bool(baseline_deskew)
-    segmentator.baseline_max_angle = float(baseline_max_angle)
-    segmentator.baseline_detector_threshold = float(baseline_detector_threshold)
+    vertical_segmentation.scale_x = float(scale_x)
+    vertical_segmentation.y_pad = float(y_pad)
+    vertical_segmentation.x_pad = float(x_pad)
+    vertical_segmentation.baseline_crop = bool(baseline_crop)
+    vertical_segmentation.baseline_line_pad = float(baseline_line_pad)
+    vertical_segmentation.baseline_line_pad_px = float(baseline_line_pad_px)
+    vertical_segmentation.baseline_deskew = bool(baseline_deskew)
+    vertical_segmentation.baseline_max_angle = float(baseline_max_angle)
+    vertical_segmentation.baseline_detector_threshold = float(baseline_detector_threshold)
 
 
-def evaluate_with_segmentator(
+def evaluate_with_vertical_segmentation(
     base_rows: list[dict[str, Any]],
     jobs: list[tuple[int, Path]],
-    segmentator: VerticalSegmentator,
+    vertical_segmentation: VerticalSegmenter,
     output_csv: Path | None,
     batch_size: int,
     log_every: int,
@@ -381,7 +381,7 @@ def evaluate_with_segmentator(
 ) -> dict[str, Any]:
     rows = deepcopy(base_rows)
     started_at = time.perf_counter()
-    predictions, errors = segment_images(segmentator, jobs, batch_size=batch_size, log_every=log_every)
+    predictions, errors = segment_images(vertical_segmentation, jobs, batch_size=batch_size, log_every=log_every)
     elapsed = time.perf_counter() - started_at
 
     for row_index, prediction in predictions.items():
@@ -390,23 +390,23 @@ def evaluate_with_segmentator(
         rows[row_index]["error"] = error
 
     metrics = compute_cut_metrics(rows, elapsed, cut_tolerance_px=cut_tolerance_px)
-    metrics["task"] = segmentator.task
-    metrics["cut_threshold"] = float(segmentator.cut_threshold)
-    metrics["cut_min_width"] = int(segmentator.cut_min_width)
-    metrics["cut_max_width"] = int(segmentator.cut_max_width)
-    metrics["cut_smooth_radius"] = int(segmentator.cut_smooth_radius)
-    metrics["scale_x"] = float(segmentator.scale_x)
-    metrics["y_pad"] = float(segmentator.y_pad)
-    metrics["x_pad"] = float(segmentator.x_pad)
-    metrics["baseline_crop"] = bool(segmentator.baseline_crop)
-    metrics["baseline_line_pad"] = float(segmentator.baseline_line_pad)
-    metrics["baseline_line_pad_px"] = float(segmentator.baseline_line_pad_px)
-    metrics["baseline_deskew"] = bool(segmentator.baseline_deskew)
-    metrics["baseline_max_angle"] = float(segmentator.baseline_max_angle)
+    metrics["task"] = vertical_segmentation.task
+    metrics["cut_threshold"] = float(vertical_segmentation.cut_threshold)
+    metrics["cut_min_width"] = int(vertical_segmentation.cut_min_width)
+    metrics["cut_max_width"] = int(vertical_segmentation.cut_max_width)
+    metrics["cut_smooth_radius"] = int(vertical_segmentation.cut_smooth_radius)
+    metrics["scale_x"] = float(vertical_segmentation.scale_x)
+    metrics["y_pad"] = float(vertical_segmentation.y_pad)
+    metrics["x_pad"] = float(vertical_segmentation.x_pad)
+    metrics["baseline_crop"] = bool(vertical_segmentation.baseline_crop)
+    metrics["baseline_line_pad"] = float(vertical_segmentation.baseline_line_pad)
+    metrics["baseline_line_pad_px"] = float(vertical_segmentation.baseline_line_pad_px)
+    metrics["baseline_deskew"] = bool(vertical_segmentation.baseline_deskew)
+    metrics["baseline_max_angle"] = float(vertical_segmentation.baseline_max_angle)
     metrics["baseline_detector_checkpoint"] = (
-        str(segmentator.baseline_detector_checkpoint) if segmentator.baseline_detector_checkpoint else ""
+        str(vertical_segmentation.baseline_detector_checkpoint) if vertical_segmentation.baseline_detector_checkpoint else ""
     )
-    metrics["baseline_detector_threshold"] = float(segmentator.baseline_detector_threshold)
+    metrics["baseline_detector_threshold"] = float(vertical_segmentation.baseline_detector_threshold)
 
     if output_csv is not None:
         write_csv_rows(rows, output_csv, CUT_RESULT_FIELDS)
@@ -440,7 +440,7 @@ def evaluate_prepared(
     baseline_detector_threshold: float,
     cut_tolerance_px: float,
 ) -> dict[str, Any]:
-    segmentator = VerticalSegmentator(
+    vertical_segmentation = VerticalSegmenter(
         checkpoint_path,
         device=device,
         verbose=False,
@@ -459,8 +459,8 @@ def evaluate_prepared(
         cut_max_width=cut_max_width,
         cut_smooth_radius=cut_smooth_radius,
     )
-    configure_segmentator(
-        segmentator,
+    configure_vertical_segmentation(
+        vertical_segmentation,
         cut_threshold=cut_threshold,
         cut_min_width=cut_min_width,
         cut_max_width=cut_max_width,
@@ -476,11 +476,11 @@ def evaluate_prepared(
         baseline_detector_threshold=baseline_detector_threshold,
     )
     if verbose:
-        segmentator.print_summary()
-    return evaluate_with_segmentator(
+        vertical_segmentation.print_summary()
+    return evaluate_with_vertical_segmentation(
         base_rows=base_rows,
         jobs=jobs,
-        segmentator=segmentator,
+        vertical_segmentation=vertical_segmentation,
         output_csv=output_csv,
         batch_size=batch_size,
         log_every=log_every,
@@ -685,7 +685,7 @@ def optimize(
         raise ValueError(
             f"--optuna-metric {metric_name} requires manual markup created by tools.annotation.server"
         )
-    segmentator = VerticalSegmentator(
+    vertical_segmentation = VerticalSegmenter(
         checkpoint_path,
         device=device,
         verbose=True,
@@ -707,7 +707,7 @@ def optimize(
         storage=storage,
     )
     print(
-        "The segmentator summary above shows neutral initialization; "
+        "The vertical segmentation summary above shows neutral initialization; "
         "trial preprocessing is applied immediately before evaluation."
     )
 
@@ -791,8 +791,8 @@ def optimize(
         )
         trial_y_pad = require_float_parameter(trial, "y_pad", y_pad, y_pad_min, y_pad_max)
         trial_x_pad = require_float_parameter(trial, "x_pad", x_pad, x_pad_min, x_pad_max)
-        configure_segmentator(
-            segmentator,
+        configure_vertical_segmentation(
+            vertical_segmentation,
             cut_threshold=trial_cut_threshold,
             cut_min_width=trial_cut_min_width,
             cut_max_width=trial_cut_max_width,
@@ -807,10 +807,10 @@ def optimize(
             baseline_max_angle=trial_baseline_max_angle,
             baseline_detector_threshold=trial_baseline_detector_threshold,
         )
-        metrics = evaluate_with_segmentator(
+        metrics = evaluate_with_vertical_segmentation(
             base_rows=base_rows,
             jobs=jobs,
-            segmentator=segmentator,
+            vertical_segmentation=vertical_segmentation,
             output_csv=None,
             batch_size=batch_size,
             log_every=0,
@@ -825,7 +825,7 @@ def optimize(
         return float(metrics[metric_name])
 
     print(
-        "Optuna segmentator search: "
+        "Optuna vertical segmentation search: "
         f"trials={trials}, metric={metric_name}, "
         f"cut_threshold={cut_threshold if cut_threshold_min is None else f'[{cut_threshold_min}, {cut_threshold_max}]'}, "
         f"cut_min_width={cut_min_width if cut_min_width_min is None else f'[{cut_min_width_min}, {cut_min_width_max}]'}, "
@@ -862,8 +862,8 @@ def optimize(
     best_value = float(best_trial.value)
     print(f"Best params: {best_params}, {metric_name}={best_value:.8f}")
 
-    configure_segmentator(
-        segmentator,
+    configure_vertical_segmentation(
+        vertical_segmentation,
         cut_threshold=float(best_params["cut_threshold"]),
         cut_min_width=int(best_params["cut_min_width"]),
         cut_max_width=int(best_params["cut_max_width"]),
@@ -878,10 +878,10 @@ def optimize(
         baseline_max_angle=float(best_params["baseline_max_angle"]),
         baseline_detector_threshold=float(best_params["baseline_detector_threshold"]),
     )
-    final_metrics = evaluate_with_segmentator(
+    final_metrics = evaluate_with_vertical_segmentation(
         base_rows=base_rows,
         jobs=jobs,
-        segmentator=segmentator,
+        vertical_segmentation=vertical_segmentation,
         output_csv=output_csv,
         batch_size=batch_size,
         log_every=log_every,
@@ -947,8 +947,8 @@ def evaluate(
     )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tune/evaluate vertical cut segmentation.")
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Tune or evaluate vertical segmentation.")
     parser.add_argument("--config", default=None, help="Evaluation YAML config.")
     parser.add_argument(
         "--json",
@@ -960,13 +960,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override images directory stored in manual markup JSON; required for Label Studio JSON.",
     )
-    parser.add_argument("--checkpoint", default=None, help="Path to vertical cut segmentator checkpoint.")
-    parser.add_argument(
-        "--inference-ocr-checkpoint",
-        default=None,
-        help="OCR checkpoint to place into the printed inference.py command. It is not loaded or executed.",
-    )
-    parser.add_argument("--out", default="segmentator_length_metrics.csv", help="Output CSV path.")
+    parser.add_argument("--checkpoint", default=None, help="Vertical segmentation checkpoint.")
+    parser.add_argument("--out", default="vertical_segmentation_length_metrics.csv", help="Output CSV path.")
     parser.add_argument("--device", default=None, help="Device to use: cuda, cpu, or empty for auto.")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--limit", type=int, default=None)
@@ -1080,12 +1075,12 @@ def parse_args() -> argparse.Namespace:
             "json",
             "images",
             "checkpoint",
-            "inference_ocr_checkpoint",
             "out",
             "baseline_detector_checkpoint",
             "optuna_trials_out",
         ),
         required_fields=("json", "checkpoint"),
+        argv=argv,
     )
 
 
@@ -1121,23 +1116,15 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "cut_smooth_radius": metrics["cut_smooth_radius"],
         },
     }
-    if args.inference_ocr_checkpoint:
-        config_data["fcn_ocr"] = {
-            "checkpoint": str(
-                Path(args.inference_ocr_checkpoint).expanduser().resolve()
-            ),
-            "decode": {"enabled": True},
-        }
-    if args.inference_ocr_checkpoint is None:
-        print(
-            "Generated config contains only baseline_detection and "
-            "vertical_segmentation sections."
-        )
+    print(
+        "Generated config contains baseline_detection and "
+        "vertical_segmentation sections."
+    )
     save_and_print_inference_command(config_data, args.out, image_path)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     images_dir = Path(args.images) if args.images else None
     parameter_modes = getattr(args, "evaluation_parameter_modes", {})
 
@@ -1230,7 +1217,3 @@ def main() -> None:
             cut_tolerance_px=args.cut_tolerance_px,
         )
     _print_inference_command(args, metrics)
-
-
-if __name__ == "__main__":
-    main()

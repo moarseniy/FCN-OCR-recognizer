@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-from fcn_ocr import InferenceConfig, OCRPipeline
+from fcn_ocr import InferenceConfig, FCNPipeline
 from fcn_ocr.evaluation import OCR_RESULT_FIELDS, compute_ocr_metrics, load_label_studio_samples
 from fcn_ocr.evaluation.config import parse_args_with_evaluation_config
 from fcn_ocr.evaluation.optuna import (
@@ -80,16 +80,19 @@ def print_metrics(metrics: dict[str, Any], output_csv: Path | None = None) -> No
     if metrics.get("baseline_detector_checkpoint"):
         print(f"Baseline detector:          {metrics['baseline_detector_checkpoint']}")
         print(f"Baseline detector thr:      {metrics['baseline_detector_threshold']:.5f}")
-    print(f"Decode with segmentator:    {metrics['decode_with_segmentator']}")
-    if metrics.get("segmentator_checkpoint"):
-        print(f"Segmentator checkpoint:     {metrics['segmentator_checkpoint']}")
-        print(f"Segmentator scale_x:        {metrics['segmentator_scale_x']:+.5f}")
-        print(f"Segmentator y_pad:          {metrics['segmentator_y_pad']:+.5f}")
-        print(f"Segmentator x_pad:          {metrics['segmentator_x_pad']:.5f}")
-        print(f"Segmentator cut threshold:  {metrics['segmentator_cut_threshold']:.5f}")
-        print(f"Segmentator cut min width:  {metrics['segmentator_cut_min_width']}")
-        print(f"Segmentator cut max width:  {metrics['segmentator_cut_max_width']}")
-        print(f"Segmentator smooth radius:  {metrics['segmentator_cut_smooth_radius']}")
+    print(
+        "Decode with vertical segmentation: "
+        f"{metrics['decode_with_vertical_segmentation']}"
+    )
+    if metrics.get("vertical_segmentation_checkpoint"):
+        print(f"Vertical segmentation checkpoint:     {metrics['vertical_segmentation_checkpoint']}")
+        print(f"Vertical segmentation scale_x:        {metrics['vertical_segmentation_scale_x']:+.5f}")
+        print(f"Vertical segmentation y_pad:          {metrics['vertical_segmentation_y_pad']:+.5f}")
+        print(f"Vertical segmentation x_pad:          {metrics['vertical_segmentation_x_pad']:.5f}")
+        print(f"Vertical segmentation cut threshold:  {metrics['vertical_segmentation_cut_threshold']:.5f}")
+        print(f"Vertical segmentation cut min width:  {metrics['vertical_segmentation_cut_min_width']}")
+        print(f"Vertical segmentation cut max width:  {metrics['vertical_segmentation_cut_max_width']}")
+        print(f"Vertical segmentation smooth radius:  {metrics['vertical_segmentation_cut_smooth_radius']}")
         print(f"Decode method:              {metrics['decode_method']}")
         print(f"Decode center fraction:     {metrics['center_fraction']:.5f}")
         print(f"Decode min score width:     {metrics['min_score_width']}")
@@ -123,15 +126,15 @@ def evaluate_prepared(
     baseline_line_pad_px: float = 0.0,
     baseline_detector_checkpoint: Path | None = None,
     baseline_detector_threshold: float = 0.35,
-    segmentator_checkpoint: Path | None = None,
-    decode_with_segmentator: bool = False,
-    segmentator_scale_x: float = 0.0,
-    segmentator_y_pad: float = 0.0,
-    segmentator_x_pad: float = 0.0,
-    segmentator_cut_threshold: float | None = None,
-    segmentator_cut_min_width: int | None = None,
-    segmentator_cut_max_width: int | None = None,
-    segmentator_cut_smooth_radius: int | None = None,
+    vertical_segmentation_checkpoint: Path | None = None,
+    decode_with_vertical_segmentation: bool = False,
+    vertical_segmentation_scale_x: float = 0.0,
+    vertical_segmentation_y_pad: float = 0.0,
+    vertical_segmentation_x_pad: float = 0.0,
+    vertical_segmentation_cut_threshold: float | None = None,
+    vertical_segmentation_cut_min_width: int | None = None,
+    vertical_segmentation_cut_max_width: int | None = None,
+    vertical_segmentation_cut_smooth_radius: int | None = None,
     decode_method: str = "cells",
     decode_top_k: int = 8,
     center_fraction: float = 0.6,
@@ -144,8 +147,8 @@ def evaluate_prepared(
 ) -> dict[str, Any]:
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
-    if decode_with_segmentator and segmentator_checkpoint is None:
-        raise ValueError("decode_with_segmentator requires segmentator_checkpoint")
+    if decode_with_vertical_segmentation and vertical_segmentation_checkpoint is None:
+        raise ValueError("decode_with_vertical_segmentation requires vertical_segmentation_checkpoint")
 
     rows = deepcopy(base_rows)
     started_at = time.perf_counter()
@@ -159,7 +162,7 @@ def evaluate_prepared(
                 "x_pad": x_pad,
             },
             "decode": {
-                "enabled": decode_with_segmentator,
+                "enabled": decode_with_vertical_segmentation,
                 "method": decode_method,
                 "top_k": decode_top_k,
                 "center_fraction": center_fraction,
@@ -183,21 +186,21 @@ def evaluate_prepared(
             "line_pad": baseline_line_pad,
             "line_pad_px": baseline_line_pad_px,
         }
-    if decode_with_segmentator:
+    if decode_with_vertical_segmentation:
         config_data["vertical_segmentation"] = {
-            "checkpoint": segmentator_checkpoint,
+            "checkpoint": vertical_segmentation_checkpoint,
             "preprocessing": {
-                "scale_x": segmentator_scale_x,
-                "y_pad": segmentator_y_pad,
-                "x_pad": segmentator_x_pad,
+                "scale_x": vertical_segmentation_scale_x,
+                "y_pad": vertical_segmentation_y_pad,
+                "x_pad": vertical_segmentation_x_pad,
             },
-            "cut_threshold": segmentator_cut_threshold,
-            "cut_min_width": segmentator_cut_min_width,
-            "cut_max_width": segmentator_cut_max_width,
-            "cut_smooth_radius": segmentator_cut_smooth_radius,
+            "cut_threshold": vertical_segmentation_cut_threshold,
+            "cut_min_width": vertical_segmentation_cut_min_width,
+            "cut_max_width": vertical_segmentation_cut_max_width,
+            "cut_smooth_radius": vertical_segmentation_cut_smooth_radius,
         }
 
-    pipeline = OCRPipeline(
+    pipeline = FCNPipeline(
         InferenceConfig.model_validate(config_data),
         verbose=verbose,
     )
@@ -232,11 +235,11 @@ def evaluate_prepared(
     metrics["baseline_line_pad_px"] = float(baseline_line_pad_px)
     metrics["baseline_detector_checkpoint"] = str(baseline_detector_checkpoint) if baseline_detector_checkpoint else ""
     metrics["baseline_detector_threshold"] = float(baseline_detector_threshold)
-    metrics["decode_with_segmentator"] = bool(decode_with_segmentator)
-    metrics["segmentator_checkpoint"] = str(segmentator_checkpoint) if segmentator_checkpoint else ""
-    metrics["segmentator_scale_x"] = float(segmentator_scale_x)
-    metrics["segmentator_y_pad"] = float(segmentator_y_pad)
-    metrics["segmentator_x_pad"] = float(segmentator_x_pad)
+    metrics["decode_with_vertical_segmentation"] = bool(decode_with_vertical_segmentation)
+    metrics["vertical_segmentation_checkpoint"] = str(vertical_segmentation_checkpoint) if vertical_segmentation_checkpoint else ""
+    metrics["vertical_segmentation_scale_x"] = float(vertical_segmentation_scale_x)
+    metrics["vertical_segmentation_y_pad"] = float(vertical_segmentation_y_pad)
+    metrics["vertical_segmentation_x_pad"] = float(vertical_segmentation_x_pad)
     metrics["decode_method"] = str(decode_method)
     metrics["decode_top_k"] = int(decode_top_k)
     metrics["center_fraction"] = float(center_fraction)
@@ -246,16 +249,24 @@ def evaluate_prepared(
     metrics["width_weight"] = float(width_weight)
     metrics["skip_cut_penalty"] = float(skip_cut_penalty)
     metrics["glyph_width_prior"] = glyph_width_prior or {}
-    if pipeline.segmentator is not None:
-        metrics["segmentator_cut_threshold"] = float(pipeline.segmentator.cut_threshold)
-        metrics["segmentator_cut_min_width"] = int(pipeline.segmentator.cut_min_width)
-        metrics["segmentator_cut_max_width"] = int(pipeline.segmentator.cut_max_width)
-        metrics["segmentator_cut_smooth_radius"] = int(pipeline.segmentator.cut_smooth_radius)
+    if pipeline.vertical_segmenter is not None:
+        metrics["vertical_segmentation_cut_threshold"] = float(
+            pipeline.vertical_segmenter.cut_threshold
+        )
+        metrics["vertical_segmentation_cut_min_width"] = int(
+            pipeline.vertical_segmenter.cut_min_width
+        )
+        metrics["vertical_segmentation_cut_max_width"] = int(
+            pipeline.vertical_segmenter.cut_max_width
+        )
+        metrics["vertical_segmentation_cut_smooth_radius"] = int(
+            pipeline.vertical_segmenter.cut_smooth_radius
+        )
     else:
-        metrics["segmentator_cut_threshold"] = float(segmentator_cut_threshold or 0.0)
-        metrics["segmentator_cut_min_width"] = int(segmentator_cut_min_width or 0)
-        metrics["segmentator_cut_max_width"] = int(segmentator_cut_max_width or 0)
-        metrics["segmentator_cut_smooth_radius"] = int(segmentator_cut_smooth_radius or 0)
+        metrics["vertical_segmentation_cut_threshold"] = float(vertical_segmentation_cut_threshold or 0.0)
+        metrics["vertical_segmentation_cut_min_width"] = int(vertical_segmentation_cut_min_width or 0)
+        metrics["vertical_segmentation_cut_max_width"] = int(vertical_segmentation_cut_max_width or 0)
+        metrics["vertical_segmentation_cut_smooth_radius"] = int(vertical_segmentation_cut_smooth_radius or 0)
 
     if output_csv is not None:
         write_csv_rows(rows, output_csv, OCR_RESULT_FIELDS)
@@ -274,13 +285,13 @@ def _trial_params_snapshot(metrics: dict[str, Any]) -> dict[str, Any]:
         "baseline_detector_threshold",
         "baseline_line_pad",
         "baseline_line_pad_px",
-        "segmentator_scale_x",
-        "segmentator_y_pad",
-        "segmentator_x_pad",
-        "segmentator_cut_threshold",
-        "segmentator_cut_min_width",
-        "segmentator_cut_max_width",
-        "segmentator_cut_smooth_radius",
+        "vertical_segmentation_scale_x",
+        "vertical_segmentation_y_pad",
+        "vertical_segmentation_x_pad",
+        "vertical_segmentation_cut_threshold",
+        "vertical_segmentation_cut_min_width",
+        "vertical_segmentation_cut_max_width",
+        "vertical_segmentation_cut_smooth_radius",
         "decode_method",
         "center_fraction",
         "min_score_width",
@@ -361,15 +372,15 @@ def optimize_preprocess(
     baseline_line_pad_px: float = 0.0,
     baseline_detector_checkpoint: Path | None = None,
     baseline_detector_threshold: float = 0.35,
-    segmentator_checkpoint: Path | None = None,
-    decode_with_segmentator: bool = False,
-    segmentator_scale_x: float = 0.0,
-    segmentator_y_pad: float = 0.0,
-    segmentator_x_pad: float = 0.0,
-    segmentator_cut_threshold: float | None = None,
-    segmentator_cut_min_width: int | None = None,
-    segmentator_cut_max_width: int | None = None,
-    segmentator_cut_smooth_radius: int | None = None,
+    vertical_segmentation_checkpoint: Path | None = None,
+    decode_with_vertical_segmentation: bool = False,
+    vertical_segmentation_scale_x: float = 0.0,
+    vertical_segmentation_y_pad: float = 0.0,
+    vertical_segmentation_x_pad: float = 0.0,
+    vertical_segmentation_cut_threshold: float | None = None,
+    vertical_segmentation_cut_min_width: int | None = None,
+    vertical_segmentation_cut_max_width: int | None = None,
+    vertical_segmentation_cut_smooth_radius: int | None = None,
     decode_method: str = "cells",
     decode_top_k: int = 8,
     center_fraction: float = 0.6,
@@ -381,26 +392,26 @@ def optimize_preprocess(
     glyph_width_prior: dict[str, Any] | None = None,
     x_pad_min: float | None = None,
     x_pad_max: float | None = None,
-    segmentator_scale_x_min: float | None = None,
-    segmentator_scale_x_max: float | None = None,
-    segmentator_y_pad_min: float | None = None,
-    segmentator_y_pad_max: float | None = None,
-    segmentator_x_pad_min: float | None = None,
-    segmentator_x_pad_max: float | None = None,
+    vertical_segmentation_scale_x_min: float | None = None,
+    vertical_segmentation_scale_x_max: float | None = None,
+    vertical_segmentation_y_pad_min: float | None = None,
+    vertical_segmentation_y_pad_max: float | None = None,
+    vertical_segmentation_x_pad_min: float | None = None,
+    vertical_segmentation_x_pad_max: float | None = None,
     baseline_detector_threshold_min: float | None = None,
     baseline_detector_threshold_max: float | None = None,
     baseline_line_pad_min: float | None = None,
     baseline_line_pad_max: float | None = None,
     baseline_line_pad_px_min: float | None = None,
     baseline_line_pad_px_max: float | None = None,
-    segmentator_cut_threshold_min: float | None = None,
-    segmentator_cut_threshold_max: float | None = None,
-    segmentator_cut_min_width_min: int | None = None,
-    segmentator_cut_min_width_max: int | None = None,
-    segmentator_cut_max_width_min: int | None = None,
-    segmentator_cut_max_width_max: int | None = None,
-    segmentator_cut_smooth_radius_min: int | None = None,
-    segmentator_cut_smooth_radius_max: int | None = None,
+    vertical_segmentation_cut_threshold_min: float | None = None,
+    vertical_segmentation_cut_threshold_max: float | None = None,
+    vertical_segmentation_cut_min_width_min: int | None = None,
+    vertical_segmentation_cut_min_width_max: int | None = None,
+    vertical_segmentation_cut_max_width_min: int | None = None,
+    vertical_segmentation_cut_max_width_max: int | None = None,
+    vertical_segmentation_cut_smooth_radius_min: int | None = None,
+    vertical_segmentation_cut_smooth_radius_max: int | None = None,
     center_fraction_min: float | None = None,
     center_fraction_max: float | None = None,
     min_score_width_min: int | None = None,
@@ -429,7 +440,7 @@ def optimize_preprocess(
             and bool(optuna_tune_baseline_line_pad_px)
         )
         tune_active_baseline_detector = bool(baseline_crop) and baseline_detector_checkpoint is not None
-        tune_active_segmentator = bool(decode_with_segmentator) and segmentator_checkpoint is not None
+        tune_active_vertical_segmentation = bool(decode_with_vertical_segmentation) and vertical_segmentation_checkpoint is not None
 
         scale_x = trial.suggest_float("scale_x", scale_x_min, scale_x_max)
         y_pad = trial.suggest_float("y_pad", y_pad_min, y_pad_max)
@@ -467,82 +478,82 @@ def optimize_preprocess(
             if tune_active_baseline_line_pad_px
             else baseline_line_pad_px
         )
-        current_segmentator_scale_x = (
+        current_vertical_segmentation_scale_x = (
             suggest_float_or_fixed(
                 trial,
-                "segmentator_scale_x",
-                segmentator_scale_x,
-                segmentator_scale_x_min,
-                segmentator_scale_x_max,
+                "vertical_segmentation_scale_x",
+                vertical_segmentation_scale_x,
+                vertical_segmentation_scale_x_min,
+                vertical_segmentation_scale_x_max,
             )
-            if tune_active_segmentator
-            else segmentator_scale_x
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_scale_x
         )
-        current_segmentator_y_pad = (
+        current_vertical_segmentation_y_pad = (
             suggest_float_or_fixed(
                 trial,
-                "segmentator_y_pad",
-                segmentator_y_pad,
-                segmentator_y_pad_min,
-                segmentator_y_pad_max,
+                "vertical_segmentation_y_pad",
+                vertical_segmentation_y_pad,
+                vertical_segmentation_y_pad_min,
+                vertical_segmentation_y_pad_max,
             )
-            if tune_active_segmentator
-            else segmentator_y_pad
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_y_pad
         )
-        current_segmentator_x_pad = (
+        current_vertical_segmentation_x_pad = (
             suggest_float_or_fixed(
                 trial,
-                "segmentator_x_pad",
-                segmentator_x_pad,
-                segmentator_x_pad_min,
-                segmentator_x_pad_max,
+                "vertical_segmentation_x_pad",
+                vertical_segmentation_x_pad,
+                vertical_segmentation_x_pad_min,
+                vertical_segmentation_x_pad_max,
             )
-            if tune_active_segmentator
-            else segmentator_x_pad
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_x_pad
         )
-        current_segmentator_cut_threshold = (
+        current_vertical_segmentation_cut_threshold = (
             suggest_float_or_fixed(
                 trial,
-                "segmentator_cut_threshold",
-                segmentator_cut_threshold,
-                segmentator_cut_threshold_min,
-                segmentator_cut_threshold_max,
+                "vertical_segmentation_cut_threshold",
+                vertical_segmentation_cut_threshold,
+                vertical_segmentation_cut_threshold_min,
+                vertical_segmentation_cut_threshold_max,
             )
-            if tune_active_segmentator
-            else segmentator_cut_threshold
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_cut_threshold
         )
-        current_segmentator_cut_min_width = (
+        current_vertical_segmentation_cut_min_width = (
             suggest_int_or_fixed(
                 trial,
-                "segmentator_cut_min_width",
-                segmentator_cut_min_width,
-                segmentator_cut_min_width_min,
-                segmentator_cut_min_width_max,
+                "vertical_segmentation_cut_min_width",
+                vertical_segmentation_cut_min_width,
+                vertical_segmentation_cut_min_width_min,
+                vertical_segmentation_cut_min_width_max,
             )
-            if tune_active_segmentator
-            else segmentator_cut_min_width
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_cut_min_width
         )
-        current_segmentator_cut_max_width = (
+        current_vertical_segmentation_cut_max_width = (
             suggest_int_or_fixed(
                 trial,
-                "segmentator_cut_max_width",
-                segmentator_cut_max_width,
-                segmentator_cut_max_width_min,
-                segmentator_cut_max_width_max,
+                "vertical_segmentation_cut_max_width",
+                vertical_segmentation_cut_max_width,
+                vertical_segmentation_cut_max_width_min,
+                vertical_segmentation_cut_max_width_max,
             )
-            if tune_active_segmentator
-            else segmentator_cut_max_width
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_cut_max_width
         )
-        current_segmentator_cut_smooth_radius = (
+        current_vertical_segmentation_cut_smooth_radius = (
             suggest_int_or_fixed(
                 trial,
-                "segmentator_cut_smooth_radius",
-                segmentator_cut_smooth_radius,
-                segmentator_cut_smooth_radius_min,
-                segmentator_cut_smooth_radius_max,
+                "vertical_segmentation_cut_smooth_radius",
+                vertical_segmentation_cut_smooth_radius,
+                vertical_segmentation_cut_smooth_radius_min,
+                vertical_segmentation_cut_smooth_radius_max,
             )
-            if tune_active_segmentator
-            else segmentator_cut_smooth_radius
+            if tune_active_vertical_segmentation
+            else vertical_segmentation_cut_smooth_radius
         )
         current_center_fraction = (
             suggest_float_or_fixed(
@@ -552,7 +563,7 @@ def optimize_preprocess(
                 center_fraction_min,
                 center_fraction_max,
             )
-            if tune_active_segmentator
+            if tune_active_vertical_segmentation
             else center_fraction
         )
         current_min_score_width = (
@@ -563,7 +574,7 @@ def optimize_preprocess(
                 min_score_width_min,
                 min_score_width_max,
             )
-            if tune_active_segmentator
+            if tune_active_vertical_segmentation
             else min_score_width
         )
         metrics = evaluate_prepared(
@@ -585,15 +596,15 @@ def optimize_preprocess(
             baseline_line_pad_px=float(current_baseline_line_pad_px or 0.0),
             baseline_detector_checkpoint=baseline_detector_checkpoint,
             baseline_detector_threshold=float(current_baseline_detector_threshold or 0.35),
-            segmentator_checkpoint=segmentator_checkpoint,
-            decode_with_segmentator=decode_with_segmentator,
-            segmentator_scale_x=float(current_segmentator_scale_x or 0.0),
-            segmentator_y_pad=float(current_segmentator_y_pad or 0.0),
-            segmentator_x_pad=float(current_segmentator_x_pad or 0.0),
-            segmentator_cut_threshold=current_segmentator_cut_threshold,
-            segmentator_cut_min_width=current_segmentator_cut_min_width,
-            segmentator_cut_max_width=current_segmentator_cut_max_width,
-            segmentator_cut_smooth_radius=current_segmentator_cut_smooth_radius,
+            vertical_segmentation_checkpoint=vertical_segmentation_checkpoint,
+            decode_with_vertical_segmentation=decode_with_vertical_segmentation,
+            vertical_segmentation_scale_x=float(current_vertical_segmentation_scale_x or 0.0),
+            vertical_segmentation_y_pad=float(current_vertical_segmentation_y_pad or 0.0),
+            vertical_segmentation_x_pad=float(current_vertical_segmentation_x_pad or 0.0),
+            vertical_segmentation_cut_threshold=current_vertical_segmentation_cut_threshold,
+            vertical_segmentation_cut_min_width=current_vertical_segmentation_cut_min_width,
+            vertical_segmentation_cut_max_width=current_vertical_segmentation_cut_max_width,
+            vertical_segmentation_cut_smooth_radius=current_vertical_segmentation_cut_smooth_radius,
             decode_method=decode_method,
             decode_top_k=decode_top_k,
             center_fraction=float(current_center_fraction or 1.0),
@@ -616,10 +627,10 @@ def optimize_preprocess(
         f"trials={trials}, metric={metric_name}, "
         f"ocr_scale_x=[{scale_x_min}, {scale_x_max}], "
         f"ocr_y_pad=[{y_pad_min}, {y_pad_max}], "
-        f"decode_with_segmentator={decode_with_segmentator}, baseline_crop={baseline_crop}, "
-        f"segmentator_scale_x=[{segmentator_scale_x_min}, {segmentator_scale_x_max}], "
-        f"segmentator_y_pad=[{segmentator_y_pad_min}, {segmentator_y_pad_max}], "
-        f"segmentator_x_pad=[{segmentator_x_pad_min}, {segmentator_x_pad_max}], "
+        f"decode_with_vertical_segmentation={decode_with_vertical_segmentation}, baseline_crop={baseline_crop}, "
+        f"vertical_segmentation_scale_x=[{vertical_segmentation_scale_x_min}, {vertical_segmentation_scale_x_max}], "
+        f"vertical_segmentation_y_pad=[{vertical_segmentation_y_pad_min}, {vertical_segmentation_y_pad_max}], "
+        f"vertical_segmentation_x_pad=[{vertical_segmentation_x_pad_min}, {vertical_segmentation_x_pad_max}], "
         f"center_fraction=[{center_fraction_min}, {center_fraction_max}], "
         f"min_score_width=[{min_score_width_min}, {min_score_width_max}], "
         f"tune_baseline_line_pad={optuna_tune_baseline_line_pad}, "
@@ -658,36 +669,36 @@ def optimize_preprocess(
         baseline_detector_threshold=float(
             best_or_fixed(best_params, "baseline_detector_threshold", baseline_detector_threshold)
         ),
-        segmentator_checkpoint=segmentator_checkpoint,
-        decode_with_segmentator=decode_with_segmentator,
-        segmentator_scale_x=float(
-            best_or_fixed(best_params, "segmentator_scale_x", segmentator_scale_x)
+        vertical_segmentation_checkpoint=vertical_segmentation_checkpoint,
+        decode_with_vertical_segmentation=decode_with_vertical_segmentation,
+        vertical_segmentation_scale_x=float(
+            best_or_fixed(best_params, "vertical_segmentation_scale_x", vertical_segmentation_scale_x)
         ),
-        segmentator_y_pad=float(
-            best_or_fixed(best_params, "segmentator_y_pad", segmentator_y_pad)
+        vertical_segmentation_y_pad=float(
+            best_or_fixed(best_params, "vertical_segmentation_y_pad", vertical_segmentation_y_pad)
         ),
-        segmentator_x_pad=float(
-            best_or_fixed(best_params, "segmentator_x_pad", segmentator_x_pad)
+        vertical_segmentation_x_pad=float(
+            best_or_fixed(best_params, "vertical_segmentation_x_pad", vertical_segmentation_x_pad)
         ),
-        segmentator_cut_threshold=best_or_fixed(
+        vertical_segmentation_cut_threshold=best_or_fixed(
             best_params,
-            "segmentator_cut_threshold",
-            segmentator_cut_threshold,
+            "vertical_segmentation_cut_threshold",
+            vertical_segmentation_cut_threshold,
         ),
-        segmentator_cut_min_width=best_or_fixed(
+        vertical_segmentation_cut_min_width=best_or_fixed(
             best_params,
-            "segmentator_cut_min_width",
-            segmentator_cut_min_width,
+            "vertical_segmentation_cut_min_width",
+            vertical_segmentation_cut_min_width,
         ),
-        segmentator_cut_max_width=best_or_fixed(
+        vertical_segmentation_cut_max_width=best_or_fixed(
             best_params,
-            "segmentator_cut_max_width",
-            segmentator_cut_max_width,
+            "vertical_segmentation_cut_max_width",
+            vertical_segmentation_cut_max_width,
         ),
-        segmentator_cut_smooth_radius=best_or_fixed(
+        vertical_segmentation_cut_smooth_radius=best_or_fixed(
             best_params,
-            "segmentator_cut_smooth_radius",
-            segmentator_cut_smooth_radius,
+            "vertical_segmentation_cut_smooth_radius",
+            vertical_segmentation_cut_smooth_radius,
         ),
         decode_method=decode_method,
         decode_top_k=decode_top_k,
@@ -738,15 +749,15 @@ def evaluate(
     baseline_line_pad_px: float = 0.0,
     baseline_detector_checkpoint: Path | None = None,
     baseline_detector_threshold: float = 0.35,
-    segmentator_checkpoint: Path | None = None,
-    decode_with_segmentator: bool = False,
-    segmentator_scale_x: float = 0.0,
-    segmentator_y_pad: float = 0.0,
-    segmentator_x_pad: float = 0.0,
-    segmentator_cut_threshold: float | None = None,
-    segmentator_cut_min_width: int | None = None,
-    segmentator_cut_max_width: int | None = None,
-    segmentator_cut_smooth_radius: int | None = None,
+    vertical_segmentation_checkpoint: Path | None = None,
+    decode_with_vertical_segmentation: bool = False,
+    vertical_segmentation_scale_x: float = 0.0,
+    vertical_segmentation_y_pad: float = 0.0,
+    vertical_segmentation_x_pad: float = 0.0,
+    vertical_segmentation_cut_threshold: float | None = None,
+    vertical_segmentation_cut_min_width: int | None = None,
+    vertical_segmentation_cut_max_width: int | None = None,
+    vertical_segmentation_cut_smooth_radius: int | None = None,
     decode_method: str = "cells",
     decode_top_k: int = 8,
     center_fraction: float = 0.6,
@@ -777,15 +788,15 @@ def evaluate(
         baseline_line_pad_px=baseline_line_pad_px,
         baseline_detector_checkpoint=baseline_detector_checkpoint,
         baseline_detector_threshold=baseline_detector_threshold,
-        segmentator_checkpoint=segmentator_checkpoint,
-        decode_with_segmentator=decode_with_segmentator,
-        segmentator_scale_x=segmentator_scale_x,
-        segmentator_y_pad=segmentator_y_pad,
-        segmentator_x_pad=segmentator_x_pad,
-        segmentator_cut_threshold=segmentator_cut_threshold,
-        segmentator_cut_min_width=segmentator_cut_min_width,
-        segmentator_cut_max_width=segmentator_cut_max_width,
-        segmentator_cut_smooth_radius=segmentator_cut_smooth_radius,
+        vertical_segmentation_checkpoint=vertical_segmentation_checkpoint,
+        decode_with_vertical_segmentation=decode_with_vertical_segmentation,
+        vertical_segmentation_scale_x=vertical_segmentation_scale_x,
+        vertical_segmentation_y_pad=vertical_segmentation_y_pad,
+        vertical_segmentation_x_pad=vertical_segmentation_x_pad,
+        vertical_segmentation_cut_threshold=vertical_segmentation_cut_threshold,
+        vertical_segmentation_cut_min_width=vertical_segmentation_cut_min_width,
+        vertical_segmentation_cut_max_width=vertical_segmentation_cut_max_width,
+        vertical_segmentation_cut_smooth_radius=vertical_segmentation_cut_smooth_radius,
         decode_method=decode_method,
         decode_top_k=decode_top_k,
         center_fraction=center_fraction,
@@ -806,7 +817,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--inference-config",
         default=None,
-        help="Optional inference YAML used as the fixed baseline/segmentator/OCR configuration.",
+        help="Optional inference YAML used as the fixed baseline/vertical_segmentation/OCR configuration.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -858,34 +869,34 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--baseline-detector-checkpoint", default=None)
     parser.add_argument("--baseline-detector-threshold", type=float, default=None)
 
-    parser.add_argument("--segmentator-checkpoint", default=None)
+    parser.add_argument("--vertical-segmentation-checkpoint", default=None)
     parser.add_argument(
-        "--decode-with-segmentator",
+        "--decode-with-vertical-segmentation",
         action=argparse.BooleanOptionalAction,
         default=None,
     )
     parser.add_argument(
-        "--segmentator-scale-x",
+        "--vertical-segmentation-scale-x",
         type=float,
         default=None,
-        help="Normalized horizontal scale used only by the vertical segmentator.",
+        help="Normalized horizontal scale used only by the vertical vertical_segmentation.",
     )
     parser.add_argument(
-        "--segmentator-y-pad",
+        "--vertical-segmentation-y-pad",
         type=float,
         default=None,
-        help="Normalized vertical padding/crop used only by the vertical segmentator.",
+        help="Normalized vertical padding/crop used only by the vertical vertical_segmentation.",
     )
     parser.add_argument(
-        "--segmentator-x-pad",
+        "--vertical-segmentation-x-pad",
         type=float,
         default=None,
-        help="Normalized horizontal padding used only by the vertical segmentator.",
+        help="Normalized horizontal padding used only by the vertical vertical_segmentation.",
     )
-    parser.add_argument("--segmentator-cut-threshold", type=float, default=None)
-    parser.add_argument("--segmentator-cut-min-width", type=int, default=None)
-    parser.add_argument("--segmentator-cut-max-width", type=int, default=None)
-    parser.add_argument("--segmentator-cut-smooth-radius", type=int, default=None)
+    parser.add_argument("--vertical-segmentation-cut-threshold", type=float, default=None)
+    parser.add_argument("--vertical-segmentation-cut-min-width", type=int, default=None)
+    parser.add_argument("--vertical-segmentation-cut-max-width", type=int, default=None)
+    parser.add_argument("--vertical-segmentation-cut-smooth-radius", type=int, default=None)
     parser.add_argument("--decode-method", choices=["cells", "dp"], default=None)
     parser.add_argument("--decode-top-k", type=int, default=None)
     parser.add_argument("--center-fraction", type=float, default=None)
@@ -899,7 +910,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=32,
-        help="Inference batch size for OCR and OCR+segmentator evaluation.",
+        help="Inference batch size for OCR and OCR+vertical_segmentation evaluation.",
     )
     parser.add_argument("--limit", type=int, default=None, help="Optional number of samples to evaluate.")
     parser.add_argument("--log-every", type=int, default=100, help="Print progress every N recognized images; 0 disables.")
@@ -960,12 +971,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=float,
         default=None,
     )
-    parser.add_argument("--optuna-segmentator-scale-x-min", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-scale-x-max", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-y-pad-min", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-y-pad-max", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-x-pad-min", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-x-pad-max", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-scale-x-min", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-scale-x-max", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-y-pad-min", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-y-pad-max", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-x-pad-min", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-x-pad-max", type=float, default=None)
     parser.add_argument(
         "--optuna-tune-baseline-line-pad",
         action="store_true",
@@ -982,14 +993,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--optuna-baseline-line-pad-max", type=float, default=None)
     parser.add_argument("--optuna-baseline-line-pad-px-min", type=float, default=None)
     parser.add_argument("--optuna-baseline-line-pad-px-max", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-cut-threshold-min", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-cut-threshold-max", type=float, default=None)
-    parser.add_argument("--optuna-segmentator-cut-min-width-min", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-cut-min-width-max", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-cut-max-width-min", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-cut-max-width-max", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-cut-smooth-radius-min", type=int, default=None)
-    parser.add_argument("--optuna-segmentator-cut-smooth-radius-max", type=int, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-threshold-min", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-threshold-max", type=float, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-min-width-min", type=int, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-min-width-max", type=int, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-max-width-min", type=int, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-max-width-max", type=int, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-smooth-radius-min", type=int, default=None)
+    parser.add_argument("--optuna-vertical-segmentation-cut-smooth-radius-max", type=int, default=None)
     parser.add_argument("--optuna-center-fraction-min", type=float, default=None)
     parser.add_argument("--optuna-center-fraction-max", type=float, default=None)
     parser.add_argument("--optuna-min-score-width-min", type=int, default=None)
@@ -1003,7 +1014,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "checkpoint",
             "out",
             "baseline_detector_checkpoint",
-            "segmentator_checkpoint",
+            "vertical_segmentation_checkpoint",
             "optuna_trials_out",
         ),
         required_fields=("json", "images"),
@@ -1022,7 +1033,7 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
     config = InferenceConfig.load(args.inference_config) if args.inference_config else None
     baseline = config.baseline_detection if config is not None else None
     ocr = config.fcn_ocr if config is not None else None
-    segmentator = config.vertical_segmentation if config is not None else None
+    vertical_segmentation = config.vertical_segmentation if config is not None else None
     decode = ocr.decode if ocr is not None else None
 
     args.device = _first_defined(args.device, config.device if config else None)
@@ -1106,33 +1117,33 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
         )
     )
 
-    args.segmentator_checkpoint = _first_defined(
-        args.segmentator_checkpoint,
-        segmentator.checkpoint if segmentator is not None else None,
+    args.vertical_segmentation_checkpoint = _first_defined(
+        args.vertical_segmentation_checkpoint,
+        vertical_segmentation.checkpoint if vertical_segmentation is not None else None,
     )
-    segmentator_preprocess = (
-        segmentator.preprocessing
-        if segmentator is not None
+    vertical_segmentation_preprocess = (
+        vertical_segmentation.preprocessing
+        if vertical_segmentation is not None
         else None
     )
-    args.segmentator_scale_x = float(
+    args.vertical_segmentation_scale_x = float(
         _first_defined(
-            args.segmentator_scale_x,
-            segmentator_preprocess.scale_x if segmentator_preprocess is not None else None,
+            args.vertical_segmentation_scale_x,
+            vertical_segmentation_preprocess.scale_x if vertical_segmentation_preprocess is not None else None,
             0.0,
         )
     )
-    args.segmentator_y_pad = float(
+    args.vertical_segmentation_y_pad = float(
         _first_defined(
-            args.segmentator_y_pad,
-            segmentator_preprocess.y_pad if segmentator_preprocess is not None else None,
+            args.vertical_segmentation_y_pad,
+            vertical_segmentation_preprocess.y_pad if vertical_segmentation_preprocess is not None else None,
             0.0,
         )
     )
-    args.segmentator_x_pad = float(
+    args.vertical_segmentation_x_pad = float(
         _first_defined(
-            args.segmentator_x_pad,
-            segmentator_preprocess.x_pad if segmentator_preprocess is not None else None,
+            args.vertical_segmentation_x_pad,
+            vertical_segmentation_preprocess.x_pad if vertical_segmentation_preprocess is not None else None,
             0.0,
         )
     )
@@ -1142,17 +1153,17 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
         "cut_max_width",
         "cut_smooth_radius",
     ):
-        argument_name = f"segmentator_{name}"
-        config_value = getattr(segmentator, name) if segmentator is not None else None
+        argument_name = f"vertical_segmentation_{name}"
+        config_value = getattr(vertical_segmentation, name) if vertical_segmentation is not None else None
         setattr(
             args,
             argument_name,
             _first_defined(getattr(args, argument_name), config_value),
         )
 
-    args.decode_with_segmentator = bool(
+    args.decode_with_vertical_segmentation = bool(
         _first_defined(
-            args.decode_with_segmentator,
+            args.decode_with_vertical_segmentation,
             decode.enabled if decode is not None else None,
             False,
         )
@@ -1216,10 +1227,10 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
     args.glyph_width_prior = (
         decode.glyph_width_prior.model_dump() if decode is not None else None
     )
-    if args.decode_with_segmentator and args.segmentator_checkpoint is None:
+    if args.decode_with_vertical_segmentation and args.vertical_segmentation_checkpoint is None:
         raise ValueError(
-            "Segmentator decoding requires segmentator.checkpoint in --inference-config "
-            "or --segmentator-checkpoint"
+            "Vertical segmentation decoding requires vertical_segmentation.checkpoint in --inference-config "
+            "or --vertical-segmentation-checkpoint"
         )
     args.inference_debug_top_k = config.debug.top_k if config is not None else 8
     return args
@@ -1234,15 +1245,15 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "baseline_line_pad_px": args.baseline_line_pad_px,
         "baseline_detector_checkpoint": Path(args.baseline_detector_checkpoint) if args.baseline_detector_checkpoint else None,
         "baseline_detector_threshold": args.baseline_detector_threshold,
-        "segmentator_checkpoint": Path(args.segmentator_checkpoint) if args.segmentator_checkpoint else None,
-        "decode_with_segmentator": args.decode_with_segmentator,
-        "segmentator_scale_x": args.segmentator_scale_x,
-        "segmentator_y_pad": args.segmentator_y_pad,
-        "segmentator_x_pad": args.segmentator_x_pad,
-        "segmentator_cut_threshold": args.segmentator_cut_threshold,
-        "segmentator_cut_min_width": args.segmentator_cut_min_width,
-        "segmentator_cut_max_width": args.segmentator_cut_max_width,
-        "segmentator_cut_smooth_radius": args.segmentator_cut_smooth_radius,
+        "vertical_segmentation_checkpoint": Path(args.vertical_segmentation_checkpoint) if args.vertical_segmentation_checkpoint else None,
+        "decode_with_vertical_segmentation": args.decode_with_vertical_segmentation,
+        "vertical_segmentation_scale_x": args.vertical_segmentation_scale_x,
+        "vertical_segmentation_y_pad": args.vertical_segmentation_y_pad,
+        "vertical_segmentation_x_pad": args.vertical_segmentation_x_pad,
+        "vertical_segmentation_cut_threshold": args.vertical_segmentation_cut_threshold,
+        "vertical_segmentation_cut_min_width": args.vertical_segmentation_cut_min_width,
+        "vertical_segmentation_cut_max_width": args.vertical_segmentation_cut_max_width,
+        "vertical_segmentation_cut_smooth_radius": args.vertical_segmentation_cut_smooth_radius,
         "decode_method": args.decode_method,
         "decode_top_k": args.decode_top_k,
         "center_fraction": args.center_fraction,
@@ -1258,7 +1269,7 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) -> None:
     _, jobs = build_rows_and_jobs(Path(args.json), Path(args.images), args.limit)
     image_path = str(jobs[0][1]) if jobs else "<IMAGE_PATH>"
-    has_segmentator = bool(metrics.get("segmentator_checkpoint"))
+    has_vertical_segmentation = bool(metrics.get("vertical_segmentation_checkpoint"))
     config_data: dict[str, Any] = {
         "device": args.device,
         "baseline_detection": {
@@ -1282,7 +1293,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
                 "x_pad": metrics["x_pad"],
             },
             "decode": {
-                "enabled": bool(metrics["decode_with_segmentator"] and has_segmentator),
+                "enabled": bool(metrics["decode_with_vertical_segmentation"] and has_vertical_segmentation),
                 "method": metrics["decode_method"],
                 "top_k": metrics["decode_top_k"],
                 "center_fraction": metrics["center_fraction"],
@@ -1298,20 +1309,20 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "top_k": getattr(args, "inference_debug_top_k", 8),
         },
     }
-    if has_segmentator:
+    if has_vertical_segmentation:
         config_data["vertical_segmentation"] = {
             "checkpoint": str(
-                Path(metrics["segmentator_checkpoint"]).expanduser().resolve()
+                Path(metrics["vertical_segmentation_checkpoint"]).expanduser().resolve()
             ),
             "preprocessing": {
-                "scale_x": metrics["segmentator_scale_x"],
-                "y_pad": metrics["segmentator_y_pad"],
-                "x_pad": metrics["segmentator_x_pad"],
+                "scale_x": metrics["vertical_segmentation_scale_x"],
+                "y_pad": metrics["vertical_segmentation_y_pad"],
+                "x_pad": metrics["vertical_segmentation_x_pad"],
             },
-            "cut_threshold": metrics["segmentator_cut_threshold"],
-            "cut_min_width": metrics["segmentator_cut_min_width"],
-            "cut_max_width": metrics["segmentator_cut_max_width"],
-            "cut_smooth_radius": metrics["segmentator_cut_smooth_radius"],
+            "cut_threshold": metrics["vertical_segmentation_cut_threshold"],
+            "cut_min_width": metrics["vertical_segmentation_cut_min_width"],
+            "cut_max_width": metrics["vertical_segmentation_cut_max_width"],
+            "cut_smooth_radius": metrics["vertical_segmentation_cut_smooth_radius"],
         }
     save_and_print_inference_command(config_data, args.out, image_path)
 
@@ -1354,26 +1365,26 @@ def run_evaluation(
             optuna_tune_baseline_line_pad_px=args.optuna_tune_baseline_line_pad_px,
             x_pad_min=args.optuna_x_pad_min,
             x_pad_max=args.optuna_x_pad_max,
-            segmentator_scale_x_min=args.optuna_segmentator_scale_x_min,
-            segmentator_scale_x_max=args.optuna_segmentator_scale_x_max,
-            segmentator_y_pad_min=args.optuna_segmentator_y_pad_min,
-            segmentator_y_pad_max=args.optuna_segmentator_y_pad_max,
-            segmentator_x_pad_min=args.optuna_segmentator_x_pad_min,
-            segmentator_x_pad_max=args.optuna_segmentator_x_pad_max,
+            vertical_segmentation_scale_x_min=args.optuna_vertical_segmentation_scale_x_min,
+            vertical_segmentation_scale_x_max=args.optuna_vertical_segmentation_scale_x_max,
+            vertical_segmentation_y_pad_min=args.optuna_vertical_segmentation_y_pad_min,
+            vertical_segmentation_y_pad_max=args.optuna_vertical_segmentation_y_pad_max,
+            vertical_segmentation_x_pad_min=args.optuna_vertical_segmentation_x_pad_min,
+            vertical_segmentation_x_pad_max=args.optuna_vertical_segmentation_x_pad_max,
             baseline_detector_threshold_min=args.optuna_baseline_detector_threshold_min,
             baseline_detector_threshold_max=args.optuna_baseline_detector_threshold_max,
             baseline_line_pad_min=args.optuna_baseline_line_pad_min,
             baseline_line_pad_max=args.optuna_baseline_line_pad_max,
             baseline_line_pad_px_min=args.optuna_baseline_line_pad_px_min,
             baseline_line_pad_px_max=args.optuna_baseline_line_pad_px_max,
-            segmentator_cut_threshold_min=args.optuna_segmentator_cut_threshold_min,
-            segmentator_cut_threshold_max=args.optuna_segmentator_cut_threshold_max,
-            segmentator_cut_min_width_min=args.optuna_segmentator_cut_min_width_min,
-            segmentator_cut_min_width_max=args.optuna_segmentator_cut_min_width_max,
-            segmentator_cut_max_width_min=args.optuna_segmentator_cut_max_width_min,
-            segmentator_cut_max_width_max=args.optuna_segmentator_cut_max_width_max,
-            segmentator_cut_smooth_radius_min=args.optuna_segmentator_cut_smooth_radius_min,
-            segmentator_cut_smooth_radius_max=args.optuna_segmentator_cut_smooth_radius_max,
+            vertical_segmentation_cut_threshold_min=args.optuna_vertical_segmentation_cut_threshold_min,
+            vertical_segmentation_cut_threshold_max=args.optuna_vertical_segmentation_cut_threshold_max,
+            vertical_segmentation_cut_min_width_min=args.optuna_vertical_segmentation_cut_min_width_min,
+            vertical_segmentation_cut_min_width_max=args.optuna_vertical_segmentation_cut_min_width_max,
+            vertical_segmentation_cut_max_width_min=args.optuna_vertical_segmentation_cut_max_width_min,
+            vertical_segmentation_cut_max_width_max=args.optuna_vertical_segmentation_cut_max_width_max,
+            vertical_segmentation_cut_smooth_radius_min=args.optuna_vertical_segmentation_cut_smooth_radius_min,
+            vertical_segmentation_cut_smooth_radius_max=args.optuna_vertical_segmentation_cut_smooth_radius_max,
             center_fraction_min=args.optuna_center_fraction_min,
             center_fraction_max=args.optuna_center_fraction_max,
             min_score_width_min=args.optuna_min_score_width_min,
@@ -1400,10 +1411,6 @@ def run_evaluation(
     return metrics
 
 
-def main() -> None:
-    args = resolve_inference_args(parse_args())
+def main(argv: Sequence[str] | None = None) -> None:
+    args = resolve_inference_args(parse_args(argv))
     run_evaluation(args)
-
-
-if __name__ == "__main__":
-    main()

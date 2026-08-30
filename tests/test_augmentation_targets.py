@@ -11,6 +11,7 @@ from fcn_synth_generator.gpu_augmentations import GpuTextAugmenter
 
 def _augmenter() -> GpuTextAugmenter:
     config = SingleLineDatasetConfig(
+        task="fcn_ocr",
         alphabet=" AB",
         augmentation_probabilities={"x_pad": 1.0},
         augmentations={
@@ -122,6 +123,7 @@ def test_sampled_geometric_metadata_replays_exactly_on_ocr_targets(
     random.seed(7)
     torch.manual_seed(7)
     config = SingleLineDatasetConfig(
+        task="fcn_ocr",
         alphabet=" AB",
         augmentation_probabilities={name: 1.0},
         augmentations={name: params},

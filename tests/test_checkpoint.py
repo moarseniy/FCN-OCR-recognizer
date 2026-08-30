@@ -10,7 +10,7 @@ from fcn_checkpoint_contract import CHECKPOINT_FORMAT, CHECKPOINT_VERSION
 from fcn_ocr.baseline_detector import BaselineDetector
 from fcn_ocr.checkpoint import load_fcn_checkpoint
 from fcn_ocr.recognizer import TextRecognizer
-from fcn_ocr.segmentator import VerticalSegmentator
+from fcn_ocr.vertical_segmenter import VerticalSegmenter
 
 
 ALPHABET = " AB"
@@ -96,12 +96,12 @@ def test_load_fcn_checkpoint_requires_current_contract(
         load_fcn_checkpoint(checkpoint_path, torch.device("cpu"))
 
 
-def test_segmentator_checkpoint_does_not_require_ocr_task_fields(
+def test_vertical_segmentation_checkpoint_does_not_require_ocr_task_fields(
     tmp_path: Path,
 ) -> None:
     architecture = "vertical_segmentation_fcn"
     model = create_model(architecture, in_channels=1, num_classes=1)
-    checkpoint_path = tmp_path / "segmentator.pth"
+    checkpoint_path = tmp_path / "vertical_segmentation.pth"
     torch.save(
         {
             "format": CHECKPOINT_FORMAT,
@@ -126,11 +126,11 @@ def test_segmentator_checkpoint_does_not_require_ocr_task_fields(
         checkpoint_path,
     )
 
-    segmentator = VerticalSegmentator(checkpoint_path, device="cpu")
+    vertical_segmentation = VerticalSegmenter(checkpoint_path, device="cpu")
 
-    assert segmentator.task == "vertical_segmentation"
-    assert not isinstance(segmentator, TextRecognizer)
-    assert not hasattr(segmentator, "decode_predictions")
+    assert vertical_segmentation.task == "vertical_segmentation"
+    assert not isinstance(vertical_segmentation, TextRecognizer)
+    assert not hasattr(vertical_segmentation, "decode_predictions")
 
 
 def test_baseline_detector_is_not_an_ocr_recognizer(tmp_path: Path) -> None:

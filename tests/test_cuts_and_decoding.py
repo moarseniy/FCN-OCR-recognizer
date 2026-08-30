@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from evaluate_vertical_segmentation import configure_segmentator
-from fcn_ocr.segmentator import VerticalSegmentator
+from fcn_ocr.evaluation.vertical_segmentation import configure_vertical_segmentation
+from fcn_ocr.vertical_segmenter import VerticalSegmenter
 
 from tests.helpers import (
     make_lightweight_recognizer,
@@ -15,7 +15,7 @@ from tests.helpers import (
 def test_cut_min_width_keeps_the_stronger_of_close_candidates() -> None:
     scores = [0.0, 0.0, 0.6, 0.0, 0.9, 0.0]
 
-    cuts = VerticalSegmentator._apply_cut_width_constraints(
+    cuts = VerticalSegmenter._apply_cut_width_constraints(
         [2, 4],
         scores,
         min_width=3,
@@ -29,7 +29,7 @@ def test_cut_max_width_inserts_the_strongest_candidate_inside_large_cell() -> No
     scores = [0.0] * 11
     scores[5] = 0.8
 
-    cuts = VerticalSegmentator._apply_cut_width_constraints(
+    cuts = VerticalSegmenter._apply_cut_width_constraints(
         [0, 10],
         scores,
         min_width=2,
@@ -39,15 +39,15 @@ def test_cut_max_width_inserts_the_strongest_candidate_inside_large_cell() -> No
     assert cuts == [0, 5, 10]
 
 
-def test_evaluation_configures_current_segmentator_parameters() -> None:
-    segmentator = VerticalSegmentator.__new__(VerticalSegmentator)
-    segmentator.cut_threshold = 0.5
-    segmentator.cut_min_width = 1
-    segmentator.cut_max_width = 0
-    segmentator.cut_smooth_radius = 0
+def test_evaluation_configures_current_vertical_segmentation_parameters() -> None:
+    vertical_segmentation = VerticalSegmenter.__new__(VerticalSegmenter)
+    vertical_segmentation.cut_threshold = 0.5
+    vertical_segmentation.cut_min_width = 1
+    vertical_segmentation.cut_max_width = 0
+    vertical_segmentation.cut_smooth_radius = 0
 
-    configure_segmentator(
-        segmentator,
+    configure_vertical_segmentation(
+        vertical_segmentation,
         cut_threshold=0.7,
         cut_min_width=4,
         cut_max_width=24,
@@ -63,12 +63,12 @@ def test_evaluation_configures_current_segmentator_parameters() -> None:
         baseline_detector_threshold=0.35,
     )
 
-    assert segmentator.cut_threshold == 0.7
-    assert segmentator.cut_min_width == 4
-    assert segmentator.cut_max_width == 24
-    assert segmentator.cut_smooth_radius == 2
-    assert segmentator.scale_x == -0.2
-    assert segmentator.x_pad == 0.03
+    assert vertical_segmentation.cut_threshold == 0.7
+    assert vertical_segmentation.cut_min_width == 4
+    assert vertical_segmentation.cut_max_width == 24
+    assert vertical_segmentation.cut_smooth_radius == 2
+    assert vertical_segmentation.scale_x == -0.2
+    assert vertical_segmentation.x_pad == 0.03
 
 
 def test_cells_decoder_reads_exactly_one_symbol_between_each_cut_pair() -> None:
@@ -85,7 +85,7 @@ def test_cells_decoder_reads_exactly_one_symbol_between_each_cut_pair() -> None:
 
     assert result.text == "AB"
     assert result.cuts == [0, 4, 8]
-    # Cut positions are segmentator columns, not direct OCR boundaries. The
+    # Cut positions are vertical_segmentation columns, not direct OCR boundaries. The
     # current center-based mapping sends the last column 8 to OCR boundary 7.
     assert [(symbol.start, symbol.end) for symbol in result.symbols] == [(0, 4), (4, 7)]
     assert result.decode_method == "cells"

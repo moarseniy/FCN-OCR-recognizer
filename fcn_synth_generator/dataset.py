@@ -11,6 +11,13 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import torch
 
+from fcn_tasks import (
+    BASELINE_DETECTION_TASK,
+    FCN_OCR_TASK,
+    VERTICAL_SEGMENTATION_TASK,
+    normalize_task_name,
+)
+
 
 DEFAULT_FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf",
@@ -52,6 +59,7 @@ class SingleLineDatasetConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    task: str
     alphabet: str
     space_char: str = " "
     samples: int = Field(default=10_000, ge=1)
@@ -102,12 +110,14 @@ class SingleLineDatasetConfig(BaseModel):
     chunk_size: int = Field(default=1024, ge=1)
     num_workers: int = Field(default=0, ge=0)
     overwrite: bool = False
-    save_fcn_ocr_targets: bool = False
-    save_vertical_segmentation_targets: bool = False
-    save_baseline_detection_targets: bool = False
-    vertical_segmentation_target_radius: int = Field(default=1, ge=0)
-    vertical_segmentation_include_margins: bool = True
-    baseline_detection_target_radius: int = Field(default=1, ge=0)
+    vertical_segmentation_target_radius: int | None = Field(default=None, ge=0)
+    vertical_segmentation_include_margins: bool | None = None
+    baseline_detection_target_radius: int | None = Field(default=None, ge=0)
+
+    @field_validator("task")
+    @classmethod
+    def task_must_be_current(cls, value: str) -> str:
+        return normalize_task_name(value)
 
     @model_validator(mode="after")
     def edge_visibility_thresholds_must_be_ordered(self) -> "SingleLineDatasetConfig":
@@ -124,6 +134,33 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError(
                 "neighbor_line_visible_ratio_min must be <= 1 - neighbor_line_min_crop_ratio"
             )
+        vertical_fields = {
+            "vertical_segmentation_target_radius",
+            "vertical_segmentation_include_margins",
+        }
+        baseline_fields = {"baseline_detection_target_radius"}
+        if self.task != VERTICAL_SEGMENTATION_TASK and (
+            vertical_fields & self.model_fields_set
+        ):
+            raise ValueError(
+                "vertical segmentation target parameters require "
+                "task: vertical_segmentation"
+            )
+        if self.task != BASELINE_DETECTION_TASK and (
+            baseline_fields & self.model_fields_set
+        ):
+            raise ValueError(
+                "baseline detection target parameters require "
+                "task: baseline_detection"
+            )
+        if self.task == VERTICAL_SEGMENTATION_TASK:
+            if self.vertical_segmentation_target_radius is None:
+                self.vertical_segmentation_target_radius = 1
+            if self.vertical_segmentation_include_margins is None:
+                self.vertical_segmentation_include_margins = True
+        if self.task == BASELINE_DETECTION_TASK:
+            if self.baseline_detection_target_radius is None:
+                self.baseline_detection_target_radius = 1
         return self
 
     @classmethod
@@ -282,13 +319,11 @@ class TextRenderStyle:
 class GeneratedLineSample:
     text: str
     image: torch.Tensor
-    fcn_ocr_target: torch.Tensor | None
-    vertical_segmentation_target: torch.Tensor | None
-    baseline_detection_target: torch.Tensor | None
+    target: torch.Tensor
 
 
 class SingleLineDataset:
-    """Renders synthetic text lines and optional task-specific targets."""
+    """Renders synthetic text lines and one target for the configured task."""
 
     def __init__(self, config: SingleLineDatasetConfig):
         self.config = config
@@ -1061,21 +1096,21 @@ class SingleLineDataset:
         if len(spans) != len(cut_spans):
             raise ValueError("logical and cut span counts must match")
 
-        fcn_ocr_target = None
-        if self.config.save_fcn_ocr_targets:
-            fcn_ocr_target = self._encode_fcn_ocr_targets(
+        if self.config.task == FCN_OCR_TASK:
+            target = self._encode_fcn_ocr_targets(
                 spans,
                 image.width,
                 ink_spans=cut_spans,
             )
-        vertical_segmentation_target = None
-        if self.config.save_vertical_segmentation_targets:
-            vertical_segmentation_target = self._encode_vertical_segmentation_target(cut_spans, image.width)
-        baseline_detection_target = None
-        if self.config.save_baseline_detection_targets:
+        elif self.config.task == VERTICAL_SEGMENTATION_TASK:
+            target = self._encode_vertical_segmentation_target(
+                cut_spans,
+                image.width,
+            )
+        elif self.config.task == BASELINE_DETECTION_TASK:
             x_start = min(start for _, start, _ in spans)
             x_end = max(end for _, _, end in spans)
-            baseline_detection_target = self._encode_baseline_detection_target(
+            target = self._encode_baseline_detection_target(
                 baseline_top,
                 baseline_bottom,
                 image.height,
@@ -1083,6 +1118,8 @@ class SingleLineDataset:
                 x_start=x_start,
                 x_end=x_end,
             )
+        else:
+            raise AssertionError(f"unreachable task: {self.config.task}")
         if self.config.channels == 3:
             array = np.asarray(image.convert("RGB"), dtype=np.float32)
             tensor = torch.from_numpy(array).permute(2, 0, 1) / 255.0
@@ -1093,9 +1130,7 @@ class SingleLineDataset:
         return GeneratedLineSample(
             text=text,
             image=tensor.contiguous(),
-            fcn_ocr_target=fcn_ocr_target,
-            vertical_segmentation_target=vertical_segmentation_target,
-            baseline_detection_target=baseline_detection_target,
+            target=target.contiguous(),
         )
 
     def _encode_fcn_ocr_targets(
@@ -1150,6 +1185,8 @@ class SingleLineDataset:
 
         projection = torch.zeros(width, dtype=torch.float32)
         radius = self.config.vertical_segmentation_target_radius
+        if radius is None:
+            raise RuntimeError("vertical segmentation target radius is not configured")
 
         def mark_peak(center: float) -> None:
             center_index = min(width - 1, max(0, int(math.floor(center))))
@@ -1183,6 +1220,8 @@ class SingleLineDataset:
     ) -> torch.Tensor:
         target = torch.zeros((2, height, width), dtype=torch.float32)
         radius = self.config.baseline_detection_target_radius
+        if radius is None:
+            raise RuntimeError("baseline detection target radius is not configured")
         left = int(math.floor(max(0.0, x_start)))
         right = int(math.ceil(min(float(width), float(width if x_end is None else x_end))))
         if right <= left:
@@ -1276,7 +1315,7 @@ class SingleLineDataset:
         font_bbox: tuple[float, float, float, float],
     ) -> tuple[float, float, Image.Image | None]:
         font_bounds = (float(y + font_bbox[1]), float(y + font_bbox[3] - 1))
-        if not self.config.save_baseline_detection_targets:
+        if self.config.task != BASELINE_DETECTION_TASK:
             return font_bounds[0], font_bounds[1], None
 
         mask = Image.new("L", (width, height), color=0)
@@ -1305,7 +1344,7 @@ class SingleLineDataset:
 
         cut_spans: list[tuple[str, float, float]] = []
         for (char, logical_start, logical_end), origin in zip(spans, origins):
-            # A space has no ink bbox, but it remains a regular segmentator cell.
+            # A space has no ink bbox, but it remains a regular vertical_segmentation cell.
             if char == self.config.space_char:
                 cut_spans.append((char, logical_start, logical_end))
                 continue

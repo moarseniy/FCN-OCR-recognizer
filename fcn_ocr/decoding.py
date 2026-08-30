@@ -124,7 +124,7 @@ class FCNOCRDecodingMixin:
         center_fraction: float = 0.6,
         min_score_width: int = 1,
         ocr_source_x: np.ndarray | None = None,
-        segmentator_source_x: np.ndarray | None = None,
+        vertical_segmentation_source_x: np.ndarray | None = None,
         glyph_width_prior: dict[str, Any] | Any | None = None,
     ) -> CutDecodingResult:
         if logits.dim() != 3 or logits.size(0) != 1:
@@ -138,7 +138,7 @@ class FCNOCRDecodingMixin:
 
         probs = torch.softmax(logits, dim=1)[0]
         ocr_width = int(probs.size(1))
-        segmentator_width = len(segmentation_result.raw_indices)
+        vertical_segmentation_width = len(segmentation_result.raw_indices)
         input_width = int(
             input_width
             if input_width is not None
@@ -157,27 +157,27 @@ class FCNOCRDecodingMixin:
                 boundaries=[],
                 input_width=input_width,
                 ocr_width=ocr_width,
-                segmentator_width=segmentator_width,
+                vertical_segmentation_width=vertical_segmentation_width,
             )
 
         raw_cuts = sorted(
             {
                 position
                 for position in self._segmentation_cut_positions(segmentation_result)
-                if 0 <= position < max(0, segmentator_width)
+                if 0 <= position < max(0, vertical_segmentation_width)
             }
         )
         # Cut lines are explicit cell boundaries: only consecutive pairs are decoded.
-        boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
+        boundaries = self._map_vertical_segmentation_cuts_to_ocr_boundaries(
             raw_cuts,
-            segmentator_width=segmentator_width,
+            vertical_segmentation_width=vertical_segmentation_width,
             input_width=input_width,
             ocr_width=ocr_width,
             ocr_source_x=ocr_source_x,
-            segmentator_source_x=segmentator_source_x,
+            vertical_segmentation_source_x=vertical_segmentation_source_x,
         )
         use_coordinate_maps = (
-            ocr_source_x is not None and segmentator_source_x is not None
+            ocr_source_x is not None and vertical_segmentation_source_x is not None
         )
         intervals = list(zip(boundaries, boundaries[1:]))
         source_intervals = list(zip(raw_cuts, raw_cuts[1:]))
@@ -186,7 +186,7 @@ class FCNOCRDecodingMixin:
             boundaries,
             input_width=input_width,
             ocr_width=ocr_width,
-            segmentator_width=segmentator_width,
+            vertical_segmentation_width=vertical_segmentation_width,
         )
         top_k = max(1, min(int(top_k), probs.size(0)))
 
@@ -206,13 +206,13 @@ class FCNOCRDecodingMixin:
                 if use_coordinate_maps:
                     left_source = self._source_x_for_timestep(
                         source_start,
-                        segmentator_width,
-                        segmentator_source_x,
+                        vertical_segmentation_width,
+                        vertical_segmentation_source_x,
                     )
                     right_source = self._source_x_for_timestep(
                         source_end,
-                        segmentator_width,
-                        segmentator_source_x,
+                        vertical_segmentation_width,
+                        vertical_segmentation_source_x,
                     )
                     mapped_center = None
                     if left_source is not None and right_source is not None:
@@ -229,7 +229,7 @@ class FCNOCRDecodingMixin:
                         input_center = (
                             source_center
                             * float(input_width)
-                            / max(1.0, float(segmentator_width))
+                            / max(1.0, float(vertical_segmentation_width))
                         )
                 else:
                     source_center = (
@@ -238,7 +238,7 @@ class FCNOCRDecodingMixin:
                     input_center = (
                         source_center
                         * float(input_width)
-                        / max(1.0, float(segmentator_width))
+                        / max(1.0, float(vertical_segmentation_width))
                     )
                 score_start = self._map_input_boundary_to_ocr(
                     input_center, input_width, ocr_width
@@ -255,7 +255,7 @@ class FCNOCRDecodingMixin:
                 ocr_width=ocr_width,
                 source_start=source_start,
                 source_end=source_end,
-                segmentator_width=segmentator_width,
+                vertical_segmentation_width=vertical_segmentation_width,
             )
             (
                 class_index,
@@ -303,7 +303,7 @@ class FCNOCRDecodingMixin:
             boundaries=boundaries,
             input_width=input_width,
             ocr_width=ocr_width,
-            segmentator_width=segmentator_width,
+            vertical_segmentation_width=vertical_segmentation_width,
             decode_method="cells",
         )
 
@@ -317,7 +317,7 @@ class FCNOCRDecodingMixin:
         center_fraction: float = 0.6,
         min_score_width: int = 1,
         ocr_source_x: np.ndarray | None = None,
-        segmentator_source_x: np.ndarray | None = None,
+        vertical_segmentation_source_x: np.ndarray | None = None,
         cut_weight: float = 1.0,
         ocr_weight: float = 1.0,
         width_weight: float = 0.05,
@@ -342,7 +342,7 @@ class FCNOCRDecodingMixin:
 
         probs = torch.softmax(logits, dim=1)[0]
         ocr_width = int(probs.size(1))
-        segmentator_width = len(segmentation_result.raw_indices)
+        vertical_segmentation_width = len(segmentation_result.raw_indices)
         input_width = int(
             input_width
             if input_width is not None
@@ -353,7 +353,7 @@ class FCNOCRDecodingMixin:
             if input_height is not None
             else segmentation_result.input_shape[-2]
         )
-        if ocr_width <= 0 or segmentator_width <= 0:
+        if ocr_width <= 0 or vertical_segmentation_width <= 0:
             return CutDecodingResult(
                 text="",
                 symbols=[],
@@ -361,7 +361,7 @@ class FCNOCRDecodingMixin:
                 boundaries=[],
                 input_width=input_width,
                 ocr_width=ocr_width,
-                segmentator_width=segmentator_width,
+                vertical_segmentation_width=vertical_segmentation_width,
                 decode_method="dp",
                 path_score=None,
             )
@@ -373,13 +373,13 @@ class FCNOCRDecodingMixin:
                 f"got {len(candidate_cuts)}"
             )
 
-        boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
+        boundaries = self._map_vertical_segmentation_cuts_to_ocr_boundaries(
             candidate_cuts,
-            segmentator_width=segmentator_width,
+            vertical_segmentation_width=vertical_segmentation_width,
             input_width=input_width,
             ocr_width=ocr_width,
             ocr_source_x=ocr_source_x,
-            segmentator_source_x=segmentator_source_x,
+            vertical_segmentation_source_x=vertical_segmentation_source_x,
         )
         boundary_by_index = {
             index: boundary for index, boundary in enumerate(boundaries)
@@ -391,27 +391,27 @@ class FCNOCRDecodingMixin:
             {
                 position
                 for position in self._segmentation_cut_positions(segmentation_result)
-                if 0 <= position < max(0, segmentator_width)
+                if 0 <= position < max(0, vertical_segmentation_width)
             }
         )
         if len(median_cuts) < 2:
             median_cuts = candidate_cuts
             median_boundaries = boundaries
         else:
-            median_boundaries = self._map_segmentator_cuts_to_ocr_boundaries(
+            median_boundaries = self._map_vertical_segmentation_cuts_to_ocr_boundaries(
                 median_cuts,
-                segmentator_width=segmentator_width,
+                vertical_segmentation_width=vertical_segmentation_width,
                 input_width=input_width,
                 ocr_width=ocr_width,
                 ocr_source_x=ocr_source_x,
-                segmentator_source_x=segmentator_source_x,
+                vertical_segmentation_source_x=vertical_segmentation_source_x,
             )
         median_cell_width = self._median_cell_width_in_input_pixels(
             median_cuts,
             median_boundaries,
             input_width=input_width,
             ocr_width=ocr_width,
-            segmentator_width=segmentator_width,
+            vertical_segmentation_width=vertical_segmentation_width,
         )
 
         if max_width > 0:
@@ -423,7 +423,7 @@ class FCNOCRDecodingMixin:
             end_indices = [
                 index
                 for index, cut in enumerate(candidate_cuts)
-                if cut >= segmentator_width - 1 - end_window
+                if cut >= vertical_segmentation_width - 1 - end_window
             ]
         else:
             start_indices = [0]
@@ -473,7 +473,7 @@ class FCNOCRDecodingMixin:
                 ocr_width=ocr_width,
                 source_start=source_start,
                 source_end=source_end,
-                segmentator_width=segmentator_width,
+                vertical_segmentation_width=vertical_segmentation_width,
             )
             (
                 class_index,
@@ -594,7 +594,7 @@ class FCNOCRDecodingMixin:
             boundaries=path_boundaries,
             input_width=input_width,
             ocr_width=ocr_width,
-            segmentator_width=segmentator_width,
+            vertical_segmentation_width=vertical_segmentation_width,
             decode_method="dp",
             path_score=float(path_score),
         )

@@ -16,7 +16,7 @@ from fcn_tasks import (
 
 
 CHUNK_FORMAT = "fcn_synth_dataset"
-CHUNK_METADATA_VERSION = 1
+CHUNK_METADATA_VERSION = 2
 CHUNK_METADATA_FILENAME = "metadata.yaml"
 GENERATION_CONFIG_FILENAME = "generation_config.yaml"
 CHUNK_FILENAME_PATTERN = re.compile(r"chunk_\d{6}\.pt")
@@ -45,6 +45,7 @@ class ChunkMetadata(BaseModel):
 
     format: Literal[CHUNK_FORMAT]
     version: Literal[CHUNK_METADATA_VERSION]
+    task: str
     alphabet: str
     space_char: str
     samples: int = Field(ge=1)
@@ -72,22 +73,17 @@ class ChunkMetadata(BaseModel):
     ink_spacing_min_char_gap_px: float = 0.0
     ink_spacing_touch_gap_px: float = Field(default=0.5, ge=0.0)
     ink_spacing_touch_probability: float = Field(default=1.0, ge=0.0, le=1.0)
-    fcn_ocr_targets: bool
-    fcn_ocr_target_edge_bounds: Literal["ink"] = "ink"
-    vertical_segmentation_targets: bool
-    vertical_segmentation_target_radius: int = Field(ge=0)
-    vertical_segmentation_include_margins: bool
-    baseline_detection_targets: bool
-    baseline_detection_target_radius: int = Field(ge=0)
-    dtype: Literal["uint8"]
-    fcn_ocr_target_dtype: Literal["int16"] | None = None
-    vertical_segmentation_target_dtype: Literal["uint8"] | None = None
-    baseline_detection_target_dtype: Literal["uint8"] | None = None
+    image_dtype: Literal["uint8"]
+    target_dtype: Literal["int16", "uint8"]
+    fcn_ocr_target_edge_bounds: Literal["ink"] | None = None
+    vertical_segmentation_target_radius: int | None = Field(default=None, ge=0)
+    vertical_segmentation_include_margins: bool | None = None
+    baseline_detection_target_radius: int | None = Field(default=None, ge=0)
     chunk_size: int = Field(ge=1)
     chunk_count: int = Field(ge=1)
     chunks: list[ChunkManifestEntry]
     text_char_counts: dict[str, int]
-    fcn_ocr_class_counts: list[int] | None
+    target_class_counts: list[int] | None
     max_observed_text_length: int = Field(ge=0)
 
     @field_validator("alphabet")
@@ -98,6 +94,11 @@ class ChunkMetadata(BaseModel):
         if len(set(value)) != len(value):
             raise ValueError("alphabet characters must be unique and ordered")
         return value
+
+    @field_validator("task")
+    @classmethod
+    def task_must_be_current(cls, value: str) -> str:
+        return normalize_task_name(value)
 
     @field_validator("space_char")
     @classmethod
@@ -147,55 +148,69 @@ class ChunkMetadata(BaseModel):
             raise ValueError(
                 "text_char_counts keys must exactly match the dataset alphabet"
             )
-        if self.fcn_ocr_class_counts is not None:
-            if len(self.fcn_ocr_class_counts) != len(self.alphabet):
-                raise ValueError("fcn_ocr_class_counts length must match alphabet length")
-            if any(count < 0 for count in self.fcn_ocr_class_counts):
-                raise ValueError("fcn_ocr_class_counts values must be non-negative")
+        if self.target_class_counts is not None:
+            if len(self.target_class_counts) != len(self.alphabet):
+                raise ValueError("target_class_counts length must match alphabet length")
+            if any(count < 0 for count in self.target_class_counts):
+                raise ValueError("target_class_counts values must be non-negative")
 
-        if self.fcn_ocr_targets:
-            if self.fcn_ocr_target_dtype != "int16" or self.fcn_ocr_class_counts is None:
+        if self.task == FCN_OCR_TASK:
+            if (
+                self.target_dtype != "int16"
+                or self.target_class_counts is None
+                or self.fcn_ocr_target_edge_bounds != "ink"
+            ):
                 raise ValueError(
-                    "OCR targets require int16 dtype and fcn_ocr_class_counts"
+                    "fcn_ocr requires int16 targets, ink edge bounds, and target_class_counts"
                 )
             expected_ocr_values = self.samples * self.image_width
-            if sum(self.fcn_ocr_class_counts) != expected_ocr_values:
+            if sum(self.target_class_counts) != expected_ocr_values:
                 raise ValueError(
-                    "fcn_ocr_class_counts sum does not match samples * image_width"
+                    "target_class_counts sum does not match samples * image_width"
                 )
-        elif self.fcn_ocr_target_dtype is not None or self.fcn_ocr_class_counts is not None:
+        elif self.fcn_ocr_target_edge_bounds is not None or self.target_class_counts is not None:
             raise ValueError(
-                "OCR target metadata is present while fcn_ocr_targets is false"
+                "fcn_ocr target metadata is present for a different task"
             )
 
-        expected_vertical_dtype = (
-            "uint8" if self.vertical_segmentation_targets else None
-        )
-        if self.vertical_segmentation_target_dtype != expected_vertical_dtype:
+        if self.task == VERTICAL_SEGMENTATION_TASK:
+            if (
+                self.target_dtype != "uint8"
+                or self.vertical_segmentation_target_radius is None
+                or self.vertical_segmentation_include_margins is None
+            ):
+                raise ValueError(
+                    "vertical_segmentation requires uint8 targets and its target parameters"
+                )
+        elif (
+            self.vertical_segmentation_target_radius is not None
+            or self.vertical_segmentation_include_margins is not None
+        ):
             raise ValueError(
-                "vertical segmentation target dtype does not match target presence"
+                "vertical segmentation target metadata is present for a different task"
             )
-        expected_baseline_dtype = "uint8" if self.baseline_detection_targets else None
-        if self.baseline_detection_target_dtype != expected_baseline_dtype:
+
+        if self.task == BASELINE_DETECTION_TASK:
+            if self.target_dtype != "uint8" or self.baseline_detection_target_radius is None:
+                raise ValueError(
+                    "baseline_detection requires uint8 targets and target radius"
+                )
+        elif self.baseline_detection_target_radius is not None:
             raise ValueError(
-                "baseline detection target dtype does not match target presence"
+                "baseline detection target metadata is present for a different task"
             )
         return self
 
     def require_task(self, task: str) -> None:
         task = normalize_task_name(task)
-        available = {
-            FCN_OCR_TASK: self.fcn_ocr_targets,
-            VERTICAL_SEGMENTATION_TASK: self.vertical_segmentation_targets,
-            BASELINE_DETECTION_TASK: self.baseline_detection_targets,
-        }
-        if not available[task]:
+        if self.task != task:
             raise ValueError(
-                f"Dataset metadata does not provide targets for task {task!r}"
+                f"Dataset task is {self.task!r}, requested training task is {task!r}"
             )
 
     def dataset_config_data(self) -> dict[str, Any]:
         return {
+            "task": self.task,
             "alphabet": self.alphabet,
             "space_char": self.space_char,
             "samples": self.samples,
@@ -223,14 +238,20 @@ class ChunkMetadata(BaseModel):
             "ink_spacing_min_char_gap_px": self.ink_spacing_min_char_gap_px,
             "ink_spacing_touch_gap_px": self.ink_spacing_touch_gap_px,
             "ink_spacing_touch_probability": self.ink_spacing_touch_probability,
-            "save_fcn_ocr_targets": self.fcn_ocr_targets,
-            "save_vertical_segmentation_targets": self.vertical_segmentation_targets,
-            "vertical_segmentation_target_radius": self.vertical_segmentation_target_radius,
-            "vertical_segmentation_include_margins": self.vertical_segmentation_include_margins,
-            "save_baseline_detection_targets": self.baseline_detection_targets,
-            "baseline_detection_target_radius": self.baseline_detection_target_radius,
             "chunk_size": self.chunk_size,
-        }
+        } | self._task_config_data()
+
+    def _task_config_data(self) -> dict[str, Any]:
+        if self.task == VERTICAL_SEGMENTATION_TASK:
+            return {
+                "vertical_segmentation_target_radius": self.vertical_segmentation_target_radius,
+                "vertical_segmentation_include_margins": self.vertical_segmentation_include_margins,
+            }
+        if self.task == BASELINE_DETECTION_TASK:
+            return {
+                "baseline_detection_target_radius": self.baseline_detection_target_radius,
+            }
+        return {}
 
 
 def load_chunk_metadata(

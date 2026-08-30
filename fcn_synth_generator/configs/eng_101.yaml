@@ -1,3 +1,4 @@
+task: fcn_ocr
 alphabet: " -0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 space_char: " "
 channels: 1
@@ -7,10 +8,6 @@ output_dir: ../../data
 chunk_size: 1024
 num_workers: 4
 overwrite: false
-
-save_fcn_ocr_targets: true
-save_vertical_segmentation_targets: false
-save_baseline_detection_targets: false
 
 image_height: 48
 image_width: 64

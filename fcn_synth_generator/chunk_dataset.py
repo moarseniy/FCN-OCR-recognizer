@@ -38,13 +38,7 @@ def validate_chunk_payload(
             f"Chunk {path} must contain a mapping, got {type(chunk).__name__}"
         )
 
-    expected_keys = {"images", "texts"}
-    target_keys = {
-        "fcn_ocr_targets": metadata.fcn_ocr_targets,
-        "vertical_segmentation_targets": metadata.vertical_segmentation_targets,
-        "baseline_detection_targets": metadata.baseline_detection_targets,
-    }
-    expected_keys.update(key for key, present in target_keys.items() if present)
+    expected_keys = {"images", "texts", "targets"}
     missing = sorted(expected_keys - set(chunk))
     unexpected = sorted(set(chunk) - expected_keys)
     if missing:
@@ -79,41 +73,39 @@ def validate_chunk_payload(
     if any(not isinstance(text, str) for text in texts):
         raise TypeError(f"Chunk {path} texts must contain only strings")
 
-    if metadata.fcn_ocr_targets:
-        fcn_ocr_targets = chunk["fcn_ocr_targets"]
+    targets = chunk["targets"]
+    if not isinstance(targets, torch.Tensor):
+        raise TypeError(f"Chunk {path} targets must be a torch.Tensor")
+
+    if metadata.task == FCN_OCR_TASK:
         expected_shape = (manifest_entry.samples, metadata.image_width)
-        if (
-            not isinstance(fcn_ocr_targets, torch.Tensor)
-            or tuple(fcn_ocr_targets.shape) != expected_shape
-        ):
+        if tuple(targets.shape) != expected_shape:
             raise ValueError(
-                f"Chunk {path} fcn_ocr_targets must have shape {expected_shape}"
+                f"Chunk {path} fcn_ocr targets must have shape {expected_shape}"
             )
-        if fcn_ocr_targets.dtype != torch.int16:
+        if targets.dtype != torch.int16:
             raise ValueError(
-                f"Chunk {path} fcn_ocr_targets dtype must be int16, got {fcn_ocr_targets.dtype}"
+                f"Chunk {path} fcn_ocr targets dtype must be int16, got {targets.dtype}"
             )
-        if int(fcn_ocr_targets.min()) < 0 or int(fcn_ocr_targets.max()) >= len(
+        if int(targets.min()) < 0 or int(targets.max()) >= len(
             metadata.alphabet
         ):
             raise ValueError(
-                f"Chunk {path} fcn_ocr_targets contain class indices outside metadata alphabet"
+                f"Chunk {path} fcn_ocr targets contain class indices outside metadata alphabet"
             )
 
-    if metadata.vertical_segmentation_targets:
-        cuts = chunk["vertical_segmentation_targets"]
+    elif metadata.task == VERTICAL_SEGMENTATION_TASK:
         expected_shape = (manifest_entry.samples, metadata.image_width)
-        if not isinstance(cuts, torch.Tensor) or tuple(cuts.shape) != expected_shape:
+        if tuple(targets.shape) != expected_shape:
             raise ValueError(
-                f"Chunk {path} vertical_segmentation_targets must have shape {expected_shape}"
+                f"Chunk {path} vertical segmentation targets must have shape {expected_shape}"
             )
-        if cuts.dtype != torch.uint8:
+        if targets.dtype != torch.uint8:
             raise ValueError(
-                f"Chunk {path} vertical_segmentation_targets dtype must be uint8, got {cuts.dtype}"
+                f"Chunk {path} vertical segmentation targets dtype must be uint8, got {targets.dtype}"
             )
 
-    if metadata.baseline_detection_targets:
-        baselines = chunk["baseline_detection_targets"]
+    elif metadata.task == BASELINE_DETECTION_TASK:
         expected_shape = (
             manifest_entry.samples,
             2,
@@ -121,15 +113,14 @@ def validate_chunk_payload(
             metadata.image_width,
         )
         if (
-            not isinstance(baselines, torch.Tensor)
-            or tuple(baselines.shape) != expected_shape
+            tuple(targets.shape) != expected_shape
         ):
             raise ValueError(
-                f"Chunk {path} baseline_detection_targets must have shape {expected_shape}"
+                f"Chunk {path} baseline detection targets must have shape {expected_shape}"
             )
-        if baselines.dtype != torch.uint8:
+        if targets.dtype != torch.uint8:
             raise ValueError(
-                f"Chunk {path} baseline_detection_targets dtype must be uint8, got {baselines.dtype}"
+                f"Chunk {path} baseline detection targets dtype must be uint8, got {targets.dtype}"
             )
 
 
@@ -186,13 +177,7 @@ class ChunkedLineDataset(Dataset):
 
         image = chunk["images"][local_idx]
 
-        if self.task == FCN_OCR_TASK:
-            return self._make_fcn_ocr_target(image, chunk, local_idx)
-        if self.task == VERTICAL_SEGMENTATION_TASK:
-            return self._make_vertical_segmentation_target(image, chunk, local_idx)
-        if self.task == BASELINE_DETECTION_TASK:
-            return self._make_baseline_detection_target(image, chunk, local_idx)
-        raise AssertionError(f"unreachable task: {self.task}")
+        return self._make_target(image, chunk["targets"][local_idx])
 
     def iter_texts(self):
         for chunk_idx in range(len(self.chunks)):
@@ -230,18 +215,28 @@ class ChunkedLineDataset(Dataset):
             self._chunk_cache.popitem(last=False)
         return chunk
 
-    def _make_fcn_ocr_target(
+    def _make_target(
         self,
         image: torch.Tensor,
-        chunk: dict,
-        local_idx: int,
+        raw_target: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if "fcn_ocr_targets" not in chunk:
-            raise KeyError(
-                "Chunk does not contain fcn_ocr_targets. Regenerate the dataset with "
-                "save_fcn_ocr_targets: true in the generation config."
-            )
-        target = chunk["fcn_ocr_targets"][local_idx].long()
+        if self.task == FCN_OCR_TASK:
+            target = raw_target.long()
+            return self._validate_fcn_ocr_target(image, target)
+        target = raw_target.float()
+        if raw_target.dtype == torch.uint8:
+            target = target / 255.0
+        if self.task == VERTICAL_SEGMENTATION_TASK:
+            return self._validate_vertical_segmentation_target(image, target)
+        if self.task == BASELINE_DETECTION_TASK:
+            return self._validate_baseline_detection_target(image, target)
+        raise AssertionError(f"unreachable task: {self.task}")
+
+    @staticmethod
+    def _validate_fcn_ocr_target(
+        image: torch.Tensor,
+        target: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if target.dim() != 1:
             raise ValueError(
                 f"OCR target must have shape (W,), got {tuple(target.shape)}"
@@ -252,21 +247,11 @@ class ChunkedLineDataset(Dataset):
             )
         return image, target
 
-    def _make_vertical_segmentation_target(
-        self,
+    @staticmethod
+    def _validate_vertical_segmentation_target(
         image: torch.Tensor,
-        chunk: dict,
-        local_idx: int,
+        target: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if "vertical_segmentation_targets" not in chunk:
-            raise KeyError(
-                "Chunk does not contain vertical_segmentation_targets. Regenerate the dataset with "
-                "save_vertical_segmentation_targets: true in the generation config."
-            )
-        raw_target = chunk["vertical_segmentation_targets"][local_idx]
-        target = raw_target.float()
-        if raw_target.dtype == torch.uint8:
-            target = target / 255.0
         if target.dim() != 1:
             raise ValueError(
                 "vertical segmentation target must have shape (W,), "
@@ -279,21 +264,11 @@ class ChunkedLineDataset(Dataset):
             )
         return image, target.contiguous()
 
-    def _make_baseline_detection_target(
-        self,
+    @staticmethod
+    def _validate_baseline_detection_target(
         image: torch.Tensor,
-        chunk: dict,
-        local_idx: int,
+        target: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if "baseline_detection_targets" not in chunk:
-            raise KeyError(
-                "Chunk does not contain baseline_detection_targets. Regenerate the dataset with "
-                "save_baseline_detection_targets: true in the generation config."
-            )
-        raw_target = chunk["baseline_detection_targets"][local_idx]
-        target = raw_target.float()
-        if raw_target.dtype == torch.uint8:
-            target = target / 255.0
         if target.dim() != 3 or target.size(0) != 2:
             raise ValueError(
                 "baseline detection target must have shape (2, H, W), "

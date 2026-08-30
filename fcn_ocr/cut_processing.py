@@ -106,27 +106,27 @@ class CutProcessingMixin:
         score_end = score_start + score_width
         return int(score_start), int(score_end)
 
-    def _map_segmentator_cuts_to_ocr_boundaries(
+    def _map_vertical_segmentation_cuts_to_ocr_boundaries(
         self,
         raw_cuts: list[int],
         *,
-        segmentator_width: int,
+        vertical_segmentation_width: int,
         input_width: int,
         ocr_width: int,
         ocr_source_x: np.ndarray | None,
-        segmentator_source_x: np.ndarray | None,
+        vertical_segmentation_source_x: np.ndarray | None,
     ) -> list[int]:
         boundaries = []
         use_coordinate_maps = (
-            ocr_source_x is not None and segmentator_source_x is not None
+            ocr_source_x is not None and vertical_segmentation_source_x is not None
         )
         for cut_index, position in enumerate(raw_cuts):
             input_position: float
             if use_coordinate_maps:
                 source_position = self._source_x_for_timestep(
                     position,
-                    segmentator_width,
-                    segmentator_source_x,
+                    vertical_segmentation_width,
+                    vertical_segmentation_source_x,
                 )
                 edge = (
                     "left"
@@ -146,16 +146,16 @@ class CutProcessingMixin:
                     input_position = (
                         (float(position) + 0.5)
                         * float(input_width)
-                        / float(segmentator_width)
-                        if segmentator_width > 0
+                        / float(vertical_segmentation_width)
+                        if vertical_segmentation_width > 0
                         else 0.0
                     )
-            elif segmentator_width > 0:
+            elif vertical_segmentation_width > 0:
                 input_position = int(
                     round(
                         (float(position) + 0.5)
                         * float(input_width)
-                        / float(segmentator_width)
+                        / float(vertical_segmentation_width)
                     )
                 )
             else:
@@ -281,16 +281,16 @@ class CutProcessingMixin:
         ocr_width: int,
         source_start: int,
         source_end: int,
-        segmentator_width: int,
+        vertical_segmentation_width: int,
     ) -> float:
         if end > start and ocr_width > 0:
             return max(0.0, float(end - start) * float(input_width) / float(ocr_width))
-        if segmentator_width > 0:
+        if vertical_segmentation_width > 0:
             return max(
                 0.0,
                 float(source_end - source_start)
                 * float(input_width)
-                / float(segmentator_width),
+                / float(vertical_segmentation_width),
             )
         return 0.0
 
@@ -301,7 +301,7 @@ class CutProcessingMixin:
         *,
         input_width: int,
         ocr_width: int,
-        segmentator_width: int,
+        vertical_segmentation_width: int,
     ) -> float | None:
         widths = [
             self._cell_width_in_input_pixels(
@@ -311,7 +311,7 @@ class CutProcessingMixin:
                 ocr_width=ocr_width,
                 source_start=source_start,
                 source_end=source_end,
-                segmentator_width=segmentator_width,
+                vertical_segmentation_width=vertical_segmentation_width,
             )
             for (start, end), (source_start, source_end) in zip(
                 zip(boundaries, boundaries[1:]),

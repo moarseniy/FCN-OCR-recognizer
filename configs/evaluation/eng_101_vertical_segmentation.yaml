@@ -1,7 +1,6 @@
 json: ../../output/manual_markup.json
 images: null
 checkpoint: ../../checkpoints/vertical_segmentation/best_model.pth
-inference_ocr_checkpoint: null
 out: ../../output/vertical_segmentation_metrics.csv
 device: cuda
 batch_size: 64

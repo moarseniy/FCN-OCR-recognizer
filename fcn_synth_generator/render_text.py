@@ -92,14 +92,17 @@ def load_config(
     if not isinstance(raw_config, dict):
         raise ValueError(f"Config must contain a YAML mapping: {config_path}")
 
-    is_training_config = "chunks_dir" in raw_config or "task" in raw_config
+    is_training_config = "chunks_dir" in raw_config
     if is_training_config:
         if chunks_dir is None:
             raise ValueError(
                 "A training config can be used only with --chunks-dir; "
                 "chunk metadata provides its alphabet and image dimensions"
             )
-        from train import dataset_config_from_chunk_metadata, load_training_config
+        from fcn_training import (
+            dataset_config_from_chunk_metadata,
+            load_training_config,
+        )
 
         training_config, _ = load_training_config(config_path)
         return dataset_config_from_chunk_metadata(
@@ -162,65 +165,39 @@ def resolve_device(device_name: str) -> torch.device:
 
 def apply_augmentations(
     image: torch.Tensor,
+    target: torch.Tensor,
+    task: str,
     config: SingleLineDatasetConfig,
     device: torch.device,
     enabled: bool,
-    fcn_ocr_target: torch.Tensor | None = None,
-    vertical_segmentation_target: torch.Tensor | None = None,
-    baseline_detection_target: torch.Tensor | None = None,
 ) -> tuple[
     torch.Tensor,
-    torch.Tensor | None,
-    torch.Tensor | None,
-    torch.Tensor | None,
+    torch.Tensor,
     list[dict[str, Any]],
 ]:
     image = tensor_to_float_image(image)
-    fcn_ocr_target = fcn_ocr_target_to_long(fcn_ocr_target)
-    vertical_segmentation_target = target_to_float(vertical_segmentation_target)
-    baseline_detection_target = target_to_float(baseline_detection_target)
+    if task == FCN_OCR_TASK:
+        prepared_target = fcn_ocr_target_to_long(target)
+    else:
+        prepared_target = target_to_float(target)
+    if prepared_target is None:
+        raise ValueError("target is required")
     if not enabled:
-        return image, fcn_ocr_target, vertical_segmentation_target, baseline_detection_target, []
+        return image, prepared_target, []
 
     augmenter = GpuTextAugmenter(config)
     batch = image.unsqueeze(0).to(device)
     augmented, metadata = augmenter.augment_with_metadata(batch)
-    if fcn_ocr_target is not None:
-        fcn_ocr_target = (
-            augmenter.apply_metadata_to_targets(
-                fcn_ocr_target.unsqueeze(0).to(device),
-                FCN_OCR_TASK,
-                metadata,
-            )[0]
-            .detach()
-            .cpu()
-            .long()
-        )
-    if vertical_segmentation_target is not None:
-        vertical_segmentation_target = (
-            augmenter.apply_metadata_to_targets(
-                vertical_segmentation_target.unsqueeze(0).to(device),
-                VERTICAL_SEGMENTATION_TASK,
-                metadata,
-            )[0]
-            .detach()
-            .cpu()
-        )
-    if baseline_detection_target is not None:
-        baseline_detection_target = (
-            augmenter.apply_metadata_to_targets(
-                baseline_detection_target.unsqueeze(0).to(device),
-                BASELINE_DETECTION_TASK,
-                metadata,
-            )[0]
-            .detach()
-            .cpu()
-        )
+    prepared_target = augmenter.apply_metadata_to_targets(
+        prepared_target.unsqueeze(0).to(device),
+        task,
+        metadata,
+    )[0].detach().cpu()
+    if task == FCN_OCR_TASK:
+        prepared_target = prepared_target.long()
     return (
         augmented[0].detach().cpu(),
-        fcn_ocr_target,
-        vertical_segmentation_target,
-        baseline_detection_target,
+        prepared_target,
         metadata[0],
     )
 
@@ -231,9 +208,8 @@ def load_chunk_sample(
 ) -> tuple[
     torch.Tensor,
     str,
-    torch.Tensor | None,
-    torch.Tensor | None,
-    torch.Tensor | None,
+    torch.Tensor,
+    str,
     dict[str, Any],
 ]:
     metadata = load_chunk_metadata(chunks_dir)
@@ -254,17 +230,11 @@ def load_chunk_sample(
         images = chunk["images"]
         texts = chunk["texts"]
         local_index = index - offset
-        fcn_ocr_targets = chunk.get("fcn_ocr_targets")
-        vertical_segmentation_targets = chunk.get("vertical_segmentation_targets")
-        baseline_detection_targets = chunk.get("baseline_detection_targets")
         return (
             images[local_index],
             str(texts[local_index]),
-            fcn_ocr_targets[local_index] if fcn_ocr_targets is not None else None,
-            vertical_segmentation_targets[local_index]
-            if vertical_segmentation_targets is not None
-            else None,
-            baseline_detection_targets[local_index] if baseline_detection_targets is not None else None,
+            chunk["targets"][local_index],
+            metadata.task,
             {
                 "chunk_file": str(path),
                 "chunk_local_index": local_index,
@@ -375,14 +345,14 @@ def describe_fcn_ocr_target(
 
 def overlay_full_markup(
     image: Image.Image,
-    vertical_segmentation_target: torch.Tensor | None,
-    baseline_detection_target: torch.Tensor | None,
+    target: torch.Tensor,
+    task: str,
 ) -> tuple[Image.Image, dict[str, Any]]:
     image_array = np.asarray(image.convert("RGB"), dtype=np.float32).copy()
     height, width = image_array.shape[:2]
     markup_metadata: dict[str, Any] = {
-        "vertical_segmentation": vertical_segmentation_target is not None,
-        "baseline_detection": baseline_detection_target is not None,
+        "vertical_segmentation": task == VERTICAL_SEGMENTATION_TASK,
+        "baseline_detection": task == BASELINE_DETECTION_TASK,
         "legend": {
             "vertical_segmentation": "green",
             "baseline_top": "red",
@@ -390,8 +360,8 @@ def overlay_full_markup(
         },
     }
 
-    if baseline_detection_target is not None:
-        baseline = target_to_float(baseline_detection_target)
+    if task == BASELINE_DETECTION_TASK:
+        baseline = target_to_float(target)
         if baseline is None or baseline.ndim != 3 or baseline.shape[0] != 2:
             raise ValueError(
                 "baseline markup target must have shape (2, H, W), "
@@ -416,8 +386,8 @@ def overlay_full_markup(
             opacity=0.92,
         )
 
-    if vertical_segmentation_target is not None:
-        vertical_scores = target_to_float(vertical_segmentation_target)
+    if task == VERTICAL_SEGMENTATION_TASK:
+        vertical_scores = target_to_float(target)
         if vertical_scores is None or vertical_scores.ndim != 1:
             raise ValueError(
                 "vertical segmentation markup target must have shape (W,), "
@@ -602,26 +572,22 @@ def main() -> None:
         (
             image_tensor,
             text,
-            fcn_ocr_target,
-            vertical_segmentation_target,
-            baseline_detection_target,
+            target,
+            task,
             source_metadata,
         ) = load_chunk_sample(chunks_dir, args.index)
         text = normalize_text(text, config)
         (
             image_tensor,
-            fcn_ocr_target,
-            vertical_segmentation_target,
-            baseline_detection_target,
+            target,
             augmentations,
         ) = apply_augmentations(
             image_tensor,
+            target,
+            task,
             config,
             device,
             enabled=not args.no_augmentations,
-            fcn_ocr_target=fcn_ocr_target,
-            vertical_segmentation_target=vertical_segmentation_target,
-            baseline_detection_target=baseline_detection_target,
         )
         source = "chunk"
     else:
@@ -629,26 +595,23 @@ def main() -> None:
             raise RuntimeError("dataset must be initialized for text rendering")
         sample = dataset.generate_text_sample(args.text, rng)
         text = sample.text
-        fcn_ocr_target = sample.fcn_ocr_target
+        task = config.task
         (
             image_tensor,
-            fcn_ocr_target,
-            vertical_segmentation_target,
-            baseline_detection_target,
+            target,
             augmentations,
         ) = apply_augmentations(
             sample.image,
+            sample.target,
+            task,
             config,
             device,
             enabled=not args.no_augmentations,
-            fcn_ocr_target=fcn_ocr_target,
-            vertical_segmentation_target=sample.vertical_segmentation_target,
-            baseline_detection_target=sample.baseline_detection_target,
         )
         source = "text"
     alphabet = config.alphabet
     ocr_runs, has_left_space, has_right_space = describe_fcn_ocr_target(
-        fcn_ocr_target,
+        target if task == FCN_OCR_TASK else None,
         alphabet,
         config.space_char,
     )
@@ -663,12 +626,13 @@ def main() -> None:
     if args.show_full_markup:
         image, full_markup = overlay_full_markup(
             image,
-            vertical_segmentation_target=vertical_segmentation_target,
-            baseline_detection_target=baseline_detection_target,
+            target=target,
+            task=task,
         )
 
     metadata = {
         "source": source,
+        "task": task,
         "text": display_text,
         "ocr_runs": ocr_runs,
         "image_size": [image.width, image.height],

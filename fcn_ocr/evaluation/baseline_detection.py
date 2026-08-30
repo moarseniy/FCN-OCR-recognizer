@@ -4,7 +4,7 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from PIL import Image
@@ -305,16 +305,10 @@ def print_inference_command(args: argparse.Namespace, metrics: dict[str, Any], i
             "detector_threshold": metrics["threshold"],
         },
     }
-    if args.inference_ocr_checkpoint:
-        config_data["fcn_ocr"] = {
-            "checkpoint": str(
-                Path(args.inference_ocr_checkpoint).expanduser().resolve()
-            ),
-        }
     save_and_print_inference_command(config_data, args.out, image_path)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate neural top/bottom baseline detection.")
     parser.add_argument("--config", default=None, help="Evaluation YAML config.")
     parser.add_argument("--json", default=None, help="Manual markup JSON created by tools.annotation.server.")
@@ -325,7 +319,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--threshold", type=float, default=0.35)
     parser.add_argument("--failure-penalty", type=float, default=1.0)
-    parser.add_argument("--inference-ocr-checkpoint", default=None)
     parser.add_argument("--optuna-trials", type=int, default=0)
     parser.add_argument("--optuna-threshold-min", type=float, default=0.10)
     parser.add_argument("--optuna-threshold-max", type=float, default=0.90)
@@ -345,15 +338,15 @@ def parse_args() -> argparse.Namespace:
             "images",
             "checkpoint",
             "out",
-            "inference_ocr_checkpoint",
             "optuna_trials_out",
         ),
         required_fields=("json", "checkpoint"),
+        argv=argv,
     )
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     _, jobs = build_jobs(
         Path(args.json),
         Path(args.images) if args.images else None,
@@ -390,7 +383,3 @@ def main() -> None:
             verbose=True,
         )
     print_inference_command(args, metrics, jobs[0][1] if jobs else None)
-
-
-if __name__ == "__main__":
-    main()

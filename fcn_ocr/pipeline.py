@@ -16,11 +16,11 @@ from .results import (
     RecognitionResult,
     VerticalSegmentationResult,
 )
-from .segmentator import VerticalSegmentator
+from .vertical_segmenter import VerticalSegmenter
 
 
 @dataclass(frozen=True)
-class OCRPipelineResult:
+class FCNPipelineResult:
     recognition: RecognitionResult | None
     ocr_logits: torch.Tensor | None
     ocr_input: torch.Tensor | None
@@ -28,8 +28,8 @@ class OCRPipelineResult:
     baseline_image: Image.Image
     baseline_preprocess_debug: PreprocessDebug
     segmentation: VerticalSegmentationResult | None = None
-    segmentator_input: torch.Tensor | None = None
-    segmentator_preprocess_debug: PreprocessDebug | None = None
+    vertical_segmentation_input: torch.Tensor | None = None
+    vertical_segmentation_preprocess_debug: PreprocessDebug | None = None
     cut_decoding: CutDecodingResult | None = None
 
     @property
@@ -42,13 +42,13 @@ class OCRPipelineResult:
 
 
 @dataclass(frozen=True)
-class OCRPipelinePathResult:
+class FCNPipelinePathResult:
     path: Path
     text: str
     error: str = ""
 
 
-class OCRPipeline:
+class FCNPipeline:
     def __init__(
         self,
         config: InferenceConfig | str | Path,
@@ -71,12 +71,12 @@ class OCRPipeline:
                 baseline_detector_checkpoint=None,
             )
 
-        self.segmentator: VerticalSegmentator | None = None
+        self.vertical_segmenter: VerticalSegmenter | None = None
         if self.config.vertical_segmentation is not None:
-            segmentator = self.config.vertical_segmentation
-            preprocess = segmentator.preprocessing
-            self.segmentator = VerticalSegmentator(
-                segmentator.checkpoint,
+            vertical_segmentation = self.config.vertical_segmentation
+            preprocess = vertical_segmentation.preprocessing
+            self.vertical_segmenter = VerticalSegmenter(
+                vertical_segmentation.checkpoint,
                 device=self.config.device,
                 verbose=verbose,
                 scale_x=preprocess.scale_x,
@@ -84,10 +84,10 @@ class OCRPipeline:
                 x_pad=preprocess.x_pad,
                 baseline_crop=False,
                 baseline_detector_checkpoint=None,
-                cut_threshold=segmentator.cut_threshold,
-                cut_min_width=segmentator.cut_min_width,
-                cut_max_width=segmentator.cut_max_width,
-                cut_smooth_radius=segmentator.cut_smooth_radius,
+                cut_threshold=vertical_segmentation.cut_threshold,
+                cut_min_width=vertical_segmentation.cut_min_width,
+                cut_max_width=vertical_segmentation.cut_max_width,
+                cut_smooth_radius=vertical_segmentation.cut_smooth_radius,
             )
 
         self.baseline_processor: BaselineDetector | None = None
@@ -133,7 +133,7 @@ class OCRPipeline:
         )
         print(
             "  Vertical segmentation stage: "
-            f"{'enabled; receives shared baseline output' if self.segmentator is not None else 'disabled'}"
+            f"{'enabled; receives shared baseline output' if self.vertical_segmenter is not None else 'disabled'}"
         )
         if self.decode is not None and self.decode.enabled:
             print(f"  Decode with vertical segmentation: enabled ({self.decode.method})")
@@ -149,7 +149,7 @@ class OCRPipeline:
         self,
         image_path: str | Path,
         collect_debug: bool = False,
-    ) -> OCRPipelineResult:
+    ) -> FCNPipelineResult:
         with Image.open(image_path) as image:
             return self.recognize_pil(image, collect_debug=collect_debug)
 
@@ -157,7 +157,7 @@ class OCRPipeline:
         self,
         image: Image.Image,
         collect_debug: bool = False,
-    ) -> OCRPipelineResult:
+    ) -> FCNPipelineResult:
         source = image.convert("RGB")
         if self.baseline_processor is not None:
             baseline_image, baseline_debug = self.baseline_processor.prepare_baseline_image(
@@ -192,22 +192,24 @@ class OCRPipeline:
             )
 
         segmentation = None
-        segmentator_input = None
-        segmentator_source_x = None
-        segmentator_debug = None
-        if self.segmentator is not None:
-            segmentator_input, segmentator_source_x = (
-                self.segmentator.preprocess_pil_after_baseline_with_source_x(
+        vertical_segmentation_input = None
+        vertical_segmentation_source_x = None
+        vertical_segmentation_debug = None
+        if self.vertical_segmenter is not None:
+            vertical_segmentation_input, vertical_segmentation_source_x = (
+                self.vertical_segmenter.preprocess_pil_after_baseline_with_source_x(
                     baseline_image
                 )
             )
             if collect_debug:
-                _, segmentator_debug = (
-                    self.segmentator.preprocess_pil_after_baseline_debug(baseline_image)
+                _, vertical_segmentation_debug = (
+                    self.vertical_segmenter.preprocess_pil_after_baseline_debug(baseline_image)
                 )
             else:
-                segmentator_debug = PreprocessDebug(metadata={}, images=[])
-            segmentation = self.segmentator.segment_tensor_debug(segmentator_input)
+                vertical_segmentation_debug = PreprocessDebug(metadata={}, images=[])
+            segmentation = self.vertical_segmenter.segment_tensor_debug(
+                vertical_segmentation_input
+            )
 
         cut_decoding = None
         if self.decode is not None and self.decode.enabled:
@@ -217,18 +219,20 @@ class OCRPipeline:
                 or ocr_input is None
                 or ocr_source_x is None
                 or segmentation is None
-                or segmentator_source_x is None
+                or vertical_segmentation_source_x is None
             ):
-                raise RuntimeError("decode stage requires completed OCR and segmentator stages")
-            cut_decoding = self._decode_with_segmentator(
+                raise RuntimeError(
+                    "decode stage requires completed fcn_ocr and vertical_segmentation stages"
+                )
+            cut_decoding = self._decode_with_vertical_segmentation(
                 ocr_logits,
                 segmentation,
                 ocr_input=ocr_input,
                 ocr_source_x=ocr_source_x,
-                segmentator_source_x=segmentator_source_x,
+                vertical_segmentation_source_x=vertical_segmentation_source_x,
             )
 
-        return OCRPipelineResult(
+        return FCNPipelineResult(
             recognition=recognition,
             ocr_logits=ocr_logits,
             ocr_input=ocr_input,
@@ -236,8 +240,8 @@ class OCRPipeline:
             baseline_image=baseline_image,
             baseline_preprocess_debug=baseline_debug,
             segmentation=segmentation,
-            segmentator_input=segmentator_input,
-            segmentator_preprocess_debug=segmentator_debug,
+            vertical_segmentation_input=vertical_segmentation_input,
+            vertical_segmentation_preprocess_debug=vertical_segmentation_debug,
             cut_decoding=cut_decoding,
         )
 
@@ -247,16 +251,16 @@ class OCRPipeline:
         image_paths: Sequence[str | Path],
         batch_size: int = 1,
         log_every: int = 0,
-    ) -> tuple[list[OCRPipelinePathResult], dict[str, float | int]]:
+    ) -> tuple[list[FCNPipelinePathResult], dict[str, float | int]]:
         if self.recognizer is None:
             raise ValueError(
-                "OCRPipeline text recognition requires an fcn_ocr section"
+                "FCNPipeline text recognition requires an fcn_ocr section"
             )
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
 
         paths = [Path(path) for path in image_paths]
-        results: dict[int, OCRPipelinePathResult] = {}
+        results: dict[int, FCNPipelinePathResult] = {}
         prepared: list[dict[str, Any]] = []
         for index, path in enumerate(paths):
             try:
@@ -291,33 +295,33 @@ class OCRPipeline:
                     "ocr_source_x": ocr_source_x,
                     "ocr_output_width": ocr_output_width,
                 }
-                if self.segmentator is not None:
-                    segmentator_input, segmentator_source_x = (
-                        self.segmentator.preprocess_pil_after_baseline_with_source_x(
+                if self.vertical_segmenter is not None:
+                    vertical_segmentation_input, vertical_segmentation_source_x = (
+                        self.vertical_segmenter.preprocess_pil_after_baseline_with_source_x(
                             baseline_image
                         )
                     )
-                    segmentator_output_width = (
-                        self.segmentator.output_width_for_input_width(
-                            int(segmentator_input.shape[-1])
+                    vertical_segmentation_output_width = (
+                        self.vertical_segmenter.output_width_for_input_width(
+                            int(vertical_segmentation_input.shape[-1])
                         )
                     )
-                    if segmentator_output_width < 1:
+                    if vertical_segmentation_output_width < 1:
                         raise ValueError(
-                            "Segmentator preprocessing produced an input that is too narrow for "
-                            f"{self.segmentator.architecture}: "
-                            f"input={tuple(segmentator_input.shape)}"
+                            "Vertical segmentation preprocessing produced an input that is too narrow for "
+                            f"{self.vertical_segmenter.architecture}: "
+                            f"input={tuple(vertical_segmentation_input.shape)}"
                         )
                     item.update(
                         {
-                            "segmentator_input": segmentator_input,
-                            "segmentator_source_x": segmentator_source_x,
-                            "segmentator_output_width": segmentator_output_width,
+                            "vertical_segmentation_input": vertical_segmentation_input,
+                            "vertical_segmentation_source_x": vertical_segmentation_source_x,
+                            "vertical_segmentation_output_width": vertical_segmentation_output_width,
                         }
                     )
                 prepared.append(item)
             except Exception as error:
-                results[index] = OCRPipelinePathResult(
+                results[index] = FCNPipelinePathResult(
                     path=path,
                     text="",
                     error=repr(error),
@@ -340,15 +344,15 @@ class OCRPipeline:
                 )
                 ocr_logits, _ = self.recognizer.logits_from_tensor(ocr_batch)
 
-                segmentator_logits = None
-                segmentator_batch = None
-                if self.segmentator is not None:
-                    segmentator_batch = self._pad_inference_batch(
-                        [item["segmentator_input"] for item in width_batch],
-                        device=self.segmentator.device,
+                vertical_segmentation_logits = None
+                vertical_segmentation_batch = None
+                if self.vertical_segmenter is not None:
+                    vertical_segmentation_batch = self._pad_inference_batch(
+                        [item["vertical_segmentation_input"] for item in width_batch],
+                        device=self.vertical_segmenter.device,
                     )
-                    segmentator_logits, _ = self.segmentator.logits_from_tensor(
-                        segmentator_batch
+                    vertical_segmentation_logits, _ = self.vertical_segmenter.logits_from_tensor(
+                        vertical_segmentation_batch
                     )
 
                 gpu_batches += 1
@@ -356,12 +360,12 @@ class OCRPipeline:
                 max_gpu_batch_size = max(max_gpu_batch_size, len(width_batch))
                 for item in width_batch:
                     useful_width_total += int(item["ocr_input"].shape[-1])
-                    if self.segmentator is not None:
-                        useful_width_total += int(item["segmentator_input"].shape[-1])
+                    if self.vertical_segmenter is not None:
+                        useful_width_total += int(item["vertical_segmentation_input"].shape[-1])
                 padded_width_total += len(width_batch) * int(ocr_batch.shape[-1])
-                if segmentator_batch is not None:
+                if vertical_segmentation_batch is not None:
                     padded_width_total += len(width_batch) * int(
-                        segmentator_batch.shape[-1]
+                        vertical_segmentation_batch.shape[-1]
                     )
 
                 for batch_index, item in enumerate(width_batch):
@@ -374,38 +378,38 @@ class OCRPipeline:
                             : int(item["ocr_output_width"]),
                         ]
                         if self.decode is not None and self.decode.enabled:
-                            if self.segmentator is None or segmentator_logits is None:
+                            if self.vertical_segmenter is None or vertical_segmentation_logits is None:
                                 raise RuntimeError(
                                     "decode stage requires a vertical_segmentation section"
                                 )
-                            segmentator_input = item["segmentator_input"]
-                            sample_segmentator_logits = segmentator_logits[
+                            vertical_segmentation_input = item["vertical_segmentation_input"]
+                            sample_vertical_segmentation_logits = vertical_segmentation_logits[
                                 batch_index : batch_index + 1,
                                 :,
-                                : int(item["segmentator_output_width"]),
+                                : int(item["vertical_segmentation_output_width"]),
                             ]
-                            segmentation = self.segmentator.analyze_segmentation_logits(
-                                sample_segmentator_logits,
-                                input_shape=(1, *tuple(segmentator_input.shape)),
+                            segmentation = self.vertical_segmenter.analyze_segmentation_logits(
+                                sample_vertical_segmentation_logits,
+                                input_shape=(1, *tuple(vertical_segmentation_input.shape)),
                             )
-                            decoded = self._decode_with_segmentator(
+                            decoded = self._decode_with_vertical_segmentation(
                                 sample_ocr_logits,
                                 segmentation,
                                 ocr_input=item["ocr_input"],
                                 ocr_source_x=item["ocr_source_x"],
-                                segmentator_source_x=item["segmentator_source_x"],
+                                vertical_segmentation_source_x=item["vertical_segmentation_source_x"],
                             )
                             text = decoded.text
                         else:
                             text, _ = self.recognizer.decode_predictions(
                                 sample_ocr_logits
                             )
-                        results[index] = OCRPipelinePathResult(
+                        results[index] = FCNPipelinePathResult(
                             path=path,
                             text=text.strip(),
                         )
                     except Exception as error:
-                        results[index] = OCRPipelinePathResult(
+                        results[index] = FCNPipelinePathResult(
                             path=path,
                             text="",
                             error=repr(error),
@@ -413,7 +417,7 @@ class OCRPipeline:
             except Exception as error:
                 for item in width_batch:
                     index = int(item["index"])
-                    results[index] = OCRPipelinePathResult(
+                    results[index] = FCNPipelinePathResult(
                         path=item["path"],
                         text="",
                         error=f"batch_error={error!r}",
@@ -440,17 +444,17 @@ class OCRPipeline:
             "padding_efficiency": padding_efficiency,
         }
 
-    def _decode_with_segmentator(
+    def _decode_with_vertical_segmentation(
         self,
         ocr_logits: torch.Tensor,
         segmentation: VerticalSegmentationResult,
         *,
         ocr_input: torch.Tensor,
         ocr_source_x,
-        segmentator_source_x,
+        vertical_segmentation_source_x,
     ) -> CutDecodingResult:
         if self.recognizer is None or self.decode is None or not self.decode.enabled:
-            raise RuntimeError("segmentator decode is not enabled")
+            raise RuntimeError("vertical segmentation decode is not enabled")
         decode_kwargs = {
             "input_width": int(ocr_input.shape[-1]),
             "input_height": int(ocr_input.shape[-2]),
@@ -458,7 +462,7 @@ class OCRPipeline:
             "center_fraction": self.decode.center_fraction,
             "min_score_width": self.decode.min_score_width,
             "ocr_source_x": ocr_source_x,
-            "segmentator_source_x": segmentator_source_x,
+            "vertical_segmentation_source_x": vertical_segmentation_source_x,
             "glyph_width_prior": self.decode.glyph_width_prior.model_dump(),
         }
         if self.decode.method == "dp":
@@ -489,25 +493,25 @@ class OCRPipeline:
             raise ValueError("max_width_ratio must be >= 1")
 
         def stage_widths(item: dict[str, Any]) -> tuple[int, int | None]:
-            segmentator_width = (
-                int(item["segmentator_input"].shape[-1])
-                if "segmentator_input" in item
+            vertical_segmentation_width = (
+                int(item["vertical_segmentation_input"].shape[-1])
+                if "vertical_segmentation_input" in item
                 else None
             )
-            return int(item["ocr_input"].shape[-1]), segmentator_width
+            return int(item["ocr_input"].shape[-1]), vertical_segmentation_width
 
         ordered = sorted(prepared, key=lambda item: stage_widths(item)[0])
         batches: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
         min_ocr_width = max_ocr_width = 0
-        min_segmentator_width = max_segmentator_width = 0
+        min_vertical_segmentation_width = max_vertical_segmentation_width = 0
         for item in ordered:
-            ocr_width, segmentator_width = stage_widths(item)
+            ocr_width, vertical_segmentation_width = stage_widths(item)
             if not current:
                 current = [item]
                 min_ocr_width = max_ocr_width = ocr_width
-                if segmentator_width is not None:
-                    min_segmentator_width = max_segmentator_width = segmentator_width
+                if vertical_segmentation_width is not None:
+                    min_vertical_segmentation_width = max_vertical_segmentation_width = vertical_segmentation_width
                 continue
 
             next_min_ocr = min(min_ocr_width, ocr_width)
@@ -515,37 +519,38 @@ class OCRPipeline:
             ocr_compatible = (
                 next_max_ocr / max(1, next_min_ocr) <= max_width_ratio
             )
-            segmentator_compatible = True
-            if segmentator_width is not None:
-                next_min_segmentator = min(
-                    min_segmentator_width,
-                    segmentator_width,
+            vertical_segmentation_compatible = True
+            if vertical_segmentation_width is not None:
+                next_min_vertical_segmentation = min(
+                    min_vertical_segmentation_width,
+                    vertical_segmentation_width,
                 )
-                next_max_segmentator = max(
-                    max_segmentator_width,
-                    segmentator_width,
+                next_max_vertical_segmentation = max(
+                    max_vertical_segmentation_width,
+                    vertical_segmentation_width,
                 )
-                segmentator_compatible = (
-                    next_max_segmentator / max(1, next_min_segmentator)
+                vertical_segmentation_compatible = (
+                    next_max_vertical_segmentation
+                    / max(1, next_min_vertical_segmentation)
                     <= max_width_ratio
                 )
             if (
                 len(current) >= max_batch_size
                 or not ocr_compatible
-                or not segmentator_compatible
+                or not vertical_segmentation_compatible
             ):
                 batches.append(current)
                 current = [item]
                 min_ocr_width = max_ocr_width = ocr_width
-                if segmentator_width is not None:
-                    min_segmentator_width = max_segmentator_width = segmentator_width
+                if vertical_segmentation_width is not None:
+                    min_vertical_segmentation_width = max_vertical_segmentation_width = vertical_segmentation_width
                 continue
             current.append(item)
             min_ocr_width = next_min_ocr
             max_ocr_width = next_max_ocr
-            if segmentator_width is not None:
-                min_segmentator_width = next_min_segmentator
-                max_segmentator_width = next_max_segmentator
+            if vertical_segmentation_width is not None:
+                min_vertical_segmentation_width = next_min_vertical_segmentation
+                max_vertical_segmentation_width = next_max_vertical_segmentation
         if current:
             batches.append(current)
         return batches

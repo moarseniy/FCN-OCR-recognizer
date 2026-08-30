@@ -12,10 +12,11 @@ from typing import Any, Literal
 import torch
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from evaluate_baseline_detection import build_jobs, evaluate_detector, optimize
+from fcn_ocr.evaluation.baseline_detection import build_jobs, evaluate_detector, optimize
 from fcn_ocr import BaselineDetector
 from fcn_ocr.evaluation.config import expand_evaluation_parameters, load_evaluation_yaml
-from train import load_training_config, resolve_checkpoint_dir, run_training
+from fcn_training import load_training_config, resolve_checkpoint_dir
+from fcn_training.runner import run_training
 
 
 MINIMIZE_METRICS = {

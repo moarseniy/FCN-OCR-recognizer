@@ -1,7 +1,7 @@
 from .debug_report import save_debug_image
 from .baseline_detector import BaselineDetector
 from .inference_config import InferenceConfig
-from .pipeline import OCRPipeline, OCRPipelinePathResult, OCRPipelineResult
+from .pipeline import FCNPipeline, FCNPipelinePathResult, FCNPipelineResult
 from .preprocessing import tensor_to_pil
 from .recognizer import TextRecognizer
 from .results import (
@@ -14,7 +14,7 @@ from .results import (
     SegmentationRun,
     VerticalSegmentationResult,
 )
-from .segmentator import VerticalSegmentator
+from .vertical_segmenter import VerticalSegmenter
 
 __all__ = [
     "ClassConfidence",
@@ -23,15 +23,15 @@ __all__ = [
     "CutDecodingResult",
     "DecodedSymbol",
     "InferenceConfig",
-    "OCRPipeline",
-    "OCRPipelinePathResult",
-    "OCRPipelineResult",
+    "FCNPipeline",
+    "FCNPipelinePathResult",
+    "FCNPipelineResult",
     "PreprocessDebug",
     "RecognitionResult",
     "SegmentationRun",
     "TextRecognizer",
     "VerticalSegmentationResult",
-    "VerticalSegmentator",
+    "VerticalSegmenter",
     "save_debug_image",
     "tensor_to_pil",
 ]

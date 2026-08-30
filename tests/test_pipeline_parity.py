@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from fcn_ocr.inference_config import InferenceConfig
-from fcn_ocr.pipeline import OCRPipeline
+from fcn_ocr.pipeline import FCNPipeline
 from fcn_ocr.results import CutDecodingResult, PreprocessDebug, RecognitionResult
 
 from tests.helpers import make_segmentation
@@ -63,14 +63,14 @@ class _FakeRecognizer:
             boundaries=[0, 4, 7],
             input_width=8,
             ocr_width=8,
-            segmentator_width=8,
+            vertical_segmentation_width=8,
             decode_method="cells",
         )
 
 
-class _FakeSegmentator:
+class _FakeVerticalSegmenter:
     device = torch.device("cpu")
-    architecture = "fake_segmentator"
+    architecture = "fake_vertical_segmentation"
 
     @staticmethod
     def preprocess_pil_after_baseline_with_source_x(image: Image.Image):
@@ -97,7 +97,7 @@ class _FakeSegmentator:
         return self.analyze_segmentation_logits(logits, input_shape)
 
 
-def _pipeline_with_fakes(recognizer, segmentator) -> OCRPipeline:
+def _pipeline_with_fakes(recognizer, vertical_segmenter) -> FCNPipeline:
     config = InferenceConfig.model_validate(
         {
             "device": "cpu",
@@ -105,14 +105,14 @@ def _pipeline_with_fakes(recognizer, segmentator) -> OCRPipeline:
                 "checkpoint": "unused_ocr.pth",
                 "decode": {"enabled": True, "method": "cells"},
             },
-            "vertical_segmentation": {"checkpoint": "unused_segmentator.pth"},
+            "vertical_segmentation": {"checkpoint": "unused_vertical_segmentation.pth"},
         }
     )
-    pipeline = OCRPipeline.__new__(OCRPipeline)
+    pipeline = FCNPipeline.__new__(FCNPipeline)
     pipeline.config = config
     pipeline.decode = config.fcn_ocr.decode
     pipeline.recognizer = recognizer
-    pipeline.segmentator = segmentator
+    pipeline.vertical_segmenter = vertical_segmenter
     pipeline.baseline_processor = None
     return pipeline
 
@@ -130,22 +130,31 @@ def test_inference_config_rejects_removed_section_names(
         )
 
 
+def test_package_exports_only_current_pipeline_and_vertical_segmenter_names() -> None:
+    import fcn_ocr
+
+    assert hasattr(fcn_ocr, "FCNPipeline")
+    assert hasattr(fcn_ocr, "VerticalSegmenter")
+    assert not hasattr(fcn_ocr, "OCRPipeline")
+    assert not hasattr(fcn_ocr, "VerticalSegmentator")
+
+
 def test_pipeline_and_evaluation_path_return_the_same_decoded_text(
     tmp_path: Path,
 ) -> None:
     image_path = tmp_path / "sample.png"
     Image.new("RGB", (8, 8), "white").save(image_path)
     recognizer = _FakeRecognizer()
-    segmentator = _FakeSegmentator()
+    vertical_segmenter = _FakeVerticalSegmenter()
 
     with Image.open(image_path) as image:
         pipeline_text = (
-            _pipeline_with_fakes(recognizer, segmentator).recognize_pil(image).text
+            _pipeline_with_fakes(recognizer, vertical_segmenter).recognize_pil(image).text
         )
 
     path_results, _ = _pipeline_with_fakes(
         recognizer,
-        segmentator,
+        vertical_segmenter,
     ).recognize_paths_text([image_path], batch_size=1)
 
     assert path_results[0].error == ""

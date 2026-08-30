@@ -5,26 +5,29 @@ from pathlib import Path
 import shutil
 import sys
 
-from evaluate_ocr import (
+from fcn_ocr.evaluation.fcn_ocr import (
     parse_args as parse_evaluation_args,
     resolve_inference_args,
     run_evaluation,
 )
-from train import load_training_config, resolve_checkpoint_dir, run_training
+from fcn_training import load_training_config, resolve_checkpoint_dir
+from fcn_training.runner import run_training
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train OCR and run evaluate_ocr after every epoch.")
+    parser = argparse.ArgumentParser(
+        description="Train FCN OCR and run its evaluation after every epoch."
+    )
     parser.add_argument("--train-config", required=True, help="Path to training YAML config.")
     parser.add_argument(
         "--evaluation-config",
         required=True,
-        help="Path to the same evaluation YAML accepted by evaluate_ocr.py.",
+        help="Path to the FCN OCR evaluation YAML accepted by evaluate.py.",
     )
     parser.add_argument(
         "--eval-out-dir",
         default=None,
-        help="Directory for per-epoch evaluation CSV/TSV files. Defaults to checkpoint_dir/evaluate_ocr.",
+        help="Directory for per-epoch evaluation files. Defaults to checkpoint_dir/evaluate_fcn_ocr.",
     )
     return parser.parse_args()
 
@@ -94,7 +97,11 @@ def main() -> None:
     evaluation_snapshot = checkpoint_dir / "evaluation_config.yaml"
     if evaluation_config_path != evaluation_snapshot.resolve():
         shutil.copy2(evaluation_config_path, evaluation_snapshot)
-    eval_dir = Path(cli_args.eval_out_dir) if cli_args.eval_out_dir else checkpoint_dir / "evaluate_ocr"
+    eval_dir = (
+        Path(cli_args.eval_out_dir)
+        if cli_args.eval_out_dir
+        else checkpoint_dir / "evaluate_fcn_ocr"
+    )
     eval_dir.mkdir(parents=True, exist_ok=True)
     eval_summary_path = eval_dir / "eval_summary.tsv"
 

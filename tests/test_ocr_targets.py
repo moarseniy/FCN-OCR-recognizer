@@ -12,8 +12,8 @@ from fcn_synth_generator.dataset import (
 
 def _dataset_without_rendering() -> SingleLineDataset:
     config = SingleLineDatasetConfig(
+        task="fcn_ocr",
         alphabet=" AB",
-        save_fcn_ocr_targets=True,
     )
     dataset = SingleLineDataset.__new__(SingleLineDataset)
     dataset.config = config

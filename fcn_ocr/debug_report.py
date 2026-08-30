@@ -167,7 +167,7 @@ def render_segmentation_panel(
 
     y = padding
     title = (
-        f"vertical segmentator input; logits {result.logits_shape}; "
+        f"vertical vertical_segmentation input; logits {result.logits_shape}; "
         f"T={len(result.raw_indices)}; "
         f"cut threshold={result.cut_threshold:.3f}"
     )
@@ -285,10 +285,10 @@ def render_pipeline_panel(
     baseline_output_image: Image.Image | None,
     baseline_preprocess_images: list[tuple[str, Image.Image]] | None,
     baseline_enabled: bool,
-    segmentator_input_image: Image.Image | None,
-    segmentator_preprocess_images: list[tuple[str, Image.Image]] | None,
+    vertical_segmentation_input_image: Image.Image | None,
+    vertical_segmentation_preprocess_images: list[tuple[str, Image.Image]] | None,
     segmentation_result: VerticalSegmentationResult | None,
-    segmentator_enabled: bool,
+    vertical_segmentation_enabled: bool,
     network_input_image: Image.Image | None,
     preprocess_images: list[tuple[str, Image.Image]] | None,
     ocr_enabled: bool,
@@ -305,13 +305,13 @@ def render_pipeline_panel(
     if baseline_enabled and baseline_output_image is not None:
         baseline_items.append(("shared baseline output", baseline_output_image))
 
-    segmentator_items = list(segmentator_preprocess_images or [])
-    _append_final_input(segmentator_items, segmentator_input_image)
-    if segmentation_result is not None and segmentator_input_image is not None:
-        segmentator_items.append(
+    vertical_segmentation_items = list(vertical_segmentation_preprocess_images or [])
+    _append_final_input(vertical_segmentation_items, vertical_segmentation_input_image)
+    if segmentation_result is not None and vertical_segmentation_input_image is not None:
+        vertical_segmentation_items.append(
             (
                 "cut projection and detected vertical lines",
-                render_segmentation_panel(segmentator_input_image, segmentation_result),
+                render_segmentation_panel(vertical_segmentation_input_image, segmentation_result),
             )
         )
 
@@ -320,7 +320,7 @@ def render_pipeline_panel(
 
     panels = [
         _render_stage_column("1. BASELINE DETECTION", baseline_items, baseline_enabled, column_width),
-        _render_stage_column("2. VERTICAL SEGMENTATION", segmentator_items, segmentator_enabled, column_width),
+        _render_stage_column("2. VERTICAL SEGMENTATION", vertical_segmentation_items, vertical_segmentation_enabled, column_width),
         _render_stage_column("3. OCR", ocr_items, ocr_enabled, column_width),
     ]
     content_height = max(panel.height for panel in panels)
@@ -347,7 +347,7 @@ def _flatten_metadata(metadata: dict[str, Any]) -> list[str]:
         "device",
         "baseline_status",
         "checkpoint",
-        "segmentator_checkpoint",
+        "vertical_segmentation_checkpoint",
         "expected_text",
     )
     lines: list[str] = []
@@ -460,13 +460,13 @@ def save_debug_image(
     network_input_image: Image.Image | None = None,
     preprocess_images: list[tuple[str, Image.Image]] | None = None,
     segmentation_result: VerticalSegmentationResult | None = None,
-    segmentator_input_image: Image.Image | None = None,
+    vertical_segmentation_input_image: Image.Image | None = None,
     cut_decoding_result: CutDecodingResult | None = None,
     baseline_output_image: Image.Image | None = None,
     baseline_preprocess_images: list[tuple[str, Image.Image]] | None = None,
-    segmentator_preprocess_images: list[tuple[str, Image.Image]] | None = None,
+    vertical_segmentation_preprocess_images: list[tuple[str, Image.Image]] | None = None,
     baseline_enabled: bool = True,
-    segmentator_enabled: bool = True,
+    vertical_segmentation_enabled: bool = True,
     ocr_enabled: bool = True,
 ) -> None:
     output_path = Path(output_path)
@@ -477,10 +477,10 @@ def save_debug_image(
         baseline_output_image=baseline_output_image,
         baseline_preprocess_images=baseline_preprocess_images,
         baseline_enabled=baseline_enabled,
-        segmentator_input_image=segmentator_input_image,
-        segmentator_preprocess_images=segmentator_preprocess_images,
+        vertical_segmentation_input_image=vertical_segmentation_input_image,
+        vertical_segmentation_preprocess_images=vertical_segmentation_preprocess_images,
         segmentation_result=segmentation_result,
-        segmentator_enabled=segmentator_enabled,
+        vertical_segmentation_enabled=vertical_segmentation_enabled,
         network_input_image=network_input_image,
         preprocess_images=preprocess_images,
         ocr_enabled=ocr_enabled,
@@ -538,12 +538,12 @@ def save_debug_image(
     if segmentation_result is not None:
         metadata_lines.extend(
             [
-                f"segmentator input tensor shape: {segmentation_result.input_shape}",
-                f"segmentator logits shape: {segmentation_result.logits_shape}",
-                f"segmentator timesteps: {len(segmentation_result.raw_indices)}",
-                f"segmentator cuts: {len(segmentation_result.cut_positions or [])}",
-                f"segmentator threshold: {segmentation_result.cut_threshold:.4f}",
-                f"segmentator min/max width: {segmentation_result.cut_min_width}/{segmentation_result.cut_max_width}",
+                f"vertical_segmentation input tensor shape: {segmentation_result.input_shape}",
+                f"vertical_segmentation logits shape: {segmentation_result.logits_shape}",
+                f"vertical_segmentation timesteps: {len(segmentation_result.raw_indices)}",
+                f"vertical_segmentation cuts: {len(segmentation_result.cut_positions or [])}",
+                f"vertical_segmentation threshold: {segmentation_result.cut_threshold:.4f}",
+                f"vertical_segmentation min/max width: {segmentation_result.cut_min_width}/{segmentation_result.cut_max_width}",
             ]
         )
 
@@ -640,7 +640,7 @@ def save_debug_image(
             f"Final OCR symbols ({cut_decoding_result.decode_method}); one class per selected cut interval",
             ["#", "answer", "ocr span", "conf", "score", "glyph width", "ordered candidates"],
             cut_rows,
-            "no intervals decoded from segmentator cuts",
+            "no intervals decoded from vertical_segmentation cuts",
             font,
         )
 

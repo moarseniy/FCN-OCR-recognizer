@@ -10,7 +10,7 @@ from .model_runner import PreprocessedFCNRunner
 from .results import SegmentationRun, VerticalSegmentationResult
 
 
-class VerticalSegmentator(PreprocessedFCNRunner):
+class VerticalSegmenter(PreprocessedFCNRunner):
     """FCN model that predicts vertical character-boundary scores."""
 
     def __init__(
@@ -76,7 +76,7 @@ class VerticalSegmentator(PreprocessedFCNRunner):
     def _resolve_cut_threshold(value: float | None) -> float:
         resolved = 0.5 if value is None else float(value)
         if not 0.0 < resolved < 1.0:
-            raise ValueError("segmentator cut threshold must be between 0 and 1")
+            raise ValueError("vertical_segmentation cut threshold must be between 0 and 1")
         return resolved
 
     @staticmethod
@@ -93,17 +93,17 @@ class VerticalSegmentator(PreprocessedFCNRunner):
 
     def print_summary(self) -> None:
         print(
-            f"Segmentator loaded from epoch {self.checkpoint['epoch']}, "
+            f"Vertical segmentation loaded from epoch {self.checkpoint['epoch']}, "
             f"loss: {float(self.checkpoint['loss']):.8f}"
         )
-        print(f"Segmentator checkpoint: {self.checkpoint_path}")
-        print(f"Segmentator device: {self.device}")
-        print(f"Segmentator input height: {self.image_height}")
-        print(f"Segmentator preprocess: scale_x={self.scale_x:+.4f}, y_pad={self.y_pad:+.4f}, x_pad={self.x_pad:.4f}")
-        print(f"Segmentator task: {self.task}")
-        print("Segmentator output: one character-boundary score per column")
+        print(f"Vertical segmentation checkpoint: {self.checkpoint_path}")
+        print(f"Vertical segmentation device: {self.device}")
+        print(f"Vertical segmentation input height: {self.image_height}")
+        print(f"Vertical segmentation preprocess: scale_x={self.scale_x:+.4f}, y_pad={self.y_pad:+.4f}, x_pad={self.x_pad:.4f}")
+        print(f"Vertical segmentation task: {self.task}")
+        print("Vertical segmentation output: one character-boundary score per column")
         print(
-            "Segmentator params: "
+            "Vertical segmentation params: "
             f"cut_threshold={self.cut_threshold:.3f}, "
             f"cut_min_width={self.cut_min_width}, "
             f"cut_max_width={self.cut_max_width}, "
@@ -116,7 +116,7 @@ class VerticalSegmentator(PreprocessedFCNRunner):
         input_shape: tuple[int, ...],
     ) -> VerticalSegmentationResult:
         if logits.size(1) != 1:
-            raise ValueError(f"Cut segmentator expects logits with one channel, got {tuple(logits.shape)}")
+            raise ValueError(f"Cut vertical_segmentation expects logits with one channel, got {tuple(logits.shape)}")
         return self._analyze_vertical_segmentation_logits(logits, input_shape)
 
     def _analyze_vertical_segmentation_logits(
@@ -306,10 +306,10 @@ class VerticalSegmentator(PreprocessedFCNRunner):
         for timestep, value in enumerate(raw_indices[1:], start=1):
             if value == label:
                 continue
-            runs.append(VerticalSegmentator._run_from_slice(label, start, timestep - 1, raw_confidences, cut_scores))
+            runs.append(VerticalSegmenter._run_from_slice(label, start, timestep - 1, raw_confidences, cut_scores))
             start = timestep
             label = value
-        runs.append(VerticalSegmentator._run_from_slice(label, start, len(raw_indices) - 1, raw_confidences, cut_scores))
+        runs.append(VerticalSegmenter._run_from_slice(label, start, len(raw_indices) - 1, raw_confidences, cut_scores))
         return runs
 
     @staticmethod

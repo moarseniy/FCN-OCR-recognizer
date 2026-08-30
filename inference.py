@@ -12,12 +12,12 @@ from fcn_ocr import (
     CutDecodingResult,
     DecodedSymbol,
     InferenceConfig,
-    OCRPipeline,
-    OCRPipelineResult,
+    FCNPipeline,
+    FCNPipelineResult,
     RecognitionResult,
     TextRecognizer,
     VerticalSegmentationResult,
-    VerticalSegmentator,
+    VerticalSegmenter,
     save_debug_image,
     tensor_to_pil,
 )
@@ -29,12 +29,12 @@ __all__ = [
     "CutDecodingResult",
     "DecodedSymbol",
     "InferenceConfig",
-    "OCRPipeline",
-    "OCRPipelineResult",
+    "FCNPipeline",
+    "FCNPipelineResult",
     "RecognitionResult",
     "TextRecognizer",
     "VerticalSegmentationResult",
-    "VerticalSegmentator",
+    "VerticalSegmenter",
     "load_dataset_config",
     "main",
     "save_debug_image",
@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         required=True,
-        help="Inference YAML; omitted baseline, segmentator, or OCR sections are skipped.",
+        help="Inference YAML; omitted baseline, vertical_segmentation, or OCR sections are skipped.",
     )
     parser.add_argument("--image", help="Path to an image file for recognition.")
     parser.add_argument(
@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
 
 def _load_source_image(
     args: argparse.Namespace,
-    pipeline: OCRPipeline,
+    pipeline: FCNPipeline,
 ) -> tuple[Image.Image, str, str | None]:
     if args.image:
         with Image.open(args.image) as image_file:
@@ -94,7 +94,7 @@ def _load_source_image(
         raise ValueError("--image or --generation-config is required")
     sample_index = args.sample_index if args.sample_index is not None else 0
     dataset_config = load_dataset_config(args.generation_config)
-    recognizer = pipeline.recognizer or pipeline.segmentator
+    recognizer = pipeline.recognizer or pipeline.vertical_segmenter
     if recognizer is None:
         raise ValueError(
             "Synthetic --sample-index inference requires an fcn_ocr or "
@@ -120,8 +120,8 @@ def _load_source_image(
 
 def _debug_metadata(
     config_path: Path,
-    pipeline: OCRPipeline,
-    result: OCRPipelineResult,
+    pipeline: FCNPipeline,
+    result: FCNPipelineResult,
     source: str,
     expected_text: str | None,
 ) -> dict:
@@ -133,10 +133,14 @@ def _debug_metadata(
         "expected_text": expected_text,
         "baseline_shared": True,
         "baseline_enabled": bool(config.baseline_detection is not None and config.baseline_detection.enabled),
-        "segmentator_enabled": config.vertical_segmentation is not None,
+        "vertical_segmentation_enabled": config.vertical_segmentation is not None,
         "ocr_enabled": config.fcn_ocr is not None,
     }
-    active_model = pipeline.recognizer or pipeline.segmentator or pipeline.baseline_processor
+    active_model = (
+        pipeline.recognizer
+        or pipeline.vertical_segmenter
+        or pipeline.baseline_processor
+    )
     if active_model is not None:
         metadata["device"] = str(active_model.device)
     metadata.update(result.baseline_preprocess_debug.metadata)
@@ -146,11 +150,11 @@ def _debug_metadata(
     if result.ocr_preprocess_debug is not None:
         metadata["ocr_preprocessing_runtime"] = result.ocr_preprocess_debug.metadata
     if config.vertical_segmentation is not None:
-        metadata["segmentator_checkpoint"] = str(config.vertical_segmentation.checkpoint)
-        metadata["segmentator_preprocessing"] = config.vertical_segmentation.preprocessing.model_dump()
-    if result.segmentator_preprocess_debug is not None:
-        metadata["segmentator_preprocessing_runtime"] = (
-            result.segmentator_preprocess_debug.metadata
+        metadata["vertical_segmentation_checkpoint"] = str(config.vertical_segmentation.checkpoint)
+        metadata["vertical_segmentation_preprocessing"] = config.vertical_segmentation.preprocessing.model_dump()
+    if result.vertical_segmentation_preprocess_debug is not None:
+        metadata["vertical_segmentation_preprocessing_runtime"] = (
+            result.vertical_segmentation_preprocess_debug.metadata
         )
     if result.cut_decoding is not None:
         metadata.update(
@@ -172,7 +176,7 @@ def _debug_metadata(
 def main() -> None:
     args = parse_args()
     config_path = Path(args.config).expanduser().resolve()
-    pipeline = OCRPipeline(config_path, verbose=True)
+    pipeline = FCNPipeline(config_path, verbose=True)
     source_image, source_label, expected_text = _load_source_image(args, pipeline)
     result = pipeline.recognize_pil(source_image, collect_debug=bool(args.debug_image))
 
@@ -180,7 +184,7 @@ def main() -> None:
         print(f"Image: {args.image}")
     if result.segmentation is not None:
         print(
-            "Segmentator: "
+            "Vertical segmentation: "
             f"{len(result.segmentation.cut_positions or [])} cuts, "
             f"{len(result.segmentation.raw_indices)} timesteps"
         )
@@ -232,17 +236,17 @@ def main() -> None:
             ),
             ocr_enabled=pipeline.config.fcn_ocr is not None,
             segmentation_result=result.segmentation,
-            segmentator_input_image=(
-                tensor_to_pil(result.segmentator_input)
-                if result.segmentator_input is not None
+            vertical_segmentation_input_image=(
+                tensor_to_pil(result.vertical_segmentation_input)
+                if result.vertical_segmentation_input is not None
                 else None
             ),
-            segmentator_preprocess_images=(
-                result.segmentator_preprocess_debug.images
-                if result.segmentator_preprocess_debug is not None
+            vertical_segmentation_preprocess_images=(
+                result.vertical_segmentation_preprocess_debug.images
+                if result.vertical_segmentation_preprocess_debug is not None
                 else None
             ),
-            segmentator_enabled=pipeline.config.vertical_segmentation is not None,
+            vertical_segmentation_enabled=pipeline.config.vertical_segmentation is not None,
             cut_decoding_result=result.cut_decoding,
         )
         print(f"Saved debug image: {args.debug_image}")

@@ -6,12 +6,17 @@ from pydantic import ValidationError
 
 from fcn_synth_generator.dataset import SingleLineDatasetConfig
 from fcn_tasks import TASK_NAMES, task_output_channels
-from fcn_training import available_training_tasks, get_training_task
-from train import TrainingConfig, effective_training_config_data
+from fcn_training import (
+    TrainingConfig,
+    available_training_tasks,
+    effective_training_config_data,
+    get_training_task,
+)
 
 
 def _dataset_config() -> SingleLineDatasetConfig:
     return SingleLineDatasetConfig(
+        task="fcn_ocr",
         alphabet=" AB",
         image_height=16,
         image_width=32,

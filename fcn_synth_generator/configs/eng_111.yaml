@@ -1,3 +1,4 @@
+task: fcn_ocr
 alphabet: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 space_char: " "
 samples: 100000
@@ -31,4 +32,3 @@ background_extensions:
   - .bmp
   - .webp
 horizontal_padding: 8
-save_fcn_ocr_targets: true

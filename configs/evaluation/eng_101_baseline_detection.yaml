@@ -5,7 +5,6 @@ out: ../../output/baseline_detection_metrics.csv
 device: cuda
 limit: null
 failure_penalty: 1.0
-inference_ocr_checkpoint: null
 
 parameters:
   threshold: [0.10, 0.90]

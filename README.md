@@ -28,7 +28,8 @@ runtime-пайплайна разделены по ответственност�
 - `fcn_ocr/cut_processing.py` сопоставляет cut-координаты с выходом OCR и считает width prior;
 - `fcn_ocr/decoding.py` содержит обычный, cells- и DP-декодеры;
 - `fcn_ocr/recognizer.py` связывает модель с этими стадиями и предоставляет inference API;
-- `fcn_ocr/pipeline.py` один раз запускает общий baseline и координирует OCR с сегментатором.
+- `fcn_ocr/pipeline.py` один раз запускает общий baseline и координирует стадии FCN OCR и вертикальной сегментации;
+- `fcn_ocr/vertical_segmenter.py` предоставляет runtime API вертикальной сегментации.
 
 Общая инфраструктура замеров находится в `fcn_ocr/evaluation/`:
 
@@ -39,9 +40,9 @@ runtime-пайплайна разделены по ответственност�
 - `optuna.py` управляет studies, параметрами и progress bar;
 - `reporting.py` пишет CSV/TSV и готовый inference-конфиг.
 
-Файлы `evaluate_ocr.py`, `evaluate_vertical_segmentation.py` и
-`evaluate_baseline_detection.py` остаются CLI-точками входа и используют этот общий
-слой. Отсутствующие в указанной папке изображения Label Studio полностью
+Единая CLI-точка `evaluate.py` принимает задачу `fcn_ocr`,
+`vertical_segmentation` или `baseline_detection`; реализации находятся в
+`fcn_ocr/evaluation/` и используют общий слой. Отсутствующие в указанной папке изображения Label Studio полностью
 исключаются из выборки; `limit` применяется уже к найденным файлам.
 
 Эти модули не являются отдельными режимами: они образуют один и тот же
@@ -54,20 +55,29 @@ pipeline и используют общий строгий формат checkpoi
 - `baseline_detection.py` описывает `baseline_detection`.
 
 Каждая задача одним контрактом задаёт формат target, число выходов модели,
-loss, допустимые параметры конфига и проверку геометрии модели. `train.py`
-занимается только общим циклом обучения и получает выбранную задачу из
-реестра. Явные параметры другой задачи в training YAML считаются ошибкой.
+loss, допустимые параметры конфига и проверку геометрии модели. Корневой
+`train.py` является только CLI, а config/data/engine/checkpoint/runner-части
+находятся в `fcn_training/`. Явные параметры другой задачи в training YAML
+считаются ошибкой.
 
 ## Dataset metadata
 
 `metadata.yaml` является обязательным контрактом офлайн-датасета. В нём
-зафиксированы точный порядок алфавита, размеры и dtype тензоров, доступные
-targets, manifest чанков и статистика классов. Конфиг обучения не может
+зафиксированы задача, точный порядок алфавита, размеры и dtype тензоров,
+manifest чанков и статистика классов. Конфиг обучения не может
 переопределять эти значения.
 
 Поддерживается только текущая версия metadata. Старые датасеты намеренно не
 мигрируются: их нужно заново создать через `generate_dataset`, чтобы чанки и
 контракт гарантированно соответствовали одному и тому же коду генератора.
+
+Проверить metadata и первый чанк, не загружая весь датасет:
+
+```bash
+python check_chunk.py data/eng_101_YYYYMMDD_HHMMSS
+```
+
+Флаг `--all` последовательно проверяет все чанки из manifest.
 
 ## FCN synth generator
 
@@ -79,11 +89,10 @@ targets, manifest чанков и статистика классов. Конф�
 
 - `images`: тензор `N x C x H x W` в `uint8`;
 - `texts`: исходная текстовая разметка;
-- опционально `fcn_ocr_targets`, `vertical_segmentation_targets` и `baseline_detection_targets` для конкретных
-  задач обучения.
+- `targets`: единственный target, форма и dtype которого определяются `task`.
 
 Основной OCR-режим — `task: fcn_ocr`. В этом режиме `final` имеет
-`len(alphabet)` выходов, а `fcn_ocr_targets` содержат один класс для каждой
+`len(alphabet)` выходов, а `targets` содержат один класс для каждой
 X-позиции входного изображения. После `fcn_ocr_crop_left/right` разметка
 сводится к ширине выхода сети через majority-bin выравнивание.
 Для вертикального сегментатора используется `task: vertical_segmentation`:
@@ -101,9 +110,9 @@ Training получает этот алфавит только из `metadata.ya
 
 Основные конфиги для эксперимента `101` теперь разделены по назначению:
 
-- `fcn_synth_generator/configs/eng_101.yaml` — OCR: чистая основная строка, `fcn_ocr_targets`, без соседних строк;
-- `fcn_synth_generator/configs/eng_101_vertical_segmentation.yaml` — вертикальная сегментация: чистая основная строка, `vertical_segmentation_targets`, без соседних строк;
-- `fcn_synth_generator/configs/eng_101_baseline_detection.yaml` — детекция базовых линий: `baseline_detection_targets`, соседние верхние/нижние строки как вертикальный мусор.
+- `fcn_synth_generator/configs/eng_101.yaml` — `task: fcn_ocr`, чистая основная строка без соседей;
+- `fcn_synth_generator/configs/eng_101_vertical_segmentation.yaml` — `task: vertical_segmentation`, разрезы между символами;
+- `fcn_synth_generator/configs/eng_101_baseline_detection.yaml` — `task: baseline_detection`, соседние строки как вертикальный мусор.
 
 Дополнительные минимальные примеры:
 
@@ -138,9 +147,9 @@ parameters:
 `baseline_crop` зафиксированы. Булевый диапазон `[false, true]` включает подбор
 переключателя, если evaluator поддерживает его оптимизацию. Служебные параметры
 запуска (`json`, `checkpoint`, `optuna_trials`, пути вывода и подобные) остаются
-на верхнем уровне конфига. CLI-флаги вида
-`--optuna-cut-threshold-min` и `--optuna-cut-threshold-max` сохранены и могут
-переопределить отдельную границу для конкретного запуска.
+на верхнем уровне конфига. Для воспроизводимых запусков диапазоны поиска следует
+хранить в YAML, а отдельные фиксированные параметры при необходимости можно
+переопределить через CLI.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -340,36 +349,34 @@ word_spacing_multiplier_max: 1.7
 `char_spacing_*` добавляет единый tracking между соседними символами внутри
 слова, а `word_spacing_multiplier_*` отдельно меняет ширину пробелов.
 
-В каждом `chunk_*.pt` лежат только данные: `images` (`uint8`,
-`N x C x H x W`) и исходные `texts` как текстовая разметка. Нужный тип
-разметки включается в generation-конфиге отдельно:
+В каждом `chunk_*.pt` лежат только `images` (`uint8`, `N x C x H x W`),
+исходные `texts` и один `targets`. Задача обязательна и выбирается в
+generation-конфиге:
 
 ```yaml
-save_fcn_ocr_targets: true
+task: fcn_ocr
 ```
 
-для OCR `fcn_ocr`,
+Для вертикальной сегментации:
 
 ```yaml
-save_vertical_segmentation_targets: true
+task: vertical_segmentation
 vertical_segmentation_target_radius: 1
 vertical_segmentation_include_margins: true
 ```
 
-для задачи вертикальной сегментации,
+Для базовых линий:
 
 ```yaml
-save_baseline_detection_targets: true
+task: baseline_detection
 baseline_detection_target_radius: 1
 ```
 
-для top/bottom baseline detector.
-
-Тогда в чанки попадет `fcn_ocr_targets` (`N x W`) — класс символа для
+При `fcn_ocr` тензор `targets` имеет форму `N x W` и dtype `int16`: это класс символа для
 каждой X-колонки исходного кропа. Фон до ink bbox первого глифа и после ink bbox
 последнего глифа размечается классом пробела; боковые bearing-поля шрифта не
-приписываются крайним буквам. Если включен `save_vertical_segmentation_targets`,
-в чанки попадет `vertical_segmentation_targets` (`N x W`, `uint8`) — heatmap
+приписываются крайним буквам. При `vertical_segmentation` тензор `targets`
+имеет форму `N x W` и dtype `uint8`: это heatmap
 правильных вертикальных разрезов. Каждый внутренний разрез ставится посередине
 между видимыми границами соседних глифов, а не между их типографическими
 advance-интервалами. Пробел не имеет видимого контура, поэтому для него
@@ -380,8 +387,8 @@ advance-интервалами. Пробел не имеет видимого к
 При обучении loss делает crop и при необходимости пересэмплирует эту разметку
 к выходной ширине сети `T`. Для
 `vertical_segmentation_fcn` ширина выхода сохраняется 1:1, поэтому в конфиге
-используются crop `0/0` и strict-width. Если включен `save_baseline_detection_targets`, в чанки попадет
-`baseline_detection_targets` (`N x 2 x H x W`, `uint8`) — две горизонтальные score-линии
+используются crop `0/0` и strict-width. При `baseline_detection` тензор
+`targets` имеет форму `N x 2 x H x W` и dtype `uint8`: это две горизонтальные score-линии
 для верхней и нижней границы основной строки. Их координаты вычисляются по
 крайним ненулевым пикселям отдельной растровой маски основной строки, поэтому
 метрики шрифта, фон и соседние мусорные строки на границы не влияют. Для
@@ -458,7 +465,8 @@ python -m fcn_synth_generator.render_text \
   --output output/render_chunk.png
 ```
 
-`render_text` преобразует `fcn_ocr_targets` вместе с изображением и под полем
+`render_text` преобразует `targets` вместе с изображением и для задачи
+`fcn_ocr` под полем
 `text` выводит поколоночную разметку как `␠[start:end]`. Крайние пробельные
 классы также показываются в самом поле `text`. `--show-full-markup` дополнительно
 рисует cut-линии зелёным, а верхнюю и нижнюю baseline — красным и синим.
@@ -505,7 +513,7 @@ architecture_params:
 ```
 
 Имя архитектуры сохраняется в checkpoint, поэтому `inference.py`,
-`evaluate_ocr.py` и `VerticalSegmentator` автоматически собирают такую же сеть
+`evaluate.py` и `VerticalSegmenter` автоматически собирают такую же сеть
 при загрузке модели. Checkpoint имеет обязательные `format`, `version` и
 строгий `model_config` с единственным идентификатором `task`. Старые checkpoint
 с `loss_mode`/`target_format` не поддерживаются, их модели нужно переобучить.
@@ -528,7 +536,7 @@ architecture_params:
 `configs/train/eng_train_101_residual.yaml`,
 `configs/train/eng_train_101_vertical_segmentation_residual.yaml`.
 
-Для обучения FCN OCR на чанках с `fcn_ocr_targets`:
+Для обучения FCN OCR на датасете с `task: fcn_ocr`:
 
 ```yaml
 task: fcn_ocr
@@ -538,7 +546,7 @@ fcn_ocr_target_min_majority: 0.6
 fcn_ocr_space_weight: 0.5
 ```
 
-Majority-bin выравнивание делит `fcn_ocr_targets` на интервалы под выходные позиции,
+Majority-bin выравнивание делит поколоночный `targets` на интервалы под выходные позиции,
 берет класс большинства и игнорирует позицию, если большинство слабее
 `fcn_ocr_target_min_majority`.
 `fcn_ocr_space_weight` уменьшает или увеличивает вклад класса пробела в OCR-loss.
@@ -558,7 +566,7 @@ vertical_segmentation_positive_weight: 4.0
 Соответствующий generation-конфиг: `fcn_synth_generator/configs/eng_101_vertical_segmentation.yaml`.
 Порог и параметры postprocess (`cut_threshold`, ограничения ширины и
 сглаживание) в обучении не участвуют. Они задаются при
-`evaluate_vertical_segmentation.py` и сохраняются в отдельном inference-конфиге.
+`evaluate.py vertical_segmentation` и сохраняются в отдельном inference-конфиге.
 
 Для обучения нейронного детектора верхней/нижней базовой линии:
 
@@ -623,7 +631,7 @@ inference-конфига.
 предсказанных ячеек с длиной строки из Label Studio:
 
 ```bash
-python evaluate_vertical_segmentation.py \
+python evaluate.py vertical_segmentation \
   --config configs/evaluation/eng_101_vertical_segmentation.yaml \
   --json labels.json \
   --images images
@@ -674,7 +682,7 @@ python -m tools.annotation.server \
 Точная оценка вертикальной сегментации:
 
 ```bash
-python evaluate_vertical_segmentation.py \
+python evaluate.py vertical_segmentation \
   --config configs/evaluation/eng_101_vertical_segmentation.yaml
 ```
 
@@ -692,7 +700,7 @@ python evaluate_vertical_segmentation.py \
 Оценка обеих baseline:
 
 ```bash
-python evaluate_baseline_detection.py \
+python evaluate.py baseline_detection \
   --config configs/evaluation/eng_101_baseline_detection.yaml \
   --optuna-trials 0
 ```
@@ -700,11 +708,11 @@ python evaluate_baseline_detection.py \
 Подбор threshold:
 
 ```bash
-python evaluate_baseline_detection.py \
+python evaluate.py baseline_detection \
   --config configs/evaluation/eng_101_baseline_detection.yaml
 ```
 
-`evaluate_baseline_detection.py` считает MAE отдельно для верхней и нижней линии,
+`evaluate.py baseline_detection` считает MAE отдельно для верхней и нижней линии,
 общую ошибку в пикселях, ошибку относительно высоты строки, покрытие по X и
 штрафует неудачные детекции при Optuna-подборе.
 
@@ -936,9 +944,9 @@ baseline_detection:
 Python API для использования из других скриптов:
 
 ```python
-from fcn_ocr import OCRPipeline
+from fcn_ocr import FCNPipeline
 
-pipeline = OCRPipeline("configs/inference/eng_101.yaml")
+pipeline = FCNPipeline("configs/inference/eng_101.yaml")
 for path in ["line_1.png", "line_2.png"]:
     result = pipeline.recognize_path(path)
     print(path, result.text)
@@ -1013,7 +1021,7 @@ for path in ["line_1.png", "line_2.png"]:
 | `vertical_segmentation.preprocessing.y_pad` | Вертикальный padding/crop только для вертикальной сегментации. |
 | `vertical_segmentation.preprocessing.x_pad` | Горизонтальный padding только для вертикальной сегментации. |
 | `--show-raw` | Печатает raw timestep-классы обычного OCR decode. Полезно, чтобы увидеть, где сеть держит один класс несколько timestep-ов подряд. |
-| `--debug-image` | Сохраняет трехколоночный канвас полного pipeline: baseline, segmentator, OCR, а ниже результаты и top-k confidence. |
+| `--debug-image` | Сохраняет трехколоночный канвас полного pipeline: baseline, vertical_segmentation, OCR, а ниже результаты и top-k confidence. |
 | `debug.top_k` | Сколько top-кандидатов по confidence выводить для каждого decoded-символа. |
 
 #### Baseline Crop
@@ -1047,7 +1055,7 @@ for path in ["line_1.png", "line_2.png"]:
 `vertical_segmentation.cut_min_width: null`, используется значение из checkpoint или
 дефолт `1`.
 
-#### FCN OCR + Segmentator Decode
+#### FCN OCR + Vertical segmentation Decode
 
 Эти параметры используются только если `fcn_ocr.decode.enabled: true`.
 
@@ -1101,7 +1109,7 @@ PYTHONPATH=/path/to/FCN-OCR-recognizer python my_script.py
 Оценка Label Studio export JSON из корня проекта:
 
 ```bash
-python evaluate_ocr.py \
+python evaluate.py fcn_ocr \
   --config configs/evaluation/eng_101_ocr.yaml \
   --json path/to/export.json \
   --images path/to/images \
@@ -1111,7 +1119,7 @@ python evaluate_ocr.py \
 Подбор inference-preprocessing через Optuna:
 
 ```bash
-python evaluate_ocr.py \
+python evaluate.py fcn_ocr \
   --config configs/evaluation/eng_101_ocr.yaml \
   --json path/to/export.json \
   --images path/to/images
@@ -1119,14 +1127,14 @@ python evaluate_ocr.py \
 
 `--scale-x`, `--y-pad`, `--x-pad` и соответствующие
 `--optuna-...` диапазоны относятся только к OCR. Для вертикального
-сегментатора используются независимые `--segmentator-scale-x`,
-`--segmentator-y-pad`, `--segmentator-x-pad` и
-`--optuna-segmentator-...` диапазоны. Диапазоны сегментатора участвуют в
-Optuna только вместе с `--decode-with-segmentator` и
-`--segmentator-checkpoint`.
+сегментатора используются независимые `--vertical-segmentation-scale-x`,
+`--vertical-segmentation-y-pad`, `--vertical-segmentation-x-pad` и
+`--optuna-vertical-segmentation-...` диапазоны. Диапазоны сегментатора участвуют в
+Optuna только вместе с `--decode-with-vertical-segmentation` и
+`--vertical-segmentation-checkpoint`.
 
 `--batch-size` применяется как к обычному OCR evaluation, так и к совместному
-OCR+segmentator decode. Для совместного запуска это верхняя граница размера
+OCR+vertical_segmentation decode. Для совместного запуска это верхняя граница размера
 GPU-батча: изображения автоматически группируются по близкой ширине, поэтому
 один широкий пример не заставляет дополнять весь батч до своей ширины. Перед
 decode logits обрезаются до реальной выходной ширины каждого изображения.
@@ -1138,7 +1146,7 @@ decode logits обрезаются до реальной выходной шир
 Эквивалентный запуск можно переопределять через CLI:
 
 ```bash
-python evaluate_ocr.py \
+python evaluate.py fcn_ocr \
   --config configs/evaluation/eng_101_ocr.yaml \
   --json path/to/export.json \
   --images path/to/images \
@@ -1154,8 +1162,7 @@ CLI-параметры имеют приоритет над значениями
 
 После evaluation рядом с CSV сохраняется готовый inference-конфиг, например
 `output/ocr_metrics.inference.yaml`, и в терминал выводится короткая команда
-запуска с ним. `evaluate_vertical_segmentation.py` и `evaluate_baseline_detection.py` делают так
-же.
+запуска с ним. Остальные задачи `evaluate.py` делают так же.
 
 Если Optuna не установлена:
 
@@ -1174,7 +1181,8 @@ python train_with_eval.py \
 Перед запуском достаточно один раз заполнить `json` и `images` в
 `eng_101_ocr_per_epoch.yaml`. Все параметры evaluation берутся из этого файла,
 а настройки моделей и preprocessing - из указанного в нём inference-конфига.
-После каждой эпохи сохраняется текущий чекпоинт, запускается `evaluate_ocr`,
+После каждой эпохи сохраняется текущий чекпоинт, запускается задача
+`evaluate.py fcn_ocr`,
 пишется per-epoch CSV и общий `eval_summary.tsv`. Копия evaluation-конфига
 сохраняется рядом с чекпоинтами эксперимента. Для Optuna на каждой эпохе можно
 создать отдельный вариант этого YAML с ненулевым `optuna_trials` и нужными
