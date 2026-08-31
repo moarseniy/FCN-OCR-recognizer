@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import sys
+import warnings
 from typing import Any, Callable
 
 from tqdm import tqdm
+
+
+def file_contract(path: str | Path) -> dict[str, Any]:
+    resolved = Path(path).expanduser().resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
 
 
 def create_study(
@@ -11,18 +24,47 @@ def create_study(
     direction: str,
     study_name: str | None,
     storage: str | None,
+    seed: int = 0,
 ):
     try:
         import optuna
     except ImportError as exc:
         raise RuntimeError("Optuna is not installed. Install it with: pip install optuna") from exc
     optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", optuna.exceptions.ExperimentalWarning)
+        sampler = optuna.samplers.TPESampler(
+            seed=seed,
+            multivariate=True,
+            group=True,
+        )
     return optuna.create_study(
         direction=direction,
         study_name=study_name,
         storage=storage,
         load_if_exists=bool(storage and study_name),
+        sampler=sampler,
     )
+
+
+def validate_study_contract(study: Any, contract: dict[str, Any]) -> None:
+    """Keep a persistent study tied to one comparable evaluation problem."""
+
+    normalized = json.loads(json.dumps(contract, sort_keys=True, default=str))
+    existing = study.user_attrs.get("evaluation_contract")
+    if existing is None:
+        if study.trials:
+            raise RuntimeError(
+                "The existing Optuna study has no evaluation contract and cannot be "
+                "resumed safely. Use a new optuna_study_name or remove optuna_storage."
+            )
+        study.set_user_attr("evaluation_contract", normalized)
+        return
+    if existing != normalized:
+        raise RuntimeError(
+            "The existing Optuna study was created for a different checkpoint, dataset, "
+            "metric, or search space. Use a new optuna_study_name or remove optuna_storage."
+        )
 
 
 def suggest_float_or_fixed(
@@ -116,45 +158,6 @@ def validate_int_range(
         return
     if minimum < lower or maximum < minimum:
         raise ValueError(f"{name} bounds must satisfy {lower} <= min <= max")
-
-
-def select_compatible_trial(
-    study: Any,
-    *,
-    direction: str,
-    required_params: set[str],
-    fixed_params: dict[str, Any],
-) -> Any:
-    def is_compatible(trial: Any) -> bool:
-        if trial.value is None or any(name not in trial.params for name in required_params):
-            return False
-        for name, fixed in fixed_params.items():
-            if fixed is None or name not in trial.params:
-                continue
-            trial_value = trial.params[name]
-            if isinstance(fixed, bool):
-                if bool(trial_value) != fixed:
-                    return False
-            elif isinstance(fixed, (int, float)):
-                if abs(float(trial_value) - float(fixed)) > 1e-12:
-                    return False
-            elif trial_value != fixed:
-                return False
-        return True
-
-    candidates = [
-        trial for trial in study.trials if trial.state.is_finished() and is_compatible(trial)
-    ]
-    if not candidates:
-        raise RuntimeError(
-            "No completed Optuna trials are compatible with the fixed parameters "
-            "from the current evaluation config. Use a new optuna_study_name or "
-            "remove optuna_storage."
-        )
-    def key(trial: Any) -> float:
-        return float(trial.value)
-
-    return max(candidates, key=key) if direction == "maximize" else min(candidates, key=key)
 
 
 def optimize_with_progress(

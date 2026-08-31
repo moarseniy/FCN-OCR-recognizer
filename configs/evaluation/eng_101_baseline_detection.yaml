@@ -11,6 +11,9 @@ parameters:
 
 optuna_trials: 200
 optuna_trials_out: ../../output/baseline_detection_trials.tsv
-optuna_storage: sqlite:///../../output/baseline_detection_optuna.db
-optuna_study_name: eng_101_baseline_detection_v1
+optuna_storage: sqlite:///../../output/baseline_detection_optuna_v2.db
+optuna_study_name: eng_101_baseline_detection_v2
 optuna_progress: true
+optuna_seed: 0
+optuna_image_cache_mb: 512
+optuna_cache_neural_outputs: true

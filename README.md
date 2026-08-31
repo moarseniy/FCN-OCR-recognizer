@@ -38,7 +38,15 @@ runtime-пайплайна разделены по ответственност�
 - `metrics.py` содержит единые расчёты OCR и cuts метрик;
 - `geometry.py` сопоставляет ручные и предсказанные линии;
 - `optuna.py` управляет studies, параметрами и progress bar;
+- `images.py` ограниченно кеширует декодированные изображения между trials;
 - `reporting.py` пишет CSV/TSV и готовый inference-конфиг.
+
+Каждая крупная задача разделена на тонкий публичный фасад и внутренние части:
+
+- `fcn_ocr.py`, `vertical_segmentation.py` сохраняют короткий стабильный API;
+- `*_cli.py` отвечают только за аргументы, YAML и вывод результата;
+- `*_runner.py` загружают выборку, запускают модели и считают метрики;
+- `*_optimization.py` описывают пространство поиска и жизненный цикл Optuna.
 
 Единая CLI-точка `evaluate.py` принимает задачу `fcn_ocr`,
 `vertical_segmentation` или `baseline_detection`; реализации находятся в
@@ -150,6 +158,20 @@ parameters:
 на верхнем уровне конфига. Для воспроизводимых запусков диапазоны поиска следует
 хранить в YAML, а отдельные фиксированные параметры при необходимости можно
 переопределить через CLI.
+
+`optuna_seed` фиксирует sampler, а `optuna_image_cache_mb` ограничивает RAM,
+занятую декодированными RGB-изображениями; значение `0` отключает этот кеш.
+Checkpoint загружается один раз на весь study. Для baseline detection FCN
+heatmap по умолчанию считается один раз на изображение, после чего trials
+меняют только threshold. Для vertical segmentation такой же кеш logits
+включается автоматически, когда preprocessing зафиксирован и подбираются
+только параметры постобработки cuts. Управлять этим можно ключом
+`optuna_cache_neural_outputs`.
+
+Persistent study имеет строгий контракт: checkpoint, датасет, метрика и
+пространство поиска должны совпадать с первым запуском. При их изменении нужно
+задать новое `optuna_study_name`; несопоставимые старые trials больше не
+подмешиваются молча.
 
 Шрифты можно задавать папкой, путь считается относительно YAML-конфига:
 
@@ -1125,16 +1147,14 @@ python evaluate.py fcn_ocr \
   --images path/to/images
 ```
 
-`--scale-x`, `--y-pad`, `--x-pad` и соответствующие
-`--optuna-...` диапазоны относятся только к OCR. Для вертикального
-сегментатора используются независимые `--vertical-segmentation-scale-x`,
-`--vertical-segmentation-y-pad`, `--vertical-segmentation-x-pad` и
-`--optuna-vertical-segmentation-...` диапазоны. Диапазоны сегментатора участвуют в
-Optuna только вместе с `--decode-with-vertical-segmentation` и
-`--vertical-segmentation-checkpoint`.
+`scale_x`, `y_pad` и `x_pad` в `parameters` относятся только к OCR. Для
+вертикального сегментатора используются независимые
+`vertical_segmentation_scale_x`, `vertical_segmentation_y_pad` и
+`vertical_segmentation_x_pad`. Их диапазоны участвуют в Optuna только при
+включенном декодировании с вертикальной сегментацией и заданном checkpoint.
 
 `--batch-size` применяется как к обычному OCR evaluation, так и к совместному
-OCR+vertical_segmentation decode. Для совместного запуска это верхняя граница размера
+OCR с vertical segmentation decode. Для совместного запуска это верхняя граница размера
 GPU-батча: изображения автоматически группируются по близкой ширине, поэтому
 один широкий пример не заставляет дополнять весь батч до своей ширины. Перед
 decode logits обрезаются до реальной выходной ширины каждого изображения.
@@ -1153,8 +1173,8 @@ python evaluate.py fcn_ocr \
   --optuna-trials 500
 ```
 
-В этом режиме из YAML берутся OCR checkpoint, baseline detector, вертикальный
-вертикальную сегментацию, их фиксированные preprocessing/postprocessing-параметры
+В этом режиме из YAML берутся OCR checkpoint, baseline detector, вертикальная
+сегментация, их фиксированные preprocessing/postprocessing-параметры
 и `fcn_ocr.decode`.
 Optuna меняет только параметры с явно переданными диапазонами. Явные обычные
 CLI-параметры имеют приоритет над значениями YAML; например, `--device cuda`

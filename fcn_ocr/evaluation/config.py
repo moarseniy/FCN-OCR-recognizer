@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 from yaml.constructor import ConstructorError
@@ -134,13 +134,46 @@ def evaluation_parameter_modes(config_data: dict) -> dict[str, str]:
     return modes
 
 
+def evaluation_parameter_range(
+    args: argparse.Namespace,
+    name: str,
+) -> tuple[float | int | None, float | int | None]:
+    """Return an active Optuna range, respecting fixed values from YAML."""
+
+    modes = getattr(args, "evaluation_parameter_modes", {})
+    if modes.get(name) == "fixed":
+        return None, None
+    return (
+        getattr(args, f"optuna_{name}_min", None),
+        getattr(args, f"optuna_{name}_max", None),
+    )
+
+
 def parse_args_with_evaluation_config(
     parser: argparse.ArgumentParser,
     *,
     path_fields: Iterable[str] = (),
     required_fields: Iterable[str] = (),
+    parameter_ranges: Mapping[str, tuple[Any, Any]] | None = None,
+    tunable_booleans: Iterable[str] = (),
     argv: Sequence[str] | None = None,
 ) -> argparse.Namespace:
+    parameter_ranges = dict(parameter_ranges or {})
+    tunable_booleans = set(tunable_booleans)
+    internal_defaults: dict[str, Any] = {}
+    internal_fields: set[str] = set()
+    for name, (minimum, maximum) in parameter_ranges.items():
+        min_field = f"optuna_{name}_min"
+        max_field = f"optuna_{name}_max"
+        internal_fields.update((min_field, max_field))
+        internal_defaults[min_field] = minimum
+        internal_defaults[max_field] = maximum
+    for name in tunable_booleans:
+        tune_field = f"optuna_tune_{name}"
+        internal_fields.add(tune_field)
+        internal_defaults[tune_field] = False
+    parser.set_defaults(**internal_defaults)
+
     config_parser = argparse.ArgumentParser(add_help=False)
     config_parser.add_argument("--config", default=None)
     known, _ = config_parser.parse_known_args(argv)
@@ -157,7 +190,7 @@ def parse_args_with_evaluation_config(
                 parser.error(str(error))
 
         parameter_modes = evaluation_parameter_modes(config_data)
-        valid_fields = {action.dest for action in parser._actions}
+        valid_fields = {action.dest for action in parser._actions} | internal_fields
         try:
             config_data = expand_evaluation_parameters(
                 config_data,

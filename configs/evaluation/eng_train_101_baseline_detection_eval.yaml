@@ -22,3 +22,6 @@ optuna_trials: 0
 optuna_trials_output: true
 optuna_study_name: baseline_train
 optuna_storage: null
+optuna_seed: 0
+optuna_image_cache_mb: 512
+optuna_cache_neural_outputs: true

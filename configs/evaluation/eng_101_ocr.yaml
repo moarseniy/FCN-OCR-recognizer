@@ -19,6 +19,8 @@ optuna_trials: 200
 optuna_metric: global_char_accuracy
 
 optuna_trials_out: ../../output/ocr_trials.tsv
-optuna_storage: sqlite:///../../output/ocr_optuna.db
-optuna_study_name: eng_101_ocr_v1
+optuna_storage: sqlite:///../../output/ocr_optuna_v2.db
+optuna_study_name: eng_101_ocr_v2
 optuna_progress: true
+optuna_seed: 0
+optuna_image_cache_mb: 512

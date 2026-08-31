@@ -278,6 +278,24 @@ class NeuralBaselineMixin:
         heatmaps, cleaned_mask, foreground_pixels, scale_x, scale_y = (
             self._baseline_detector_heatmaps(image)
         )
+        return self._detect_baseline_from_heatmaps(
+            image,
+            heatmaps,
+            cleaned_mask,
+            foreground_pixels,
+            scale_x,
+            scale_y,
+        )
+
+    def _detect_baseline_from_heatmaps(
+        self,
+        image: Image.Image,
+        heatmaps: np.ndarray,
+        cleaned_mask: np.ndarray,
+        foreground_pixels: int,
+        scale_x: float,
+        scale_y: float,
+    ) -> dict[str, Any]:
         top_line = self._line_from_baseline_score_map(heatmaps[0], "neural_top")
         bottom_line = self._line_from_baseline_score_map(
             heatmaps[1],

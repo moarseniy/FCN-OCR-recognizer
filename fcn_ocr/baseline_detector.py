@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 from fcn_tasks import BASELINE_DETECTION_TASK
@@ -57,8 +58,37 @@ class BaselineDetector(FCNModelRunner, NeuralBaselineMixin):
         print(f"Baseline detector threshold:  {self.baseline_detector_threshold:.4f}")
 
     def detect(self, image: Image.Image) -> dict[str, Any]:
-        source = image.convert("RGB" if self.baseline_detector_in_channels == 3 else "L")
+        mode = "RGB" if self.baseline_detector_in_channels == 3 else "L"
+        source = image if image.mode == mode else image.convert(mode)
         return self._detect_baseline_neural(source)
+
+    def heatmaps(
+        self,
+        image: Image.Image,
+    ) -> tuple[np.ndarray, float, float]:
+        mode = "RGB" if self.baseline_detector_in_channels == 3 else "L"
+        source = image if image.mode == mode else image.convert(mode)
+        heatmaps, _, _, scale_x, scale_y = self._baseline_detector_heatmaps(source)
+        return heatmaps, scale_x, scale_y
+
+    def detect_from_heatmaps(
+        self,
+        image: Image.Image,
+        heatmap_data: tuple[np.ndarray, float, float],
+    ) -> dict[str, Any]:
+        mode = "RGB" if self.baseline_detector_in_channels == 3 else "L"
+        source = image if image.mode == mode else image.convert(mode)
+        heatmaps, scale_x, scale_y = heatmap_data
+        cleaned_mask = self._baseline_score_mask(heatmaps, source.size)
+        foreground_pixels = int(np.count_nonzero(cleaned_mask))
+        return self._detect_baseline_from_heatmaps(
+            source,
+            heatmaps,
+            cleaned_mask,
+            foreground_pixels,
+            scale_x,
+            scale_y,
+        )
 
     def prepare_baseline_image(
         self,

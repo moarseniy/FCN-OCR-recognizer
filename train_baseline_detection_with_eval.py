@@ -52,6 +52,9 @@ class BaselineTrainEvalConfig(BaseModel):
     optuna_trials_output: bool = True
     optuna_study_name: str | None = None
     optuna_storage: str | None = None
+    optuna_seed: int = 0
+    optuna_image_cache_mb: float = Field(default=512.0, ge=0.0)
+    optuna_cache_neural_outputs: bool = True
 
     @field_validator("best_metric")
     @classmethod
@@ -290,6 +293,9 @@ def main() -> None:
                 trials_output=trial_output,
                 study_name=study_name,
                 storage=config.optuna_storage,
+                optuna_seed=config.optuna_seed,
+                image_cache_mb=config.optuna_image_cache_mb,
+                cache_neural_outputs=config.optuna_cache_neural_outputs,
             )
         else:
             metrics = evaluate_detector(

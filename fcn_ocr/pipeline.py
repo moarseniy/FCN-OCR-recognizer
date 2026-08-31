@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image
 import torch
@@ -251,6 +251,7 @@ class FCNPipeline:
         image_paths: Sequence[str | Path],
         batch_size: int = 1,
         log_every: int = 0,
+        image_loader: Callable[[Path], Image.Image] | None = None,
     ) -> tuple[list[FCNPipelinePathResult], dict[str, float | int]]:
         if self.recognizer is None:
             raise ValueError(
@@ -264,8 +265,12 @@ class FCNPipeline:
         prepared: list[dict[str, Any]] = []
         for index, path in enumerate(paths):
             try:
-                with Image.open(path) as image_file:
-                    source = image_file.convert("RGB")
+                if image_loader is None:
+                    with Image.open(path) as image_file:
+                        source = image_file.convert("RGB")
+                else:
+                    cached = image_loader(path)
+                    source = cached if cached.mode == "RGB" else cached.convert("RGB")
                 if self.baseline_processor is not None:
                     baseline_image, _ = self.baseline_processor.prepare_baseline_image(
                         source,

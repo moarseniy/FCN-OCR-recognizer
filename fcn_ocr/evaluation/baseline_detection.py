@@ -4,15 +4,24 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from PIL import Image
 
 from fcn_ocr import BaselineDetector
 from fcn_ocr.evaluation import interpolate_polyline, polyline_x_bounds
-from fcn_ocr.evaluation.config import parse_args_with_evaluation_config
-from fcn_ocr.evaluation.optuna import create_study, optimize_with_progress
+from fcn_ocr.evaluation.config import (
+    evaluation_parameter_range,
+    parse_args_with_evaluation_config,
+)
+from fcn_ocr.evaluation.images import RGBImageCache
+from fcn_ocr.evaluation.optuna import (
+    create_study,
+    file_contract,
+    optimize_with_progress,
+    validate_study_contract,
+)
 from fcn_ocr.evaluation.reporting import (
     append_tsv_row,
     save_and_print_inference_command,
@@ -76,6 +85,12 @@ def evaluate_detector(
     output_csv: Path | None,
     failure_penalty: float,
     verbose: bool,
+    image_loader: Callable[[Path], Image.Image] | None = None,
+    heatmap_cache: dict[
+        Path,
+        tuple[np.ndarray, float, float],
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     top_error_sum = 0.0
@@ -100,9 +115,19 @@ def evaluate_detector(
             "error": "",
         }
         try:
-            with Image.open(image_path) as image_file:
-                image = image_file.convert("RGB")
-            detection = detector.detect(image)
+            if image_loader is None:
+                with Image.open(image_path) as image_file:
+                    image = image_file.convert("RGB")
+            else:
+                image = image_loader(image_path)
+            if heatmap_cache is None:
+                detection = detector.detect(image)
+            else:
+                heatmap_data = heatmap_cache.get(image_path)
+                if heatmap_data is None:
+                    heatmap_data = detector.heatmaps(image)
+                    heatmap_cache[image_path] = heatmap_data
+                detection = detector.detect_from_heatmaps(image, heatmap_data)
             row["status"] = str(detection.get("status", "unknown"))
             if not detection.get("ok"):
                 failed += 1
@@ -255,12 +280,44 @@ def optimize(
     study_name: str | None,
     storage: str | None,
     progress: bool = False,
+    optuna_seed: int = 0,
+    image_cache_mb: float = 512.0,
+    cache_neural_outputs: bool = True,
 ) -> dict[str, Any]:
+    if trials < 1:
+        raise ValueError("trials must be >= 1")
+    if not 0.0 < threshold_min <= threshold_max < 1.0:
+        raise ValueError("threshold range must satisfy 0 < min <= max < 1")
     study = create_study(
         direction="minimize",
         study_name=study_name,
         storage=storage,
+        seed=optuna_seed,
     )
+    validate_study_contract(
+        study,
+        {
+            "evaluator": "baseline_detection",
+            "checkpoint": file_contract(detector.checkpoint_path),
+            "samples": [
+                {
+                    "image": str(path.expanduser().resolve()),
+                    "baselines": item.get("baselines"),
+                }
+                for item, path in jobs
+            ],
+            "failure_penalty": failure_penalty,
+            "parameters": {"threshold": [threshold_min, threshold_max]},
+        },
+    )
+    image_cache = RGBImageCache(image_cache_mb)
+    heatmap_cache = {} if cache_neural_outputs else None
+
+    if heatmap_cache is not None:
+        print(f"Caching baseline heatmaps for {len(jobs)} images...")
+        for _, image_path in jobs:
+            image = image_cache.load(image_path)
+            heatmap_cache[image_path] = detector.heatmaps(image)
 
     def objective(trial) -> float:
         detector.baseline_detector_threshold = trial.suggest_float("threshold", threshold_min, threshold_max)
@@ -270,6 +327,8 @@ def optimize(
             output_csv=None,
             failure_penalty=failure_penalty,
             verbose=False,
+            image_loader=image_cache.load,
+            heatmap_cache=heatmap_cache,
         )
         if trials_output is not None:
             append_trial(trials_output, trial.number, metrics)
@@ -291,8 +350,19 @@ def optimize(
         output_csv=output_csv,
         failure_penalty=failure_penalty,
         verbose=True,
+        image_loader=image_cache.load,
+        heatmap_cache=heatmap_cache,
     )
     metrics["optuna_best_params"] = dict(study.best_params)
+    metrics["optuna_image_cache"] = image_cache.stats()
+    metrics["optuna_neural_output_cache"] = bool(heatmap_cache is not None)
+    cache_stats = image_cache.stats()
+    print(
+        "Optuna runtime reuse: detector_loads=1, "
+        f"neural_forward_passes={len(jobs) if heatmap_cache is not None else 'per trial'}, "
+        f"image_cache_hits={cache_stats['hits']}, "
+        f"misses={cache_stats['misses']}"
+    )
     return metrics
 
 
@@ -320,11 +390,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=0.35)
     parser.add_argument("--failure-penalty", type=float, default=1.0)
     parser.add_argument("--optuna-trials", type=int, default=0)
-    parser.add_argument("--optuna-threshold-min", type=float, default=0.10)
-    parser.add_argument("--optuna-threshold-max", type=float, default=0.90)
     parser.add_argument("--optuna-trials-out", default=None)
     parser.add_argument("--optuna-study-name", default=None)
     parser.add_argument("--optuna-storage", default=None)
+    parser.add_argument("--optuna-seed", type=int, default=0)
+    parser.add_argument("--optuna-image-cache-mb", type=float, default=512.0)
+    parser.add_argument(
+        "--optuna-cache-neural-outputs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cache baseline heatmaps so threshold trials do not rerun the FCN.",
+    )
     parser.add_argument(
         "--optuna-progress",
         action=argparse.BooleanOptionalAction,
@@ -341,6 +417,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "optuna_trials_out",
         ),
         required_fields=("json", "checkpoint"),
+        parameter_ranges={"threshold": (None, None)},
         argv=argv,
     )
 
@@ -361,18 +438,27 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     detector.print_summary()
     if args.optuna_trials > 0:
+        threshold_min, threshold_max = evaluation_parameter_range(args, "threshold")
+        if threshold_min is None or threshold_max is None:
+            raise ValueError(
+                "Optuna has no tunable baseline parameters; set "
+                "parameters.threshold: [min, max] or use optuna_trials: 0"
+            )
         metrics = optimize(
             detector,
             jobs,
             output_csv=Path(args.out),
             trials=args.optuna_trials,
             failure_penalty=args.failure_penalty,
-            threshold_min=args.optuna_threshold_min,
-            threshold_max=args.optuna_threshold_max,
+            threshold_min=float(threshold_min),
+            threshold_max=float(threshold_max),
             trials_output=Path(args.optuna_trials_out) if args.optuna_trials_out else None,
             study_name=args.optuna_study_name,
             storage=args.optuna_storage,
             progress=args.optuna_progress,
+            optuna_seed=args.optuna_seed,
+            image_cache_mb=args.optuna_image_cache_mb,
+            cache_neural_outputs=args.optuna_cache_neural_outputs,
         )
     else:
         metrics = evaluate_detector(
