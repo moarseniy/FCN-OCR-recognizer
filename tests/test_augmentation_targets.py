@@ -5,16 +5,14 @@ import random
 import pytest
 import torch
 
-from fcn_synth_generator.dataset import SingleLineDatasetConfig
-from fcn_synth_generator.gpu_augmentations import GpuTextAugmenter
+from fcn_augmentations import AugmentationConfig, GpuTextAugmenter
 
 
 def _augmenter() -> GpuTextAugmenter:
-    config = SingleLineDatasetConfig(
-        task="fcn_ocr",
-        alphabet=" AB",
-        augmentation_probabilities={"x_pad": 1.0},
-        augmentations={
+    config = AugmentationConfig(
+        space_index=0,
+        probabilities={"x_pad": 1.0},
+        parameters={
             "x_pad": {
                 "left_px": 2,
                 "right_px": 1,
@@ -122,11 +120,10 @@ def test_sampled_geometric_metadata_replays_exactly_on_ocr_targets(
 ) -> None:
     random.seed(7)
     torch.manual_seed(7)
-    config = SingleLineDatasetConfig(
-        task="fcn_ocr",
-        alphabet=" AB",
-        augmentation_probabilities={name: 1.0},
-        augmentations={name: params},
+    config = AugmentationConfig(
+        space_index=0,
+        probabilities={name: 1.0},
+        parameters={name: params},
     )
     augmenter = GpuTextAugmenter(config)
     image = torch.linspace(0.0, 1.0, 12).reshape(1, 1, 1, 12).repeat(1, 1, 8, 1)

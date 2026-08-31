@@ -6,8 +6,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
 
+from fcn_augmentations import (
+    validate_augmentation_parameters,
+    validate_augmentation_probabilities,
+)
 from fcn_architectures import available_architectures, normalize_architecture_name
-from fcn_synth_generator.dataset import SUPPORTED_AUGMENTATIONS
 
 from .tasks import (
     all_training_task_config_fields,
@@ -161,23 +164,14 @@ class TrainingConfig(BaseModel):
     def augmentation_probabilities_must_be_valid(
         cls, value: dict[str, float]
     ) -> dict[str, float]:
-        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
-        if unknown:
-            raise ValueError(f"unknown augmentations: {unknown}")
-        for name, probability in value.items():
-            if not 0.0 <= probability <= 1.0:
-                raise ValueError(f"probability for {name} must be between 0 and 1")
-        return value
+        return validate_augmentation_probabilities(value)
 
     @field_validator("augmentations")
     @classmethod
     def augmentations_must_be_known(
         cls, value: dict[str, dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
-        if unknown:
-            raise ValueError(f"unknown augmentation configs: {unknown}")
-        return value
+        return validate_augmentation_parameters(value)
 
 
 def load_training_config(config_path: str | Path) -> tuple[TrainingConfig, dict]:

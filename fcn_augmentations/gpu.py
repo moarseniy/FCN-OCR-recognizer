@@ -13,7 +13,7 @@ from fcn_tasks import (
     normalize_task_name,
 )
 
-from .dataset import SUPPORTED_AUGMENTATIONS, SingleLineDatasetConfig
+from .config import AugmentationConfig, SUPPORTED_AUGMENTATIONS
 
 
 AugmentationParams = dict[str, Any] | None
@@ -22,16 +22,12 @@ AugmentationParams = dict[str, Any] | None
 class GpuTextAugmenter:
     """Torch-only OCR augmentations for BCHW tensors in [0, 1]."""
 
-    def __init__(self, config: SingleLineDatasetConfig):
+    def __init__(self, config: AugmentationConfig):
         self.config = config
         self.probabilities = self._effective_probabilities(config)
-        self.params = config.augmentations
+        self.params = config.parameters
         self.last_augmentations: list[list[dict[str, Any]]] = []
-        self.space_index = (
-            config.alphabet.index(config.space_char)
-            if config.space_char in config.alphabet
-            else 0
-        )
+        self.space_index = config.space_index
 
     def enabled(self) -> bool:
         return any(probability > 0.0 for probability in self.probabilities.values())
@@ -584,8 +580,8 @@ class GpuTextAugmenter:
         return theta
 
     @staticmethod
-    def _effective_probabilities(config: SingleLineDatasetConfig) -> dict[str, float]:
-        return dict(config.augmentation_probabilities)
+    def _effective_probabilities(config: AugmentationConfig) -> dict[str, float]:
+        return dict(config.probabilities)
 
     def _cycle_shift(
         self,

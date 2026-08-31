@@ -24,8 +24,6 @@ def dataset_config_from_chunk_metadata(
     data.update(
         {
             "seed": config.seed,
-            "augmentation_probabilities": config.augmentation_probabilities,
-            "augmentations": config.augmentations,
         }
     )
     return SingleLineDatasetConfig.model_validate(data)

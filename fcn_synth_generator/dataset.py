@@ -29,31 +29,6 @@ DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 DEFAULT_FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
 FONT_REPORT_LIMIT = 12
 
-SUPPORTED_AUGMENTATIONS = (
-    "cycle_shift",
-    "preprocess_geometry",
-    "strong_blur",
-    "motion_blur",
-    "scale",
-    "darkening",
-    "vertical_fade",
-    "noise",
-    "projective",
-    "rotate",
-    "x_pad",
-    "crop_x",
-    "crop_y",
-    "rescale_quality",
-    "random_line",
-    "baseline_line",
-    "morphology",
-    "unsharp_mask",
-    "brightness",
-    "contrast",
-    "invert",
-)
-
-
 class SingleLineDatasetConfig(BaseModel):
     """Config for a simple fully-convolutional single-line OCR dataset."""
 
@@ -103,8 +78,6 @@ class SingleLineDatasetConfig(BaseModel):
     background_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_BACKGROUND_EXTENSIONS))
     foreground_min: int = Field(default=0, ge=0, le=255)
     foreground_max: int = Field(default=60, ge=0, le=255)
-    augmentation_probabilities: dict[str, float] = Field(default_factory=dict)
-    augmentations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     horizontal_padding: int = Field(default=8, ge=0)
     output_dir: str | None = None
     chunk_size: int = Field(default=1024, ge=1)
@@ -288,26 +261,6 @@ class SingleLineDatasetConfig(BaseModel):
         if not value:
             raise ValueError("font_extensions must not be empty")
         return [extension if extension.startswith(".") else f".{extension}" for extension in value]
-
-    @field_validator("augmentation_probabilities")
-    @classmethod
-    def augmentation_probabilities_must_be_valid(cls, value: dict[str, float]) -> dict[str, float]:
-        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
-        if unknown:
-            raise ValueError(f"unknown augmentations: {unknown}")
-        for name, probability in value.items():
-            if not 0.0 <= probability <= 1.0:
-                raise ValueError(f"probability for {name} must be between 0 and 1")
-        return value
-
-    @field_validator("augmentations")
-    @classmethod
-    def augmentations_must_be_known(cls, value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        unknown = sorted(set(value) - set(SUPPORTED_AUGMENTATIONS))
-        if unknown:
-            raise ValueError(f"unknown augmentation configs: {unknown}")
-        return value
-
 
 @dataclass(frozen=True)
 class TextRenderStyle:

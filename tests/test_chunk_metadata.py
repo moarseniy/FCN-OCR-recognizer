@@ -226,7 +226,8 @@ def test_training_config_cannot_override_dataset_contract() -> None:
     assert dataset_config.image_width == 32
     assert dataset_config.channels == 1
     assert dataset_config.seed == 123
-    assert dataset_config.augmentation_probabilities == {"x_pad": 0.5}
+    assert training.augmentation_probabilities == {"x_pad": 0.5}
+    assert not hasattr(dataset_config, "augmentation_probabilities")
 
 
 def test_removed_config_vocabulary_is_rejected() -> None:
@@ -239,6 +240,15 @@ def test_removed_config_vocabulary_is_rejected() -> None:
                 "task": "fcn_ocr",
                 "alphabet": ALPHABET,
                 "sample_alphabet": ALPHABET,
+            }
+        )
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SingleLineDatasetConfig.model_validate(
+            {
+                "task": "fcn_ocr",
+                "alphabet": ALPHABET,
+                "augmentation_probabilities": {"x_pad": 0.5},
             }
         )
 
@@ -342,4 +352,5 @@ def test_training_loader_builds_model_input_config_only_from_metadata(
     assert dataset_config.alphabet == ALPHABET
     assert dataset_config.image_height == 16
     assert dataset_config.image_width == 32
-    assert dataset_config.augmentation_probabilities == {"x_pad": 0.25}
+    assert training.augmentation_probabilities == {"x_pad": 0.25}
+    assert not hasattr(dataset_config, "augmentation_probabilities")

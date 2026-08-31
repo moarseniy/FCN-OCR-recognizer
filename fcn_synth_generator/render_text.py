@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import random
@@ -12,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 import torch
 import yaml
 
+from fcn_augmentations import AugmentationConfig, GpuTextAugmenter
 from fcn_tasks import (
     BASELINE_DETECTION_TASK,
     FCN_OCR_TASK,
@@ -21,8 +23,13 @@ from fcn_tasks import (
 from .chunk_dataset import load_torch_chunk, validate_chunk_payload
 from .chunk_metadata import load_chunk_metadata
 from .dataset import SingleLineDataset, SingleLineDatasetConfig
-from .gpu_augmentations import GpuTextAugmenter
 from .run_directories import is_timestamped_directory, latest_timestamped_directory
+
+
+@dataclass(frozen=True)
+class RenderConfig:
+    dataset: SingleLineDatasetConfig
+    augmentations: AugmentationConfig
 
 
 def tensor_to_image(sample_tensor: torch.Tensor) -> Image.Image:
@@ -86,7 +93,7 @@ def fcn_ocr_target_to_long(target: torch.Tensor | None) -> torch.Tensor | None:
 
 def load_config(
     config_path: Path, chunks_dir: Path | None = None
-) -> SingleLineDatasetConfig:
+) -> RenderConfig:
     with config_path.open("r") as file:
         raw_config = yaml.safe_load(file) or {}
     if not isinstance(raw_config, dict):
@@ -105,16 +112,31 @@ def load_config(
         )
 
         training_config, _ = load_training_config(config_path)
-        return dataset_config_from_chunk_metadata(
+        dataset_config = dataset_config_from_chunk_metadata(
             training_config,
             load_chunk_metadata(chunks_dir),
         )
+        augmentation_config = AugmentationConfig.from_alphabet(
+            alphabet=dataset_config.alphabet,
+            space_char=dataset_config.space_char,
+            background=dataset_config.background,
+            probabilities=training_config.augmentation_probabilities,
+            parameters=training_config.augmentations,
+        )
+        return RenderConfig(dataset_config, augmentation_config)
 
     supplied_config = SingleLineDatasetConfig.model_validate_with_paths(
         raw_config, config_path
     )
     if chunks_dir is None:
-        return supplied_config
+        return RenderConfig(
+            supplied_config,
+            AugmentationConfig.from_alphabet(
+                alphabet=supplied_config.alphabet,
+                space_char=supplied_config.space_char,
+                background=supplied_config.background,
+            ),
+        )
 
     metadata = load_chunk_metadata(chunks_dir)
     immutable_fields = (
@@ -140,14 +162,16 @@ def load_config(
         )
 
     config_data = metadata.dataset_config_data()
-    config_data.update(
-        {
-            "seed": supplied_config.seed,
-            "augmentation_probabilities": supplied_config.augmentation_probabilities,
-            "augmentations": supplied_config.augmentations,
-        }
+    config_data.update({"seed": supplied_config.seed})
+    dataset_config = SingleLineDatasetConfig.model_validate(config_data)
+    return RenderConfig(
+        dataset_config,
+        AugmentationConfig.from_alphabet(
+            alphabet=dataset_config.alphabet,
+            space_char=dataset_config.space_char,
+            background=dataset_config.background,
+        ),
     )
-    return SingleLineDatasetConfig.model_validate(config_data)
 
 
 def resolve_chunks_dir(chunks_dir: Path) -> Path:
@@ -167,7 +191,7 @@ def apply_augmentations(
     image: torch.Tensor,
     target: torch.Tensor,
     task: str,
-    config: SingleLineDatasetConfig,
+    config: AugmentationConfig,
     device: torch.device,
     enabled: bool,
 ) -> tuple[
@@ -557,7 +581,8 @@ def main() -> None:
 
     config_path = Path(args.config)
     chunks_dir = resolve_chunks_dir(Path(args.chunks_dir)) if args.chunks_dir else None
-    config = load_config(config_path, chunks_dir)
+    render_config = load_config(config_path, chunks_dir)
+    config = render_config.dataset
     dataset = None if chunks_dir else SingleLineDataset(config)
     rng = random.Random(args.seed)
     if args.seed is not None:
@@ -585,7 +610,7 @@ def main() -> None:
             image_tensor,
             target,
             task,
-            config,
+            render_config.augmentations,
             device,
             enabled=not args.no_augmentations,
         )
@@ -604,7 +629,7 @@ def main() -> None:
             sample.image,
             sample.target,
             task,
-            config,
+            render_config.augmentations,
             device,
             enabled=not args.no_augmentations,
         )

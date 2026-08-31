@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from fcn_augmentations import AugmentationConfig, GpuTextAugmenter
 from fcn_synth_generator.chunk_dataset import (
     ChunkedLineDataset,
 )
-from fcn_synth_generator.gpu_augmentations import GpuTextAugmenter
 import shutil
 import time
 from typing import Any
@@ -171,10 +171,19 @@ def run_training(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device ", device)
-    train_augmenter = (
-        GpuTextAugmenter(dataset_config) if args.gpu_augmentations else None
+    augmentation_config = AugmentationConfig.from_alphabet(
+        alphabet=dataset_config.alphabet,
+        space_char=dataset_config.space_char,
+        background=dataset_config.background,
+        probabilities=args.augmentation_probabilities,
+        parameters=args.augmentations,
     )
-    val_augmenter = GpuTextAugmenter(dataset_config) if args.gpu_augment_val else None
+    train_augmenter = (
+        GpuTextAugmenter(augmentation_config) if args.gpu_augmentations else None
+    )
+    val_augmenter = (
+        GpuTextAugmenter(augmentation_config) if args.gpu_augment_val else None
+    )
     print("GPU augmentations: ", "train" if train_augmenter is not None else "off")
     if val_augmenter is not None:
         print("GPU validation augmentations: on")
