@@ -7,6 +7,7 @@ from loss import _align_logits_and_labels, fcn_ocr_targets_to_labels
 from fcn_synth_generator.dataset import (
     SingleLineDataset,
     SingleLineDatasetConfig,
+    TextRenderStyle,
 )
 
 
@@ -44,6 +45,42 @@ def test_ocr_target_uses_nearest_character_between_logical_spans() -> None:
     )
 
     assert labels.tolist() == [0, 1, 1, 1, 2, 2, 2, 0]
+
+
+def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _dataset_without_rendering()
+    style = TextRenderStyle(char_spacing=0.0, word_spacing_multiplier=1.0)
+    rendered = (torch.zeros(1, 48, 64), [], [], 10.0, 30.0)
+    expected = object()
+    accepted = iter((False, True))
+    render_calls = 0
+
+    monkeypatch.setattr(dataset, "_sample_text_style", lambda rng: style)
+    monkeypatch.setattr(
+        dataset,
+        "_load_font_that_fits",
+        lambda text, rng, sampled_style: object(),
+    )
+
+    def render_text(text, font, rng, sampled_style):
+        nonlocal render_calls
+        render_calls += 1
+        return rendered
+
+    monkeypatch.setattr(dataset, "_render_text", render_text)
+    monkeypatch.setattr(
+        dataset,
+        "_accept_ink_spacing",
+        lambda cut_spans, rng: next(accepted),
+    )
+    monkeypatch.setattr(dataset, "_make_sample", lambda *args: expected)
+
+    sample = dataset.generate_text_sample("AB")
+
+    assert sample is expected
+    assert render_calls == 2
 
 
 def test_majority_alignment_keeps_clear_bins_and_ignores_ambiguous_bins() -> None:

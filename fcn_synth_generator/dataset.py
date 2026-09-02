@@ -28,6 +28,7 @@ DEFAULT_FONT_CANDIDATES = (
 DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 DEFAULT_FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
 FONT_REPORT_LIMIT = 12
+TEXT_RENDER_ATTEMPTS = 100
 
 class SingleLineDatasetConfig(BaseModel):
     """Config for a simple fully-convolutional single-line OCR dataset."""
@@ -368,8 +369,45 @@ class SingleLineDataset:
         text = self._normalize_spaces(text)
         if len(text) > self.config.max_text_length:
             raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
+
+        if font is None and style is None:
+            last_error: ValueError | None = None
+            for _ in range(TEXT_RENDER_ATTEMPTS):
+                sampled_style = self._sample_text_style(rng)
+                try:
+                    sampled_font = self._load_font_that_fits(
+                        text,
+                        rng,
+                        sampled_style,
+                    )
+                    return self._render_text_sample(
+                        text,
+                        rng,
+                        sampled_font,
+                        sampled_style,
+                    )
+                except ValueError as exc:
+                    last_error = exc
+
+            details = f" Last render error: {last_error}" if last_error else ""
+            raise RuntimeError(
+                f"failed to render explicit text after {TEXT_RENDER_ATTEMPTS} "
+                "font/style attempts. Relax ink_spacing_* constraints or "
+                "increase image_width."
+                f"{details}"
+            )
+
         style = style or self._sample_text_style(rng)
         font = font or self._load_font_that_fits(text, rng, style)
+        return self._render_text_sample(text, rng, font, style)
+
+    def _render_text_sample(
+        self,
+        text: str,
+        rng: random.Random,
+        font: ImageFont.FreeTypeFont,
+        style: TextRenderStyle,
+    ) -> GeneratedLineSample:
         image, spans, cut_spans, baseline_top, baseline_bottom = self._render_text(text, font, rng, style)
         if not self._accept_ink_spacing(cut_spans, rng):
             raise ValueError(
