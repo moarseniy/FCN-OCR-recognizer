@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import torch
 import pytest
 
@@ -81,6 +83,40 @@ def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
 
     assert sample is expected
     assert render_calls == 2
+
+
+def test_main_line_centering_is_independent_of_neighbors() -> None:
+    dataset = _dataset_without_rendering()
+    dataset.config.main_line_y_jitter_px = 0
+
+    y = dataset._sample_centered_text_y(
+        bbox=(0.0, 10.0, 20.0, 30.0),
+        height=48,
+        rng=random.Random(1),
+    )
+
+    assert y == 4.0
+
+
+def test_neighbor_is_rejected_instead_of_moving_centered_main_line() -> None:
+    dataset = _dataset_without_rendering()
+    dataset.config.neighbor_line_min_crop_ratio = 0.65
+    dataset.config.neighbor_line_visible_ratio_min = 0.1
+
+    assert dataset._place_neighbor_line(
+        side="top",
+        main_top=14.0,
+        main_bottom=33.0,
+        neighbor_pixel_bounds=(0, 19),
+        gap=0,
+    ) is None
+    assert dataset._place_neighbor_line(
+        side="top",
+        main_top=14.0,
+        main_bottom=33.0,
+        neighbor_pixel_bounds=(0, 19),
+        gap=7,
+    ) == -13.0
 
 
 def test_majority_alignment_keeps_clear_bins_and_ignores_ambiguous_bins() -> None:

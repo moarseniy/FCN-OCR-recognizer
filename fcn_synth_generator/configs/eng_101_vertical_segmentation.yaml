@@ -29,6 +29,7 @@ neighbor_line_min_crop_ratio: 0.65
 neighbor_line_visible_ratio_min: 0.06
 neighbor_line_gap_min: 0
 neighbor_line_gap_max: 5
+main_line_y_jitter_px: 2
 
 font_dir: ../fonts
 font_extensions:
