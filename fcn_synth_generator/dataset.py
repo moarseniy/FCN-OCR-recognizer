@@ -29,6 +29,7 @@ DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 DEFAULT_FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
 FONT_REPORT_LIMIT = 12
 TEXT_RENDER_ATTEMPTS = 100
+TEXT_STYLE_ATTEMPTS_PER_FONT = 8
 MIN_FONT_POINT_SIZE = 6
 FONT_HEIGHT_REFERENCE_POINT_SIZE = 64
 MAX_FONT_POINT_SIZE_FACTOR = 4
@@ -381,22 +382,38 @@ class SingleLineDataset:
             last_error: ValueError | None = None
             fit_attempts = 0
             ink_spacing_rejections = 0
-            for _ in range(TEXT_RENDER_ATTEMPTS):
-                sampled_style = self._sample_text_style(rng)
+            attempted_pairs = 0
+            while attempted_pairs < TEXT_RENDER_ATTEMPTS:
                 sampled_font = self._load_font(rng)
-                if not self._text_fits(text, sampled_font, sampled_style):
-                    fit_attempts += 1
-                    continue
-                try:
+                style_attempts = min(
+                    TEXT_STYLE_ATTEMPTS_PER_FONT,
+                    TEXT_RENDER_ATTEMPTS - attempted_pairs,
+                )
+                for _ in range(style_attempts):
+                    attempted_pairs += 1
+                    sampled_style = self._sample_text_style(rng)
+                    if not self._text_fits(text, sampled_font, sampled_style):
+                        fit_attempts += 1
+                        continue
+                    _, preview_cut_spans = self._text_layout_spans(
+                        text,
+                        sampled_font,
+                        0.0,
+                        sampled_style,
+                    )
+                    if not self._accept_ink_spacing(preview_cut_spans, rng):
+                        last_error = ValueError(
+                            "rendered text violates ink spacing constraints"
+                        )
+                        ink_spacing_rejections += 1
+                        continue
                     return self._render_text_sample(
                         text,
                         rng,
                         sampled_font,
                         sampled_style,
+                        validate_ink_spacing=False,
                     )
-                except ValueError as exc:
-                    last_error = exc
-                    ink_spacing_rejections += 1
 
             details = f" Last render error: {last_error}" if last_error else ""
             raise RuntimeError(
@@ -413,15 +430,44 @@ class SingleLineDataset:
         font = font or self._load_font_that_fits(text, rng, style)
         return self._render_text_sample(text, rng, font, style)
 
+    def generate_text_crops(
+        self,
+        text: str,
+        rng: random.Random | None = None,
+    ) -> list[GeneratedLineSample]:
+        if not self.config.line_crops:
+            raise ValueError("generate_text_crops requires line_crops: true")
+
+        rng = rng or random.Random()
+        self._validate_text(text)
+        text = self._normalize_spaces(text)
+        for _ in range(TEXT_RENDER_ATTEMPTS):
+            style = self._sample_text_style(rng)
+            font = self._load_font_for_line(text, rng)
+            samples = self._render_line_crop_samples(text, font, rng, style)
+            if samples:
+                return samples
+
+        raise RuntimeError(
+            f"failed to render explicit text into line crops after "
+            f"{TEXT_RENDER_ATTEMPTS} attempts. Relax ink_spacing_* constraints."
+        )
+
     def _render_text_sample(
         self,
         text: str,
         rng: random.Random,
         font: ImageFont.FreeTypeFont,
         style: TextRenderStyle,
+        validate_ink_spacing: bool = True,
     ) -> GeneratedLineSample:
-        image, spans, cut_spans, baseline_top, baseline_bottom = self._render_text(text, font, rng, style)
-        if not self._accept_ink_spacing(cut_spans, rng):
+        image, spans, cut_spans, baseline_top, baseline_bottom = self._render_text(
+            text,
+            font,
+            rng,
+            style,
+        )
+        if validate_ink_spacing and not self._accept_ink_spacing(cut_spans, rng):
             raise ValueError(
                 "rendered text violates ink spacing constraints; "
                 "relax ink_spacing_* or render with a different font/style"
@@ -481,29 +527,36 @@ class SingleLineDataset:
             text = self._make_line_text(rng)
             style = self._sample_text_style(rng)
             font = self._load_font_for_line(text, rng)
-            (
-                image,
-                spans,
-                cut_spans,
-                baseline_top,
-                baseline_bottom,
-                baseline_mask,
-            ) = self._render_long_text(
-                text, font, rng, style
-            )
-            samples = self._slice_line_image(
-                image,
-                spans,
-                cut_spans,
-                baseline_top,
-                baseline_bottom,
-                baseline_mask,
-                rng,
-            )
+            samples = self._render_line_crop_samples(text, font, rng, style)
             if samples:
                 return samples
 
         raise RuntimeError("failed to generate non-empty line crops")
+
+    def _render_line_crop_samples(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        rng: random.Random,
+        style: TextRenderStyle,
+    ) -> list[GeneratedLineSample]:
+        (
+            image,
+            spans,
+            cut_spans,
+            baseline_top,
+            baseline_bottom,
+            baseline_mask,
+        ) = self._render_long_text(text, font, rng, style)
+        return self._slice_line_image(
+            image,
+            spans,
+            cut_spans,
+            baseline_top,
+            baseline_bottom,
+            baseline_mask,
+            rng,
+        )
 
     def _make_line_text(self, rng: random.Random) -> str:
         chars = [char for char in self.alphabet if char != self.config.space_char]
@@ -1215,17 +1268,36 @@ class SingleLineDataset:
         fill: int,
         style: TextRenderStyle,
     ) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]]:
+        spans, origins = self._text_layout(text, font, x, style)
         if not self._has_custom_spacing(style):
             draw.text((x, y), text, font=font, fill=fill)
-            spans = self._char_spans(text, font, x)
-            origins = [start for _, start, _ in spans]
-            return spans, self._glyph_cut_spans(spans, origins, font)
-
-        spans, origins = self._styled_char_layout(text, font, x, style)
-        for (char, _, _), origin in zip(spans, origins):
-            if char != self.config.space_char:
-                draw.text((origin, y), char, font=font, fill=fill)
+        else:
+            for (char, _, _), origin in zip(spans, origins):
+                if char != self.config.space_char:
+                    draw.text((origin, y), char, font=font, fill=fill)
         return spans, self._glyph_cut_spans(spans, origins, font)
+
+    def _text_layout_spans(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        x: float,
+        style: TextRenderStyle,
+    ) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]]:
+        spans, origins = self._text_layout(text, font, x, style)
+        return spans, self._glyph_cut_spans(spans, origins, font)
+
+    def _text_layout(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        x: float,
+        style: TextRenderStyle,
+    ) -> tuple[list[tuple[str, float, float]], list[float]]:
+        if self._has_custom_spacing(style):
+            return self._styled_char_layout(text, font, x, style)
+        spans = self._char_spans(text, font, x)
+        return spans, [start for _, start, _ in spans]
 
     def _visible_text_y_bounds(
         self,

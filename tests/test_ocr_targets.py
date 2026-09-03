@@ -67,6 +67,7 @@ def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
         lambda rng: object(),
     )
     monkeypatch.setattr(dataset, "_text_fits", lambda text, font, sampled_style: True)
+    monkeypatch.setattr(dataset, "_text_layout_spans", lambda *args: ([], []))
 
     def render_text(text, font, rng, sampled_style):
         nonlocal render_calls
@@ -84,10 +85,10 @@ def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
     sample = dataset.generate_text_sample("AB")
 
     assert sample is expected
-    assert render_calls == 2
+    assert render_calls == 1
 
 
-def test_explicit_text_fit_attempts_are_not_nested(
+def test_explicit_text_fit_attempts_reuse_each_loaded_font(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dataset = _dataset_without_rendering()
@@ -107,7 +108,39 @@ def test_explicit_text_fit_attempts_are_not_nested(
     with pytest.raises(RuntimeError, match="100 did not fit"):
         dataset.generate_text_sample("AB")
 
-    assert font_loads == 100
+    assert font_loads == 13
+
+
+def test_explicit_text_uses_real_fixed_width_line_crops() -> None:
+    font_path = Path("fcn_synth_generator/fonts/DejaVuSerif.ttf").resolve()
+    config = SingleLineDatasetConfig(
+        task="fcn_ocr",
+        alphabet=" 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        image_height=48,
+        image_width=64,
+        max_text_length=16,
+        line_crops=True,
+        crop_stride=64,
+        edge_char_min_visible_ratio=0.5,
+        edge_fragment_max_visible_ratio=0.5,
+        font_paths=[str(font_path)],
+        font_check=False,
+        main_text_height_ratio_min=0.4,
+        main_text_height_ratio_max=0.4,
+        ink_spacing_enabled=False,
+        background_paths=None,
+        background_dir=None,
+    )
+    dataset = SingleLineDataset(config)
+
+    samples = dataset.generate_text_crops(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        random.Random(1),
+    )
+
+    assert len(samples) > 1
+    assert all(sample.image.shape[1] == config.image_height for sample in samples)
+    assert all(sample.image.shape[2] == config.image_width for sample in samples)
 
 
 def test_main_line_centering_is_independent_of_neighbors() -> None:
