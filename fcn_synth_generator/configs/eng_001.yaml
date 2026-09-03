@@ -16,8 +16,8 @@ font_extensions:
   - .otf
   - .ttc
   - .otc
-font_size_min: 24
-font_size_max: 34
+main_text_height_ratio_min: 0.50
+main_text_height_ratio_max: 0.78
 char_spacing_min: -0.4
 char_spacing_max: 1.6
 word_spacing_multiplier_min: 0.75

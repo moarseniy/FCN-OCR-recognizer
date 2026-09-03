@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import random
 
 import torch
@@ -117,6 +118,44 @@ def test_neighbor_is_rejected_instead_of_moving_centered_main_line() -> None:
         neighbor_pixel_bounds=(0, 19),
         gap=7,
     ) == -13.0
+
+
+@pytest.mark.parametrize(
+    "font_name",
+    (
+        "DejaVuSerif.ttf",
+        "NotoSans-Regular.ttf",
+        "LiberationMono-Regular.ttf",
+    ),
+)
+def test_font_size_is_calibrated_by_visible_alphabet_height(font_name: str) -> None:
+    font_path = Path("fcn_synth_generator/fonts", font_name).resolve()
+    config = SingleLineDatasetConfig(
+        task="fcn_ocr",
+        alphabet=" 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        image_height=48,
+        image_width=256,
+        font_paths=[str(font_path)],
+        font_check=False,
+        main_text_height_ratio_min=0.625,
+        main_text_height_ratio_max=0.625,
+    )
+    dataset = SingleLineDataset(config)
+
+    font = dataset._load_font(random.Random(1))
+    visible_ratio = dataset._font_probe_height(font) / config.image_height
+
+    assert visible_ratio == pytest.approx(0.625, abs=1.0 / config.image_height)
+
+
+def test_main_text_height_ratio_must_be_ordered() -> None:
+    with pytest.raises(ValueError, match="main_text_height_ratio_max"):
+        SingleLineDatasetConfig(
+            task="fcn_ocr",
+            alphabet=" AB",
+            main_text_height_ratio_min=0.8,
+            main_text_height_ratio_max=0.5,
+        )
 
 
 def test_majority_alignment_keeps_clear_bins_and_ignores_ambiguous_bins() -> None:

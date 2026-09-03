@@ -252,6 +252,16 @@ def test_removed_config_vocabulary_is_rejected() -> None:
             }
         )
 
+    for removed_key in ("font_size_min", "font_size_max"):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            SingleLineDatasetConfig.model_validate(
+                {
+                    "task": "fcn_ocr",
+                    "alphabet": ALPHABET,
+                    removed_key: 24,
+                }
+            )
+
     for removed_key in (
         "save_fcn_ocr_targets",
         "save_vertical_segmentation_targets",

@@ -29,6 +29,9 @@ DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 DEFAULT_FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
 FONT_REPORT_LIMIT = 12
 TEXT_RENDER_ATTEMPTS = 100
+MIN_FONT_POINT_SIZE = 6
+FONT_HEIGHT_REFERENCE_POINT_SIZE = 64
+MAX_FONT_POINT_SIZE_FACTOR = 4
 
 class SingleLineDatasetConfig(BaseModel):
     """Config for a simple fully-convolutional single-line OCR dataset."""
@@ -62,8 +65,8 @@ class SingleLineDatasetConfig(BaseModel):
     font_dir: str | None = None
     font_check: bool = True
     font_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_FONT_EXTENSIONS))
-    font_size_min: int = Field(default=24, ge=6)
-    font_size_max: int = Field(default=34, ge=6)
+    main_text_height_ratio_min: float = Field(default=0.55, gt=0.0, le=1.0)
+    main_text_height_ratio_max: float = Field(default=0.80, gt=0.0, le=1.0)
     char_spacing_min: float = 0.0
     char_spacing_max: float = 0.0
     ink_spacing_enabled: bool = False
@@ -96,6 +99,10 @@ class SingleLineDatasetConfig(BaseModel):
 
     @model_validator(mode="after")
     def edge_visibility_thresholds_must_be_ordered(self) -> "SingleLineDatasetConfig":
+        if self.main_text_height_ratio_max < self.main_text_height_ratio_min:
+            raise ValueError(
+                "main_text_height_ratio_max must be >= main_text_height_ratio_min"
+            )
         if self.edge_fragment_max_visible_ratio > self.edge_char_min_visible_ratio:
             raise ValueError(
                 "edge_fragment_max_visible_ratio must be <= edge_char_min_visible_ratio"
@@ -218,14 +225,6 @@ class SingleLineDatasetConfig(BaseModel):
             raise ValueError("word_length_max must be >= word_length_min")
         return value
 
-    @field_validator("font_size_max")
-    @classmethod
-    def max_font_size_must_be_valid(cls, value: int, info) -> int:
-        min_size = info.data.get("font_size_min")
-        if min_size is not None and value < min_size:
-            raise ValueError("font_size_max must be >= font_size_min")
-        return value
-
     @field_validator("char_spacing_max")
     @classmethod
     def max_char_spacing_must_be_valid(cls, value: float, info) -> float:
@@ -304,6 +303,13 @@ class SingleLineDataset:
             config.background_dir,
             config.background_extensions,
         )
+        self._font_height_probe = "".join(
+            char for char in self.alphabet if char != self.config.space_char
+        )
+        if not self._font_height_probe:
+            raise ValueError("alphabet must contain at least one non-space character")
+        self._font_reference_height_cache: dict[str, float] = {}
+        self._font_target_size_cache: dict[tuple[str, int], int] = {}
         self._background_size_cache: dict[str, tuple[int, int]] = {}
 
     def __len__(self) -> int:
@@ -441,15 +447,17 @@ class SingleLineDataset:
 
         font_paths = list(self.font_paths)
         rng.shuffle(font_paths)
+        min_target_height, _ = self._main_text_height_bounds()
         for path in font_paths:
-            font = ImageFont.truetype(path, self.config.font_size_min)
+            font = self._load_font_at_target_height(path, min_target_height)
             if self._text_fits(text, font, style):
                 return font
 
         raise ValueError(
             f"text does not fit image_width={self.config.image_width} "
             f"with horizontal_padding={self.config.horizontal_padding} "
-            f"and font_size_min={self.config.font_size_min}: {text!r}"
+            "at the configured main_text_height_ratio range: "
+            f"{text!r}"
         )
 
     def _sample_seed(self, index: int) -> int | None:
@@ -512,14 +520,16 @@ class SingleLineDataset:
 
         font_paths = list(self.font_paths)
         rng.shuffle(font_paths)
+        min_target_height, _ = self._main_text_height_bounds()
         for path in font_paths:
-            font = ImageFont.truetype(path, self.config.font_size_min)
+            font = self._load_font_at_target_height(path, min_target_height)
             if self._text_height_fits(text, font):
                 return font
 
         raise ValueError(
             f"line text does not fit image_height={self.config.image_height} "
-            f"with font_size_min={self.config.font_size_min}: {text!r}"
+            "at the configured main_text_height_ratio range: "
+            f"{text!r}"
         )
 
     def _make_text_that_fits(self, rng: random.Random) -> tuple[str, ImageFont.FreeTypeFont, TextRenderStyle]:
@@ -540,7 +550,7 @@ class SingleLineDataset:
         details = f" Last fit error: {last_error}" if last_error is not None else ""
         raise RuntimeError(
             "failed to create a text sample that fits the configured image width. "
-            "Decrease min_text_length/max_text_length/font_size_min, "
+            "Decrease min_text_length/max_text_length/main_text_height_ratio_min, "
             "decrease horizontal_padding, or increase image_width."
             f"{details}"
         )
@@ -1391,10 +1401,104 @@ class SingleLineDataset:
         spans, _ = self._styled_char_layout(text, font, 0.0, style)
         return max(1.0, spans[-1][2] if spans else 1.0)
 
-    def _load_font(self, rng: random.Random, size: int | None = None) -> ImageFont.FreeTypeFont:
-        font_size = size or rng.randint(self.config.font_size_min, self.config.font_size_max)
-        path = rng.choice(self.font_paths)
-        return ImageFont.truetype(path, font_size)
+    def _load_font(
+        self,
+        rng: random.Random,
+        path: str | None = None,
+    ) -> ImageFont.FreeTypeFont:
+        path = path or rng.choice(self.font_paths)
+        target_height = self._sample_main_text_height(rng)
+        return self._load_font_at_target_height(path, target_height)
+
+    def _sample_main_text_height(self, rng: random.Random) -> int:
+        min_height, max_height = self._main_text_height_bounds()
+        return rng.randint(min_height, max_height)
+
+    def _main_text_height_bounds(self) -> tuple[int, int]:
+        min_height = max(
+            1,
+            int(
+                math.ceil(
+                    self.config.image_height
+                    * self.config.main_text_height_ratio_min
+                )
+            ),
+        )
+        max_height = max(
+            min_height,
+            int(
+                math.floor(
+                    self.config.image_height
+                    * self.config.main_text_height_ratio_max
+                )
+            ),
+        )
+        return min_height, max_height
+
+    def _load_font_at_target_height(
+        self,
+        path: str,
+        target_height: int,
+    ) -> ImageFont.FreeTypeFont:
+        cache_key = (path, target_height)
+        cached_size = self._font_target_size_cache.get(cache_key)
+        if cached_size is not None:
+            return ImageFont.truetype(path, cached_size)
+
+        reference_height = self._font_reference_height(path)
+        estimated_size = int(
+            round(
+                FONT_HEIGHT_REFERENCE_POINT_SIZE
+                * target_height
+                / reference_height
+            )
+        )
+        max_size = max(
+            MIN_FONT_POINT_SIZE,
+            self.config.image_height * MAX_FONT_POINT_SIZE_FACTOR,
+        )
+        estimated_size = min(max_size, max(MIN_FONT_POINT_SIZE, estimated_size))
+
+        estimated_font = ImageFont.truetype(path, estimated_size)
+        estimated_height = self._font_probe_height(estimated_font)
+        corrected_size = int(
+            round(
+                estimated_size * target_height / max(1.0, estimated_height)
+            )
+        )
+        corrected_size = min(max_size, max(MIN_FONT_POINT_SIZE, corrected_size))
+
+        candidates = [(estimated_size, estimated_font, estimated_height)]
+        for size in {corrected_size - 1, corrected_size, corrected_size + 1}:
+            if size == estimated_size or not MIN_FONT_POINT_SIZE <= size <= max_size:
+                continue
+            font = ImageFont.truetype(path, size)
+            candidates.append((size, font, self._font_probe_height(font)))
+
+        best_size, best_font, _ = min(
+            candidates,
+            key=lambda candidate: (
+                abs(candidate[2] - target_height),
+                candidate[0],
+            ),
+        )
+        self._font_target_size_cache[cache_key] = best_size
+        return best_font
+
+    def _font_reference_height(self, path: str) -> float:
+        cached = self._font_reference_height_cache.get(path)
+        if cached is not None:
+            return cached
+        font = ImageFont.truetype(path, FONT_HEIGHT_REFERENCE_POINT_SIZE)
+        height = self._font_probe_height(font)
+        if height <= 0.0:
+            raise ValueError(f"font has no visible alphabet ink: {path}")
+        self._font_reference_height_cache[path] = height
+        return height
+
+    def _font_probe_height(self, font: ImageFont.FreeTypeFont) -> float:
+        bbox = self._plain_text_bbox(self._font_height_probe, font)
+        return float(bbox[3] - bbox[1])
 
     def _make_background(self, rng: random.Random, width: int | None = None, height: int | None = None) -> Image.Image:
         cfg = self.config
