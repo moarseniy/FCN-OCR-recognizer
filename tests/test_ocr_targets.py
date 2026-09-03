@@ -10,7 +10,6 @@ from loss import _align_logits_and_labels, fcn_ocr_targets_to_labels
 from fcn_synth_generator.dataset import (
     SingleLineDataset,
     SingleLineDatasetConfig,
-    TextRenderStyle,
 )
 
 
@@ -50,67 +49,6 @@ def test_ocr_target_uses_nearest_character_between_logical_spans() -> None:
     assert labels.tolist() == [0, 1, 1, 1, 2, 2, 2, 0]
 
 
-def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    dataset = _dataset_without_rendering()
-    style = TextRenderStyle(char_spacing=0.0, word_spacing_multiplier=1.0)
-    rendered = (torch.zeros(1, 48, 64), [], [], 10.0, 30.0)
-    expected = object()
-    accepted = iter((False, True))
-    render_calls = 0
-
-    monkeypatch.setattr(dataset, "_sample_text_style", lambda rng: style)
-    monkeypatch.setattr(
-        dataset,
-        "_load_font",
-        lambda rng: object(),
-    )
-    monkeypatch.setattr(dataset, "_text_fits", lambda text, font, sampled_style: True)
-    monkeypatch.setattr(dataset, "_text_layout_spans", lambda *args: ([], []))
-
-    def render_text(text, font, rng, sampled_style):
-        nonlocal render_calls
-        render_calls += 1
-        return rendered
-
-    monkeypatch.setattr(dataset, "_render_text", render_text)
-    monkeypatch.setattr(
-        dataset,
-        "_accept_ink_spacing",
-        lambda cut_spans, rng: next(accepted),
-    )
-    monkeypatch.setattr(dataset, "_make_sample", lambda *args: expected)
-
-    sample = dataset.generate_text_sample("AB")
-
-    assert sample is expected
-    assert render_calls == 1
-
-
-def test_explicit_text_fit_attempts_reuse_each_loaded_font(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    dataset = _dataset_without_rendering()
-    style = TextRenderStyle(char_spacing=0.0, word_spacing_multiplier=1.0)
-    font_loads = 0
-
-    monkeypatch.setattr(dataset, "_sample_text_style", lambda rng: style)
-
-    def load_font(rng):
-        nonlocal font_loads
-        font_loads += 1
-        return object()
-
-    monkeypatch.setattr(dataset, "_load_font", load_font)
-    monkeypatch.setattr(dataset, "_text_fits", lambda text, font, sampled_style: False)
-
-    with pytest.raises(RuntimeError, match="100 did not fit"):
-        dataset.generate_text_sample("AB")
-
-    assert font_loads == 13
-
-
 def test_explicit_text_uses_real_fixed_width_line_crops() -> None:
     font_path = Path("fcn_synth_generator/fonts/DejaVuSerif.ttf").resolve()
     config = SingleLineDatasetConfig(
@@ -118,8 +56,7 @@ def test_explicit_text_uses_real_fixed_width_line_crops() -> None:
         alphabet=" 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
         image_height=48,
         image_width=64,
-        max_text_length=16,
-        line_crops=True,
+        max_crop_text_length=16,
         crop_stride=64,
         edge_char_min_visible_ratio=0.5,
         edge_fragment_max_visible_ratio=0.5,
@@ -133,9 +70,9 @@ def test_explicit_text_uses_real_fixed_width_line_crops() -> None:
     )
     dataset = SingleLineDataset(config)
 
-    samples = dataset.generate_text_crops(
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-        random.Random(1),
+    samples = dataset.generate_crops(
+        rng=random.Random(1),
+        text="ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     )
 
     assert len(samples) > 1

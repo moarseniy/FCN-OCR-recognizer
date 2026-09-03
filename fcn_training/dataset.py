@@ -39,7 +39,6 @@ def effective_training_config_data(
         {
             "alphabet": dataset_config.alphabet,
             "space_char": dataset_config.space_char,
-            "max_text_length": dataset_config.max_text_length,
             "channels": dataset_config.channels,
             "image_height": dataset_config.image_height,
             "image_width": dataset_config.image_width,
@@ -96,7 +95,6 @@ def printable_char(char: str) -> str:
 def validate_and_log_alphabet(
     dataset: ChunkedLineDataset,
     alphabet: str,
-    max_text_length: int,
     checkpoint_dir: str | Path,
 ) -> None:
     metadata = dataset.metadata
@@ -144,13 +142,6 @@ def validate_and_log_alphabet(
     if unused_chars:
         printable = ", ".join(printable_char(char) for char in unused_chars)
         print(f"  Alphabet chars absent in data: {printable}")
-    if metadata.max_observed_text_length > max_text_length:
-        raise ValueError(
-            f"Data contains text length {metadata.max_observed_text_length}, "
-            f"but training max_text_length is {max_text_length}"
-        )
-
-
 __all__ = [
     "dataset_config_from_chunk_metadata",
     "effective_training_config_data",

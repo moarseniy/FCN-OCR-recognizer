@@ -105,17 +105,17 @@ baseline_detection_target_radius: 1
 
 ## Строки и кропы
 
-`line_crops: true` сначала рендерит длинную строку из случайных слов, затем
+Генератор всегда сначала рендерит длинную строку из случайных слов, затем
 последовательно нарезает ее на кропы `image_width`:
 
 ```yaml
-line_crops: true
 word_count_min: 6
 word_count_max: 18
 word_length_min: 2
 word_length_max: 8
 crop_stride: 64
 min_crop_text_length: 1
+max_crop_text_length: 16
 ```
 
 Граничные фрагменты управляются параметрами:
@@ -225,11 +225,11 @@ python -m fcn_synth_generator.render_text \
   --output output/synthetic_line.png
 ```
 
-При `line_crops: true` указанный текст проходит через настоящий механизм
-длинной строки и нарезается с `image_width` и `crop_stride` из generation YAML.
-`--index 0`, `--index 1` и так далее выбирают получившийся кроп. Поэтому размер,
-разметка краев и соседние строки совпадают с генерацией датасета. При
-`line_crops: false` весь текст обязан помещаться в фиксированный `image_width`.
+Указанный текст передается в тот же `generate_crops`, который использует
+генерация датасета, и нарезается с `image_width` и `crop_stride` из generation
+YAML. `--index 0`, `--index 1` и так далее выбирают получившийся кроп. Поэтому
+размер, разметка краев и соседние строки совпадают с генерацией датасета;
+отличается только источник текста.
 
 Посмотреть элемент чанка с аугментациями training-конфига:
 

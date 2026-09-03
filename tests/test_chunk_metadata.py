@@ -51,15 +51,13 @@ def _metadata_data(*, version: int = CHUNK_METADATA_VERSION) -> dict:
         "image_width": 32,
         "channels": 1,
         "background": 255,
-        "min_text_length": 1,
-        "max_text_length": 2,
-        "line_crops": True,
         "word_count_min": 1,
         "word_count_max": 1,
         "word_length_min": 1,
         "word_length_max": 2,
         "crop_stride": 32,
         "min_crop_text_length": 1,
+        "max_crop_text_length": 2,
         "edge_char_min_visible_ratio": 0.75,
         "edge_fragment_max_visible_ratio": 0.25,
         "neighbor_lines_probability": 0.0,
@@ -262,6 +260,16 @@ def test_removed_config_vocabulary_is_rejected() -> None:
                 }
             )
 
+    for removed_key in ("line_crops", "min_text_length", "max_text_length"):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            SingleLineDatasetConfig.model_validate(
+                {
+                    "task": "fcn_ocr",
+                    "alphabet": ALPHABET,
+                    removed_key: True if removed_key == "line_crops" else 4,
+                }
+            )
+
     for removed_key in (
         "save_fcn_ocr_targets",
         "save_vertical_segmentation_targets",
@@ -316,8 +324,7 @@ def test_generation_writer_builds_a_complete_current_contract() -> None:
         samples=2,
         image_height=16,
         image_width=32,
-        min_text_length=1,
-        max_text_length=2,
+        max_crop_text_length=2,
         chunk_size=2,
     )
 

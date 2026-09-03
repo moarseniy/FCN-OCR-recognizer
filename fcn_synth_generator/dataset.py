@@ -29,7 +29,6 @@ DEFAULT_BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 DEFAULT_FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
 FONT_REPORT_LIMIT = 12
 TEXT_RENDER_ATTEMPTS = 100
-TEXT_STYLE_ATTEMPTS_PER_FONT = 8
 MIN_FONT_POINT_SIZE = 6
 FONT_HEIGHT_REFERENCE_POINT_SIZE = 64
 MAX_FONT_POINT_SIZE_FACTOR = 4
@@ -45,15 +44,13 @@ class SingleLineDatasetConfig(BaseModel):
     samples: int = Field(default=10_000, ge=1)
     image_height: int = Field(default=48, ge=16)
     image_width: int = Field(default=256, ge=32)
-    min_text_length: int = Field(default=4, ge=1)
-    max_text_length: int = Field(default=16, ge=1)
-    line_crops: bool = False
     word_count_min: int = Field(default=2, ge=1)
     word_count_max: int = Field(default=8, ge=1)
     word_length_min: int = Field(default=2, ge=1)
     word_length_max: int = Field(default=8, ge=1)
     crop_stride: int | None = Field(default=None, ge=1)
     min_crop_text_length: int = Field(default=1, ge=1)
+    max_crop_text_length: int = Field(default=16, ge=1)
     edge_char_min_visible_ratio: float = Field(default=0.75, ge=0.0, le=1.0)
     edge_fragment_max_visible_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
     neighbor_lines_probability: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -100,6 +97,10 @@ class SingleLineDatasetConfig(BaseModel):
 
     @model_validator(mode="after")
     def edge_visibility_thresholds_must_be_ordered(self) -> "SingleLineDatasetConfig":
+        if self.max_crop_text_length < self.min_crop_text_length:
+            raise ValueError(
+                "max_crop_text_length must be >= min_crop_text_length"
+            )
         if self.main_text_height_ratio_max < self.main_text_height_ratio_min:
             raise ValueError(
                 "main_text_height_ratio_max must be >= main_text_height_ratio_min"
@@ -200,14 +201,6 @@ class SingleLineDatasetConfig(BaseModel):
     def space_char_must_be_one_char(cls, value: str) -> str:
         if len(value) != 1:
             raise ValueError("space_char must contain exactly one character")
-        return value
-
-    @field_validator("max_text_length")
-    @classmethod
-    def max_length_must_be_valid(cls, value: int, info) -> int:
-        min_length = info.data.get("min_text_length")
-        if min_length is not None and value < min_length:
-            raise ValueError("max_text_length must be >= min_text_length")
         return value
 
     @field_validator("word_count_max")
@@ -322,157 +315,55 @@ class SingleLineDataset:
         if index < 0 or index >= len(self):
             raise IndexError(index)
 
-        if self.config.line_crops:
-            for sample_index, sample in enumerate(self.iter_generated_samples()):
-                if sample_index == index:
-                    return sample
-            raise IndexError(index)
-
-        rng = random.Random(self._sample_seed(index))
-        return self.generate_sample(rng)
+        for sample_index, sample in enumerate(self.iter_generated_samples()):
+            if sample_index == index:
+                return sample
+        raise IndexError(index)
 
     def generate_sample(self, rng: random.Random | None = None) -> GeneratedLineSample:
-        rng = rng or random.Random()
-        if self.config.line_crops:
-            return next(self._iter_line_crop_samples(rng))
-
-        last_error: Exception | None = None
-        for _ in range(1000):
-            try:
-                text, font, style = self._make_text_that_fits(rng)
-                return self.generate_text_sample(text, rng, font, style)
-            except ValueError as exc:
-                last_error = exc
-
-        details = f" Last generation error: {last_error}" if last_error is not None else ""
-        raise RuntimeError(
-            "failed to create a text sample that satisfies configured ink spacing. "
-            "Relax ink_spacing_* constraints or reduce text/font density."
-            f"{details}"
-        )
+        return self.generate_crops(rng=rng)[0]
 
     def iter_generated_samples(self) -> Iterable[GeneratedLineSample]:
-        if not self.config.line_crops:
-            for index in range(len(self)):
-                yield self.generate_sample_from_index(index)
-            return
-
         rng = random.Random(self.config.seed)
         produced = 0
-        for sample in self._iter_line_crop_samples(rng):
-            yield sample
-            produced += 1
-            if produced >= self.config.samples:
-                return
+        while produced < self.config.samples:
+            for sample in self.generate_crops(rng=rng):
+                yield sample
+                produced += 1
+                if produced >= self.config.samples:
+                    return
 
-    def generate_text_sample(
+    def generate_crops(
         self,
-        text: str,
         rng: random.Random | None = None,
-        font: ImageFont.FreeTypeFont | None = None,
-        style: TextRenderStyle | None = None,
-    ) -> GeneratedLineSample:
-        rng = rng or random.Random()
-        self._validate_text(text)
-        text = self._normalize_spaces(text)
-        if len(text) > self.config.max_text_length:
-            raise ValueError(f"text length {len(text)} exceeds max_text_length={self.config.max_text_length}")
-
-        if font is None and style is None:
-            last_error: ValueError | None = None
-            fit_attempts = 0
-            ink_spacing_rejections = 0
-            attempted_pairs = 0
-            while attempted_pairs < TEXT_RENDER_ATTEMPTS:
-                sampled_font = self._load_font(rng)
-                style_attempts = min(
-                    TEXT_STYLE_ATTEMPTS_PER_FONT,
-                    TEXT_RENDER_ATTEMPTS - attempted_pairs,
-                )
-                for _ in range(style_attempts):
-                    attempted_pairs += 1
-                    sampled_style = self._sample_text_style(rng)
-                    if not self._text_fits(text, sampled_font, sampled_style):
-                        fit_attempts += 1
-                        continue
-                    _, preview_cut_spans = self._text_layout_spans(
-                        text,
-                        sampled_font,
-                        0.0,
-                        sampled_style,
-                    )
-                    if not self._accept_ink_spacing(preview_cut_spans, rng):
-                        last_error = ValueError(
-                            "rendered text violates ink spacing constraints"
-                        )
-                        ink_spacing_rejections += 1
-                        continue
-                    return self._render_text_sample(
-                        text,
-                        rng,
-                        sampled_font,
-                        sampled_style,
-                        validate_ink_spacing=False,
-                    )
-
-            details = f" Last render error: {last_error}" if last_error else ""
-            raise RuntimeError(
-                f"failed to render explicit text after {TEXT_RENDER_ATTEMPTS} "
-                "font/style pairs "
-                f"({fit_attempts} did not fit, "
-                f"{ink_spacing_rejections} violated ink spacing). "
-                "Increase image_width, lower main_text_height_ratio_min, "
-                "or relax ink_spacing_* constraints."
-                f"{details}"
-            )
-
-        style = style or self._sample_text_style(rng)
-        font = font or self._load_font_that_fits(text, rng, style)
-        return self._render_text_sample(text, rng, font, style)
-
-    def generate_text_crops(
-        self,
-        text: str,
-        rng: random.Random | None = None,
+        text: str | None = None,
     ) -> list[GeneratedLineSample]:
-        if not self.config.line_crops:
-            raise ValueError("generate_text_crops requires line_crops: true")
-
         rng = rng or random.Random()
-        self._validate_text(text)
-        text = self._normalize_spaces(text)
+        explicit_text = text is not None
+        if explicit_text:
+            self._validate_text(text)
+            text = self._normalize_spaces(text)
+
         for _ in range(TEXT_RENDER_ATTEMPTS):
+            line_text = text if explicit_text else self._make_line_text(rng)
+            if line_text is None:
+                raise AssertionError("line text must be resolved before rendering")
             style = self._sample_text_style(rng)
-            font = self._load_font_for_line(text, rng)
-            samples = self._render_line_crop_samples(text, font, rng, style)
+            font = self._load_font_for_line(line_text, rng)
+            samples = self._render_line_crop_samples(
+                line_text,
+                font,
+                rng,
+                style,
+            )
             if samples:
                 return samples
 
+        source = "explicit text" if explicit_text else "a random text line"
         raise RuntimeError(
-            f"failed to render explicit text into line crops after "
-            f"{TEXT_RENDER_ATTEMPTS} attempts. Relax ink_spacing_* constraints."
+            f"failed to render {source} into valid crops after "
+            f"{TEXT_RENDER_ATTEMPTS} attempts. Relax crop or ink_spacing constraints."
         )
-
-    def _render_text_sample(
-        self,
-        text: str,
-        rng: random.Random,
-        font: ImageFont.FreeTypeFont,
-        style: TextRenderStyle,
-        validate_ink_spacing: bool = True,
-    ) -> GeneratedLineSample:
-        image, spans, cut_spans, baseline_top, baseline_bottom = self._render_text(
-            text,
-            font,
-            rng,
-            style,
-        )
-        if validate_ink_spacing and not self._accept_ink_spacing(cut_spans, rng):
-            raise ValueError(
-                "rendered text violates ink spacing constraints; "
-                "relax ink_spacing_* or render with a different font/style"
-            )
-        return self._make_sample(image, text, spans, cut_spans, baseline_top, baseline_bottom)
 
     def _validate_text(self, text: str) -> None:
         text = self._normalize_spaces(text)
@@ -484,54 +375,6 @@ class SingleLineDataset:
 
     def _normalize_spaces(self, text: str) -> str:
         return self.config.space_char.join(part for part in text.split(self.config.space_char) if part)
-
-    def _load_font_that_fits(
-        self,
-        text: str,
-        rng: random.Random,
-        style: TextRenderStyle | None = None,
-    ) -> ImageFont.FreeTypeFont:
-        for _ in range(100):
-            font = self._load_font(rng)
-            if self._text_fits(text, font, style):
-                return font
-
-        font_paths = list(self.font_paths)
-        rng.shuffle(font_paths)
-        min_target_height, _ = self._main_text_height_bounds()
-        for path in font_paths:
-            font = self._load_font_at_target_height(path, min_target_height)
-            if self._text_fits(text, font, style):
-                return font
-
-        raise ValueError(
-            f"text does not fit image_width={self.config.image_width} "
-            f"with horizontal_padding={self.config.horizontal_padding} "
-            "at the configured main_text_height_ratio range: "
-            f"{text!r}"
-        )
-
-    def _sample_seed(self, index: int) -> int | None:
-        if self.config.seed is None:
-            return None
-        return self.config.seed + index
-
-    def _iter_line_crop_samples(self, rng: random.Random) -> Iterable[GeneratedLineSample]:
-        while True:
-            crops = self._generate_line_crop_samples(rng)
-            for sample in crops:
-                yield sample
-
-    def _generate_line_crop_samples(self, rng: random.Random) -> list[GeneratedLineSample]:
-        for _ in range(100):
-            text = self._make_line_text(rng)
-            style = self._sample_text_style(rng)
-            font = self._load_font_for_line(text, rng)
-            samples = self._render_line_crop_samples(text, font, rng, style)
-            if samples:
-                return samples
-
-        raise RuntimeError("failed to generate non-empty line crops")
 
     def _render_line_crop_samples(
         self,
@@ -561,7 +404,7 @@ class SingleLineDataset:
     def _make_line_text(self, rng: random.Random) -> str:
         chars = [char for char in self.alphabet if char != self.config.space_char]
         if not chars:
-            raise ValueError("alphabet must contain at least one non-space character for line_crops")
+            raise ValueError("alphabet must contain at least one non-space character")
 
         word_count = rng.randint(self.config.word_count_min, self.config.word_count_max)
         words = []
@@ -589,30 +432,6 @@ class SingleLineDataset:
             "at the configured main_text_height_ratio range: "
             f"{text!r}"
         )
-
-    def _make_text_that_fits(self, rng: random.Random) -> tuple[str, ImageFont.FreeTypeFont, TextRenderStyle]:
-        last_error: Exception | None = None
-
-        for _ in range(1000):
-            text_length = rng.randint(self.config.min_text_length, self.config.max_text_length)
-            text = self._normalize_spaces("".join(rng.choice(self.alphabet) for _ in range(text_length)))
-            if not text:
-                continue
-            style = self._sample_text_style(rng)
-            try:
-                font = self._load_font_that_fits(text, rng, style)
-                return text, font, style
-            except ValueError as exc:
-                last_error = exc
-
-        details = f" Last fit error: {last_error}" if last_error is not None else ""
-        raise RuntimeError(
-            "failed to create a text sample that fits the configured image width. "
-            "Decrease min_text_length/max_text_length/main_text_height_ratio_min, "
-            "decrease horizontal_padding, or increase image_width."
-            f"{details}"
-        )
-
     def _sample_centered_text_y(
         self,
         bbox: tuple[float, float, float, float],
@@ -833,58 +652,6 @@ class SingleLineDataset:
                 style,
             )
 
-    def _render_text(
-        self,
-        text: str,
-        font: ImageFont.FreeTypeFont,
-        rng: random.Random,
-        style: TextRenderStyle,
-    ) -> tuple[
-        Image.Image,
-        list[tuple[str, float, float]],
-        list[tuple[str, float, float]],
-        float,
-        float,
-    ]:
-        cfg = self.config
-        image = self._make_background(rng)
-        draw = ImageDraw.Draw(image)
-
-        bbox = self._text_bbox(text, font, style)
-        x_min = cfg.horizontal_padding - bbox[0]
-        x_max = cfg.image_width - cfg.horizontal_padding - bbox[2]
-        free_x = max(0, int(math.floor(x_max - x_min)))
-        x = x_min + rng.randint(0, free_x)
-        fill = rng.randint(cfg.foreground_min, cfg.foreground_max)
-        y = self._sample_centered_text_y(bbox, cfg.image_height, rng)
-        neighbor_layout = self._sample_neighbor_line_layout(
-            main_text=text,
-            main_x=float(x),
-            main_y=y,
-            main_bbox=bbox,
-            width=cfg.image_width,
-            font=font,
-            style=style,
-            rng=rng,
-        )
-
-        if neighbor_layout is not None:
-            self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
-
-        spans, cut_spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
-        baseline_top, baseline_bottom, _ = self._visible_text_y_bounds(
-            width=image.width,
-            height=image.height,
-            x=float(x),
-            y=float(y),
-            text=text,
-            font=font,
-            style=style,
-            font_bbox=bbox,
-        )
-
-        return image, spans, cut_spans, baseline_top, baseline_bottom
-
     def _render_long_text(
         self,
         text: str,
@@ -969,7 +736,7 @@ class SingleLineDataset:
             text = "".join(char for char, _, _ in crop_spans)
             if len(text) < cfg.min_crop_text_length:
                 continue
-            if len(text) > cfg.max_text_length:
+            if len(text) > cfg.max_crop_text_length:
                 continue
             if not self._accept_ink_spacing(crop_cut_spans, rng):
                 continue
@@ -1275,16 +1042,6 @@ class SingleLineDataset:
             for (char, _, _), origin in zip(spans, origins):
                 if char != self.config.space_char:
                     draw.text((origin, y), char, font=font, fill=fill)
-        return spans, self._glyph_cut_spans(spans, origins, font)
-
-    def _text_layout_spans(
-        self,
-        text: str,
-        font: ImageFont.FreeTypeFont,
-        x: float,
-        style: TextRenderStyle,
-    ) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]]:
-        spans, origins = self._text_layout(text, font, x, style)
         return spans, self._glyph_cut_spans(spans, origins, font)
 
     def _text_layout(
@@ -1679,18 +1436,6 @@ class SingleLineDataset:
     @staticmethod
     def _char_advances(text: str, font: ImageFont.FreeTypeFont) -> list[float]:
         return [max(1.0, float(font.getlength(char))) for char in text]
-
-    def _text_fits(
-        self,
-        text: str,
-        font: ImageFont.FreeTypeFont,
-        style: TextRenderStyle | None = None,
-    ) -> bool:
-        bbox = self._text_bbox(text, font, style)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        max_width = self.config.image_width - 2 * self.config.horizontal_padding
-        return text_width <= max_width and text_height <= self.config.image_height
 
     def _text_height_fits(self, text: str, font: ImageFont.FreeTypeFont) -> bool:
         bbox = self._plain_text_bbox(text, font)

@@ -8,8 +8,15 @@ num_workers: 4
 overwrite: false
 image_height: 48
 image_width: 256
-min_text_length: 4
-max_text_length: 16
+word_count_min: 6
+word_count_max: 18
+word_length_min: 2
+word_length_max: 8
+crop_stride: 256
+min_crop_text_length: 1
+max_crop_text_length: 16
+edge_char_min_visible_ratio: 0.75
+edge_fragment_max_visible_ratio: 0.25
 font_dir: ../fonts
 font_extensions:
   - .ttf

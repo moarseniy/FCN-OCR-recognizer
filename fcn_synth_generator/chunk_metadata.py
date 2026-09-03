@@ -16,7 +16,7 @@ from fcn_tasks import (
 
 
 CHUNK_FORMAT = "fcn_synth_dataset"
-CHUNK_METADATA_VERSION = 2
+CHUNK_METADATA_VERSION = 3
 CHUNK_METADATA_FILENAME = "metadata.yaml"
 GENERATION_CONFIG_FILENAME = "generation_config.yaml"
 CHUNK_FILENAME_PATTERN = re.compile(r"chunk_\d{6}\.pt")
@@ -53,15 +53,13 @@ class ChunkMetadata(BaseModel):
     image_width: int = Field(ge=1)
     channels: int = Field(ge=1, le=3)
     background: int = Field(ge=0, le=255)
-    min_text_length: int = Field(ge=1)
-    max_text_length: int = Field(ge=1)
-    line_crops: bool
     word_count_min: int = Field(ge=1)
     word_count_max: int = Field(ge=1)
     word_length_min: int = Field(ge=1)
     word_length_max: int = Field(ge=1)
     crop_stride: int | None = Field(default=None, ge=1)
     min_crop_text_length: int = Field(ge=1)
+    max_crop_text_length: int = Field(ge=1)
     edge_char_min_visible_ratio: float = Field(ge=0.0, le=1.0)
     edge_fragment_max_visible_ratio: float = Field(ge=0.0, le=1.0)
     neighbor_lines_probability: float = Field(ge=0.0, le=1.0)
@@ -123,8 +121,10 @@ class ChunkMetadata(BaseModel):
     def validate_contract(self) -> "ChunkMetadata":
         if self.space_char not in self.alphabet:
             raise ValueError("space_char must be present in alphabet")
-        if self.max_text_length < self.min_text_length:
-            raise ValueError("max_text_length must be >= min_text_length")
+        if self.max_crop_text_length < self.min_crop_text_length:
+            raise ValueError(
+                "max_crop_text_length must be >= min_crop_text_length"
+            )
         if self.word_count_max < self.word_count_min:
             raise ValueError("word_count_max must be >= word_count_min")
         if self.word_length_max < self.word_length_min:
@@ -135,6 +135,10 @@ class ChunkMetadata(BaseModel):
             )
         if self.neighbor_line_gap_max < self.neighbor_line_gap_min:
             raise ValueError("neighbor_line_gap_max must be >= neighbor_line_gap_min")
+        if self.max_observed_text_length > self.max_crop_text_length:
+            raise ValueError(
+                "max_observed_text_length exceeds max_crop_text_length"
+            )
 
         files = [entry.file for entry in self.chunks]
         if len(files) != len(set(files)):
@@ -218,15 +222,13 @@ class ChunkMetadata(BaseModel):
             "image_width": self.image_width,
             "channels": self.channels,
             "background": self.background,
-            "min_text_length": self.min_text_length,
-            "max_text_length": self.max_text_length,
-            "line_crops": self.line_crops,
             "word_count_min": self.word_count_min,
             "word_count_max": self.word_count_max,
             "word_length_min": self.word_length_min,
             "word_length_max": self.word_length_max,
             "crop_stride": self.crop_stride,
             "min_crop_text_length": self.min_crop_text_length,
+            "max_crop_text_length": self.max_crop_text_length,
             "edge_char_min_visible_ratio": self.edge_char_min_visible_ratio,
             "edge_fragment_max_visible_ratio": self.edge_fragment_max_visible_ratio,
             "neighbor_lines_probability": self.neighbor_lines_probability,

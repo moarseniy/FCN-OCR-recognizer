@@ -81,7 +81,9 @@ def run_training(
 
     log_path = checkpoint_dir / "training_log.tsv"
     validate_and_log_alphabet(
-        dataset, dataset_config.alphabet, dataset_config.max_text_length, checkpoint_dir
+        dataset,
+        dataset_config.alphabet,
+        checkpoint_dir,
     )
 
     if not 0.0 < args.val_fraction < 1.0:

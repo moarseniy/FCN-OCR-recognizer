@@ -532,7 +532,7 @@ def main() -> None:
         "--index",
         type=int,
         default=0,
-        help="Chunk sample index, or generated crop index for --text with line_crops.",
+        help="Chunk sample index, or generated crop index for --text.",
     )
     parser.add_argument(
         "--config",
@@ -621,22 +621,19 @@ def main() -> None:
     else:
         if dataset is None:
             raise RuntimeError("dataset must be initialized for text rendering")
-        if config.line_crops:
-            samples = dataset.generate_text_crops(args.text, rng)
-            crop_index = args.index if args.index >= 0 else len(samples) + args.index
-            if crop_index < 0 or crop_index >= len(samples):
-                raise IndexError(
-                    f"crop index {args.index} is out of range; "
-                    f"explicit text produced {len(samples)} crops"
-                )
-            sample = samples[crop_index]
-            source_metadata = {
-                "source_text": normalize_text(args.text, config),
-                "crop_index": crop_index,
-                "crop_count": len(samples),
-            }
-        else:
-            sample = dataset.generate_text_sample(args.text, rng)
+        samples = dataset.generate_crops(rng=rng, text=args.text)
+        crop_index = args.index if args.index >= 0 else len(samples) + args.index
+        if crop_index < 0 or crop_index >= len(samples):
+            raise IndexError(
+                f"crop index {args.index} is out of range; "
+                f"explicit text produced {len(samples)} crops"
+            )
+        sample = samples[crop_index]
+        source_metadata = {
+            "source_text": normalize_text(args.text, config),
+            "crop_index": crop_index,
+            "crop_count": len(samples),
+        }
         text = sample.text
         task = config.task
         (
