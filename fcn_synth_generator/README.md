@@ -225,6 +225,12 @@ python -m fcn_synth_generator.render_text \
   --output output/synthetic_line.png
 ```
 
+В режиме `--text` вся строка должна целиком помещаться в `image_width` с
+учетом `horizontal_padding`. Увеличение `main_text_height_ratio_*` увеличивает
+также естественную ширину глифов. Для просмотра крупного текста используйте
+короткую строку, увеличьте `image_width` либо смотрите уже нарезанные
+`line_crops` через `--chunks-dir`.
+
 Посмотреть элемент чанка с аугментациями training-конфига:
 
 ```bash

@@ -63,9 +63,10 @@ def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
     monkeypatch.setattr(dataset, "_sample_text_style", lambda rng: style)
     monkeypatch.setattr(
         dataset,
-        "_load_font_that_fits",
-        lambda text, rng, sampled_style: object(),
+        "_load_font",
+        lambda rng: object(),
     )
+    monkeypatch.setattr(dataset, "_text_fits", lambda text, font, sampled_style: True)
 
     def render_text(text, font, rng, sampled_style):
         nonlocal render_calls
@@ -84,6 +85,29 @@ def test_explicit_text_resamples_font_and_style_after_ink_spacing_rejection(
 
     assert sample is expected
     assert render_calls == 2
+
+
+def test_explicit_text_fit_attempts_are_not_nested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _dataset_without_rendering()
+    style = TextRenderStyle(char_spacing=0.0, word_spacing_multiplier=1.0)
+    font_loads = 0
+
+    monkeypatch.setattr(dataset, "_sample_text_style", lambda rng: style)
+
+    def load_font(rng):
+        nonlocal font_loads
+        font_loads += 1
+        return object()
+
+    monkeypatch.setattr(dataset, "_load_font", load_font)
+    monkeypatch.setattr(dataset, "_text_fits", lambda text, font, sampled_style: False)
+
+    with pytest.raises(RuntimeError, match="100 did not fit"):
+        dataset.generate_text_sample("AB")
+
+    assert font_loads == 100
 
 
 def test_main_line_centering_is_independent_of_neighbors() -> None:

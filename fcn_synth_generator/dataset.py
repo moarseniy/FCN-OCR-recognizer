@@ -379,14 +379,15 @@ class SingleLineDataset:
 
         if font is None and style is None:
             last_error: ValueError | None = None
+            fit_attempts = 0
+            ink_spacing_rejections = 0
             for _ in range(TEXT_RENDER_ATTEMPTS):
                 sampled_style = self._sample_text_style(rng)
+                sampled_font = self._load_font(rng)
+                if not self._text_fits(text, sampled_font, sampled_style):
+                    fit_attempts += 1
+                    continue
                 try:
-                    sampled_font = self._load_font_that_fits(
-                        text,
-                        rng,
-                        sampled_style,
-                    )
                     return self._render_text_sample(
                         text,
                         rng,
@@ -395,12 +396,16 @@ class SingleLineDataset:
                     )
                 except ValueError as exc:
                     last_error = exc
+                    ink_spacing_rejections += 1
 
             details = f" Last render error: {last_error}" if last_error else ""
             raise RuntimeError(
                 f"failed to render explicit text after {TEXT_RENDER_ATTEMPTS} "
-                "font/style attempts. Relax ink_spacing_* constraints or "
-                "increase image_width."
+                "font/style pairs "
+                f"({fit_attempts} did not fit, "
+                f"{ink_spacing_rejections} violated ink spacing). "
+                "Increase image_width, lower main_text_height_ratio_min, "
+                "or relax ink_spacing_* constraints."
                 f"{details}"
             )
 
