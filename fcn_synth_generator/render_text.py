@@ -452,6 +452,12 @@ def annotation_lines(metadata: dict[str, Any]) -> list[str]:
         lines.append(
             f"chunk: {metadata['chunk_file']}[{metadata['chunk_local_index']}]"
         )
+    elif "crop_bounds" in metadata:
+        left, _, right, _ = metadata["crop_bounds"]
+        lines.append(
+            f"crop index: {metadata['crop_index']}, count: {metadata['crop_count']}, "
+            f"source x: [{left}:{right}), line width: {metadata['source_size'][0]}"
+        )
 
     markup = metadata.get("full_markup")
     if markup is not None:
@@ -633,6 +639,12 @@ def main() -> None:
             "source_text": normalize_text(args.text, config),
             "crop_index": crop_index,
             "crop_count": len(samples),
+            "crop_bounds": [
+                sample.crop_left, 0,
+                sample.crop_left + config.image_width, config.image_height,
+            ],
+            "source_size": [sample.source_width, config.image_height],
+            "crop_statistics": dict(dataset.crop_statistics),
         }
         text = sample.text
         task = config.task
@@ -705,6 +717,14 @@ def main() -> None:
     print(f"Saved image: {output_path}")
     print(f"Saved metadata: {metadata_path}")
     print(f"Text: {display_text!r}")
+    if source == "text":
+        left, _, right, _ = source_metadata["crop_bounds"]
+        print(
+            f"Crop: index={source_metadata['crop_index']}, "
+            f"count={source_metadata['crop_count']}, "
+            f"source x=[{left}:{right}), line width={sample.source_width}"
+        )
+        print(f"Crop planning: {source_metadata['crop_statistics']}")
     if ocr_runs:
         print(
             "FCN OCR: "

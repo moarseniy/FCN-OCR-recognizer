@@ -104,7 +104,7 @@ def worker_config_data(
     sample_count: int,
     seed: int | None,
 ) -> dict:
-    data = config.model_dump()
+    data = config.model_dump(exclude_none=True)
     data.update(
         {
             "samples": sample_count,
@@ -128,13 +128,15 @@ def generate_chunk_worker(task: dict) -> dict:
         raise RuntimeError(
             f"Generator stopped after {len(samples)} samples, expected {task['sample_count']}"
         )
-    return save_chunk(
+    chunk = save_chunk(
         samples,
         Path(task["output_dir"]),
         task["chunk_idx"],
         task=config.task,
         alphabet=config.alphabet,
     )
+    chunk["crop_statistics"] = dict(dataset.crop_statistics)
+    return chunk
 
 
 def build_metadata(
@@ -228,6 +230,7 @@ def generate_chunks_sequential(
     sample_iter = dataset.iter_generated_samples()
     saved = 0
     for chunk_idx, start, end in iter_chunk_specs(total, chunk_size):
+        previous_statistics = dataset.crop_statistics.copy()
         chunk_samples = list(islice(sample_iter, end - start))
         if len(chunk_samples) != end - start:
             raise RuntimeError(
@@ -241,6 +244,7 @@ def generate_chunks_sequential(
             task=dataset.config.task,
             alphabet=dataset.alphabet,
         )
+        chunk["crop_statistics"] = dict(dataset.crop_statistics - previous_statistics)
         chunks.append(chunk)
         saved += chunk["samples"]
         print(f"saved {chunk['file']} [{start}:{start + chunk['samples']}]")
@@ -360,6 +364,10 @@ def main() -> None:
             generation_config.chunk_size,
         )
     save_metadata(generation_config, chunks, output_dir)
+    crop_statistics: Counter[str] = Counter({key: 0 for key in dataset.crop_statistics})
+    for chunk in chunks:
+        crop_statistics.update(chunk["crop_statistics"])
+    print(f"Crop planning: {dict(crop_statistics)}")
     print(f"Saved {total} samples to {output_dir}")
 
 

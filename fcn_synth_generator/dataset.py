@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -268,6 +269,8 @@ class GeneratedLineSample:
     text: str
     image: torch.Tensor
     target: torch.Tensor
+    crop_left: int
+    source_width: int
 
 
 class SingleLineDataset:
@@ -305,6 +308,14 @@ class SingleLineDataset:
         self._font_reference_height_cache: dict[str, float] = {}
         self._font_target_size_cache: dict[tuple[str, int], int] = {}
         self._background_size_cache: dict[str, tuple[int, int]] = {}
+        self.crop_statistics: Counter[str] = Counter(
+            rendered_lines=0,
+            planned_crops=0,
+            accepted_crops=0,
+            shifted_crops=0,
+            unavailable_slots=0,
+            touch_rejected=0,
+        )
 
     def __len__(self) -> int:
         return self.config.samples
@@ -726,20 +737,39 @@ class SingleLineDataset:
         cfg = self.config
         stride = cfg.crop_stride or cfg.image_width
         samples: list[GeneratedLineSample] = []
+        positions, touching = self._crop_candidate_positions(
+            spans, cut_spans, image.width
+        )
+        max_left = image.width - cfg.image_width
+        self.crop_statistics["rendered_lines"] += 1
 
-        for left in range(0, image.width - cfg.image_width + 1, stride):
+        # Each nominal crop owns its nearest positions, so shifted crops stay ordered.
+        for nominal_left in range(0, max_left + 1, stride):
+            self.crop_statistics["planned_crops"] += 1
+            lower = 0 if nominal_left == 0 else nominal_left - (stride + 1) // 2 + 1
+            upper = min(max_left, nominal_left + stride // 2)
+            if nominal_left + stride > max_left:
+                upper = max_left
+            begin, end = np.searchsorted(positions, [lower, upper + 1])
+            if begin == end:
+                self.crop_statistics["unavailable_slots"] += 1
+                continue
+            candidates = positions[begin:end]
+            selected = int(begin + np.argmin(np.abs(candidates - nominal_left)))
+            left = int(positions[selected])
+            if (
+                touching[selected]
+                and cfg.ink_spacing_touch_probability < 1.0
+                and rng.random() >= cfg.ink_spacing_touch_probability
+            ):
+                self.crop_statistics["touch_rejected"] += 1
+                continue
             right = left + cfg.image_width
             cropped = self._crop_spans(spans, cut_spans, left, right)
             if cropped is None:
-                continue
+                raise AssertionError("planned crop violates edge visibility constraints")
             crop_spans, crop_cut_spans = cropped
             text = "".join(char for char, _, _ in crop_spans)
-            if len(text) < cfg.min_crop_text_length:
-                continue
-            if len(text) > cfg.max_crop_text_length:
-                continue
-            if not self._accept_ink_spacing(crop_cut_spans, rng):
-                continue
             crop = image.crop((left, 0, right, cfg.image_height))
             crop_baseline_top = baseline_top
             crop_baseline_bottom = baseline_bottom
@@ -756,10 +786,89 @@ class SingleLineDataset:
                     crop_cut_spans,
                     crop_baseline_top,
                     crop_baseline_bottom,
+                    crop_left=left,
+                    source_width=image.width,
                 )
             )
+            self.crop_statistics["accepted_crops"] += 1
+            self.crop_statistics["shifted_crops"] += int(left != nominal_left)
 
         return samples
+
+    def _crop_candidate_positions(
+        self,
+        spans: list[tuple[str, float, float]],
+        cut_spans: list[tuple[str, float, float]],
+        line_width: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Find fixed-width windows satisfying deterministic label constraints."""
+        if len(spans) != len(cut_spans):
+            raise ValueError("logical and cut span counts must match")
+
+        cfg = self.config
+        width = cfg.image_width
+        positions = np.arange(max(0, line_width - width + 1), dtype=np.int64)
+        valid = np.ones(positions.size, dtype=bool)
+        text_lengths = np.zeros(positions.size, dtype=np.int32)
+        trailing_space = np.zeros(positions.size, dtype=bool)
+        previous_ink_end = np.full(positions.size, np.nan)
+        min_ink_gap = np.full(positions.size, np.inf)
+
+        # A character only touches about W candidate windows. Avoid an N x line_width
+        # matrix and raster operations while checking both edges and normalized labels.
+        for (char, start, end), (cut_char, cut_start, cut_end) in zip(spans, cut_spans):
+            if cut_char != char:
+                raise ValueError("logical and cut span characters must match")
+            if end <= start:
+                continue
+            begin = max(0, math.floor(start - width) + 1)
+            stop = min(positions.size, math.ceil(end))
+            if begin >= stop:
+                continue
+            region = slice(begin, stop)
+            left = positions[region]
+            right = left + width
+            visible_start = np.maximum(start, left)
+            visible_end = np.minimum(end, right)
+            ratio = (visible_end - visible_start) / max(1e-6, end - start)
+            clipped = (start < left) | (end > right)
+            retained = ~clipped | (ratio >= cfg.edge_char_min_visible_ratio)
+            fragment = clipped & (ratio <= cfg.edge_fragment_max_visible_ratio)
+            valid[region] &= retained | fragment
+
+            lengths = text_lengths[region]
+            is_trailing_space = trailing_space[region]
+            previous_end = previous_ink_end[region]
+            if char == cfg.space_char:
+                added_space = retained & (lengths > 0) & ~is_trailing_space
+                lengths += added_space
+                is_trailing_space[added_space] = True
+                previous_end[retained] = np.nan
+                continue
+            lengths += retained
+            is_trailing_space[retained] = False
+            if not cfg.ink_spacing_enabled:
+                continue
+
+            ink_start = np.maximum(0.0, cut_start - left)
+            ink_end = np.minimum(float(width), cut_end - left)
+            empty_ink = ink_end <= ink_start
+            ink_start = np.where(empty_ink, visible_start - left, ink_start)
+            ink_end = np.where(empty_ink, visible_end - left, ink_end)
+            paired = retained & np.isfinite(previous_end)
+            gaps = min_ink_gap[region]
+            gaps[paired] = np.minimum(gaps[paired], ink_start[paired] - previous_end[paired])
+            previous_end[retained] = ink_end[retained]
+
+        text_lengths -= trailing_space
+        valid &= (text_lengths >= cfg.min_crop_text_length) & (
+            text_lengths <= cfg.max_crop_text_length
+        )
+        touching = np.zeros(positions.size, dtype=bool)
+        if cfg.ink_spacing_enabled:
+            valid &= min_ink_gap >= cfg.ink_spacing_min_char_gap_px
+            touching = min_ink_gap <= cfg.ink_spacing_touch_gap_px
+        return positions[valid], touching[valid]
 
     def _crop_spans(
         self,
@@ -836,6 +945,9 @@ class SingleLineDataset:
         cut_spans: list[tuple[str, float, float]],
         baseline_top: float,
         baseline_bottom: float,
+        *,
+        crop_left: int,
+        source_width: int,
     ) -> GeneratedLineSample:
         if len(spans) != len(cut_spans):
             raise ValueError("logical and cut span counts must match")
@@ -875,6 +987,8 @@ class SingleLineDataset:
             text=text,
             image=tensor.contiguous(),
             target=target.contiguous(),
+            crop_left=crop_left,
+            source_width=source_width,
         )
 
     def _encode_fcn_ocr_targets(
@@ -1110,47 +1224,6 @@ class SingleLineDataset:
                 ink_end = logical_end
             cut_spans.append((char, ink_start, ink_end))
         return cut_spans
-
-    def _accept_ink_spacing(
-        self,
-        cut_spans: list[tuple[str, float, float]],
-        rng: random.Random,
-    ) -> bool:
-        cfg = self.config
-        if not cfg.ink_spacing_enabled:
-            return True
-
-        gaps = self._adjacent_non_space_ink_gaps(cut_spans)
-        if not gaps:
-            return True
-
-        min_gap = min(gaps)
-        if min_gap < cfg.ink_spacing_min_char_gap_px:
-            return False
-
-        if (
-            cfg.ink_spacing_touch_probability < 1.0
-            and min_gap <= cfg.ink_spacing_touch_gap_px
-        ):
-            return rng.random() <= cfg.ink_spacing_touch_probability
-        return True
-
-    def _adjacent_non_space_ink_gaps(
-        self,
-        cut_spans: list[tuple[str, float, float]],
-    ) -> list[float]:
-        gaps: list[float] = []
-        previous: tuple[str, float, float] | None = None
-        for span in cut_spans:
-            char, start, end = span
-            if char == self.config.space_char:
-                previous = None
-                continue
-            if previous is not None:
-                _, _, previous_end = previous
-                gaps.append(float(start) - float(previous_end))
-            previous = span
-        return gaps
 
     def _styled_char_layout(
         self,
