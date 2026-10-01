@@ -39,3 +39,26 @@ def background_fill_value(
         return tuple(int(value) for value in values[:3])
 
     return pil_fill_value(image.mode, fallback)
+
+
+def crop_with_fill(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+    fill: int | tuple[int, int, int],
+) -> Image.Image:
+    left, top, right, bottom = box
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    output = Image.new(image.mode, (width, height), fill)
+    source_box = (
+        max(0, left),
+        max(0, top),
+        min(image.width, right),
+        min(image.height, bottom),
+    )
+    if source_box[2] <= source_box[0] or source_box[3] <= source_box[1]:
+        return output
+
+    paste_xy = (source_box[0] - left, source_box[1] - top)
+    output.paste(image.crop(source_box), paste_xy)
+    return output

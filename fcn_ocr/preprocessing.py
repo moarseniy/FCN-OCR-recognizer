@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image, ImageOps
 import torch
 
-from .image_utils import background_fill_value, pil_fill_value
+from .image_utils import background_fill_value, crop_with_fill, pil_fill_value
 from .results import PreprocessDebug
 
 
@@ -392,23 +392,7 @@ class ImagePreprocessingMixin:
     def _crop_with_fill(
         self, image: Image.Image, box: tuple[int, int, int, int]
     ) -> Image.Image:
-        left, top, right, bottom = box
-        width = max(1, right - left)
-        height = max(1, bottom - top)
-        output = Image.new(
-            image.mode, (width, height), self._background_fill_value(image)
-        )
-        source_box = (
-            max(0, left),
-            max(0, top),
-            min(image.width, right),
-            min(image.height, bottom),
-        )
-        if source_box[2] <= source_box[0] or source_box[3] <= source_box[1]:
-            return output
-        paste_xy = (source_box[0] - left, source_box[1] - top)
-        output.paste(image.crop(source_box), paste_xy)
-        return output
+        return crop_with_fill(image, box, self._background_fill_value(image))
 
     def preprocess_image(self, image_path: str | Path) -> torch.Tensor:
         with Image.open(image_path) as image:
