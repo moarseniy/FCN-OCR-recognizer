@@ -1,0 +1,35 @@
+# Train vertical segmentation and evaluate every epoch against manual cut markup.
+# Paths are relative to this file. A baseline_detector_checkpoint directory
+# resolves to its newest timestamped run's best manual-evaluation checkpoint.
+train_config: ../train/eng_train_101_vertical_segmentation.yaml
+markup_json: ../../output/manual_markup.json
+images_dir: null
+output_dir: null
+
+device: cuda
+limit: null
+batch_size: 64
+log_every: 100
+evaluate_every: 1
+cut_tolerance_px: 3.0
+
+best_metric: cut_f1
+best_checkpoint_name: best_manual_vertical_segmentation_model.pth
+
+# Fixed inference settings keep epoch scores comparable. Final tuning remains
+# in eng_101_vertical_segmentation.yaml after training.
+parameters:
+  cut_threshold: 0.5
+  cut_min_width: 1
+  cut_max_width: 0
+  cut_smooth_radius: 0
+  scale_x: 0.0
+  y_pad: 0.0
+  x_pad: 0.03
+  baseline_crop: true
+  baseline_line_pad: 0.08
+  baseline_line_pad_px: 0.0
+  baseline_deskew: true
+  baseline_max_angle: 12.0
+  baseline_detector_checkpoint: ../../checkpoints/baseline_detection
+  baseline_detector_threshold: 0.35

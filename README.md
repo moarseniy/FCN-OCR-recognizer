@@ -260,6 +260,18 @@ python -m tools.annotation.server \
 автоматически сохраняет текущую разметку. Полученный JSON напрямую принимают
 `evaluate.py vertical_segmentation` и `evaluate.py baseline_detection`.
 
+Обучить vertical segmentation с ручной оценкой после каждой эпохи:
+
+```bash
+python train_vertical_segmentation_with_eval.py \
+  --config configs/evaluation/eng_train_101_vertical_segmentation_eval.yaml
+```
+
+Этот запуск дополнительно сохраняет `best_manual_vertical_segmentation_model.pth`
+по максимальному `cut_f1` на ручных cuts. Для сравнимости между эпохами
+inference-параметры фиксированы в evaluation YAML; поиск параметров после обучения
+запускается отдельно через `evaluate.py vertical_segmentation`.
+
 ## Tests
 
 ```bash
