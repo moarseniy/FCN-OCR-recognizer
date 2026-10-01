@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image, ImageOps
 import torch
 
+from .image_utils import background_fill_value, pil_fill_value
 from .results import PreprocessDebug
 
 
@@ -324,36 +325,10 @@ class ImagePreprocessingMixin:
         )
 
     def _pil_fill_value(self, mode: str) -> int | tuple[int, int, int]:
-        fill = max(0, min(255, self.preprocess_fill))
-        if mode == "RGB":
-            return (fill, fill, fill)
-        return fill
+        return pil_fill_value(mode, self.preprocess_fill)
 
     def _background_fill_value(self, image: Image.Image) -> int | tuple[int, int, int]:
-        array = np.asarray(image)
-        if array.size == 0:
-            return self._pil_fill_value(image.mode)
-
-        if array.ndim == 2:
-            border = np.concatenate(
-                (array[0, :], array[-1, :], array[:, 0], array[:, -1])
-            )
-            return int(np.median(border))
-
-        if array.ndim == 3 and array.shape[2] >= 3:
-            border = np.concatenate(
-                (
-                    array[0, :, :],
-                    array[-1, :, :],
-                    array[:, 0, :],
-                    array[:, -1, :],
-                ),
-                axis=0,
-            )
-            values = np.median(border[:, :3], axis=0).round().astype(np.uint8).tolist()
-            return tuple(int(value) for value in values[:3])
-
-        return self._pil_fill_value(image.mode)
+        return background_fill_value(image, self.preprocess_fill)
 
     @staticmethod
     def _resize_float_map(values: np.ndarray, size: tuple[int, int]) -> np.ndarray:

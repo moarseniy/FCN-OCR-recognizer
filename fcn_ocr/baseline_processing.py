@@ -10,10 +10,14 @@ import torch
 from fcn_tasks import BASELINE_DETECTION_TASK
 
 from .checkpoint import load_fcn_checkpoint
+from .image_utils import background_fill_value
 from .results import PreprocessDebug
 
 
 class NeuralBaselineMixin:
+    def _background_fill_value(self, image: Image.Image) -> int | tuple[int, int, int]:
+        return background_fill_value(image, self.preprocess_fill)
+
     def _load_baseline_detector(self) -> None:
         if self.baseline_detector_checkpoint is None:
             return
