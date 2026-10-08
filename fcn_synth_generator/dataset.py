@@ -394,21 +394,15 @@ class SingleLineDataset:
         rng: random.Random,
         style: TextRenderStyle,
     ) -> list[GeneratedLineSample]:
-        (
-            image,
-            spans,
-            cut_spans,
-            baseline_top,
-            baseline_bottom,
-            baseline_mask,
-        ) = self._render_long_text(text, font, rng, style)
+        image, spans, cut_spans, baseline_top, baseline_bottom = self._render_long_text(
+            text, font, rng, style
+        )
         return self._slice_line_image(
             image,
             spans,
             cut_spans,
             baseline_top,
             baseline_bottom,
-            baseline_mask,
             rng,
         )
 
@@ -675,7 +669,6 @@ class SingleLineDataset:
         list[tuple[str, float, float]],
         float,
         float,
-        Image.Image | None,
     ]:
         cfg = self.config
         bbox = self._text_bbox(text, font, style)
@@ -712,17 +705,13 @@ class SingleLineDataset:
             self._draw_neighbor_lines(draw, neighbor_layout, font, fill, style)
 
         spans, cut_spans = self._draw_text(draw, float(x), float(y), text, font, fill, style)
-        baseline_top, baseline_bottom, baseline_mask = self._visible_text_y_bounds(
-            width=image.width,
-            height=image.height,
-            x=float(x),
+        baseline_top, baseline_bottom = self._body_text_y_bounds(
             y=float(y),
             text=text,
             font=font,
-            style=style,
             font_bbox=bbox,
         )
-        return image, spans, cut_spans, baseline_top, baseline_bottom, baseline_mask
+        return image, spans, cut_spans, baseline_top, baseline_bottom
 
     def _slice_line_image(
         self,
@@ -731,7 +720,6 @@ class SingleLineDataset:
         cut_spans: list[tuple[str, float, float]],
         baseline_top: float,
         baseline_bottom: float,
-        baseline_mask: Image.Image | None,
         rng: random.Random,
     ) -> list[GeneratedLineSample]:
         cfg = self.config
@@ -771,21 +759,14 @@ class SingleLineDataset:
             crop_spans, crop_cut_spans = cropped
             text = "".join(char for char, _, _ in crop_spans)
             crop = image.crop((left, 0, right, cfg.image_height))
-            crop_baseline_top = baseline_top
-            crop_baseline_bottom = baseline_bottom
-            if baseline_mask is not None:
-                crop_mask_bbox = baseline_mask.crop((left, 0, right, cfg.image_height)).getbbox()
-                if crop_mask_bbox is not None:
-                    crop_baseline_top = float(crop_mask_bbox[1])
-                    crop_baseline_bottom = float(crop_mask_bbox[3] - 1)
             samples.append(
                 self._make_sample(
                     crop,
                     text,
                     crop_spans,
                     crop_cut_spans,
-                    crop_baseline_top,
-                    crop_baseline_bottom,
+                    baseline_top,
+                    baseline_bottom,
                     crop_left=left,
                     source_width=image.width,
                 )
@@ -1170,35 +1151,25 @@ class SingleLineDataset:
         spans = self._char_spans(text, font, x)
         return spans, [start for _, start, _ in spans]
 
-    def _visible_text_y_bounds(
+    def _body_text_y_bounds(
         self,
-        width: int,
-        height: int,
-        x: float,
         y: float,
         text: str,
         font: ImageFont.FreeTypeFont,
-        style: TextRenderStyle,
         font_bbox: tuple[float, float, float, float],
-    ) -> tuple[float, float, Image.Image | None]:
-        font_bounds = (float(y + font_bbox[1]), float(y + font_bbox[3] - 1))
-        if self.config.task != BASELINE_DETECTION_TASK:
-            return font_bounds[0], font_bounds[1], None
+    ) -> tuple[float, float]:
+        glyph_bounds = [
+            font.getbbox(char)
+            for char in text
+            if char != self.config.space_char
+        ]
+        if not glyph_bounds:
+            return float(y + font_bbox[1]), float(y + font_bbox[3] - 1)
 
-        mask = Image.new("L", (width, height), color=0)
-        mask_draw = ImageDraw.Draw(mask)
-        if not self._has_custom_spacing(style):
-            mask_draw.text((x, y), text, font=font, fill=255)
-        else:
-            spans, origins = self._styled_char_layout(text, font, x, style)
-            for (char, _, _), origin in zip(spans, origins):
-                if char != self.config.space_char:
-                    mask_draw.text((origin, y), char, font=font, fill=255)
-
-        visible_bbox = mask.getbbox()
-        if visible_bbox is None:
-            return font_bounds[0], font_bounds[1], mask
-        return float(visible_bbox[1]), float(visible_bbox[3] - 1), mask
+        # Median glyph bounds ignore minority extensions such as Q's tail.
+        top = float(y + np.median([bounds[1] for bounds in glyph_bounds]))
+        bottom = float(y + np.median([bounds[3] - 1 for bounds in glyph_bounds]))
+        return top, bottom
 
     def _glyph_cut_spans(
         self,
