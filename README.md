@@ -240,6 +240,16 @@ Persistent study через SQLite нужен только для продолж
 У study строгий контракт checkpoint, датасета, метрики и search space. После
 их изменения задайте новое `optuna_study_name`.
 
+Сводка по всем Optuna SQLite базам в `output/`, включая лучшие параметры и
+метрики каждой study:
+
+```bash
+python -m tools.optuna_summary --directory output
+```
+
+Добавьте `--all-trials`, чтобы вывести историю всех trial, или `--format json`
+для машиночитаемого отчета.
+
 После evaluation сохраняются CSV, TSV trials и готовый inference YAML с
 лучшими параметрами. Основная метрика печатается в `stderr`, обычный лог в
 `stdout`.
