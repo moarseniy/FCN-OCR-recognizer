@@ -142,6 +142,127 @@ def draw_segmentation_lines(image: Image.Image, result: VerticalSegmentationResu
     return output
 
 
+def draw_cut_comparison_overlay(
+    image: Image.Image,
+    segmenter_cuts: list[int],
+    decoded_cuts: list[int],
+    timesteps: int,
+) -> Image.Image:
+    """Overlay raw segmenter cuts and the boundaries selected by the decoder."""
+    output = image.convert("RGB")
+    if timesteps <= 0 or output.width <= 0 or output.height <= 0:
+        return output
+
+    raw_cuts = {
+        int(cut) for cut in segmenter_cuts if 0 <= int(cut) < timesteps
+    }
+    final_cuts = {
+        int(cut) for cut in decoded_cuts if 0 <= int(cut) < timesteps
+    }
+    cut_kinds_by_x: dict[int, set[str]] = {}
+    for kind, cuts in (("segmenter", raw_cuts), ("decoded", final_cuts)):
+        for cut in cuts:
+            x = segmentation_x_for_timestep(
+                float(cut) + 0.5,
+                output.width,
+                timesteps,
+            )
+            cut_kinds_by_x.setdefault(x, set()).add(kind)
+
+    colors = {
+        frozenset({"segmenter"}): (220, 45, 45),
+        frozenset({"decoded"}): (25, 145, 55),
+        frozenset({"segmenter", "decoded"}): (230, 170, 0),
+    }
+    draw = ImageDraw.Draw(output)
+    for x, kinds in cut_kinds_by_x.items():
+        draw.line(
+            (x, 0, x, output.height - 1),
+            fill=colors[frozenset(kinds)],
+            width=1,
+        )
+    return output
+
+
+def render_cut_comparison_panel(
+    image: Image.Image,
+    segmentation_result: VerticalSegmentationResult,
+    decoding_result: CutDecodingResult,
+) -> Image.Image:
+    timesteps = len(segmentation_result.raw_indices)
+    segmenter_cuts = {
+        int(cut)
+        for cut in (segmentation_result.cut_positions or [])
+        if 0 <= int(cut) < timesteps
+    }
+    decoded_cuts = {
+        int(cut)
+        for cut in decoding_result.cuts
+        if 0 <= int(cut) < timesteps
+    }
+    shared = segmenter_cuts & decoded_cuts
+    segmenter_only = segmenter_cuts - decoded_cuts
+    decoded_only = decoded_cuts - segmenter_cuts
+
+    title = (
+        "DP-selected boundaries vs segmenter"
+        if decoding_result.decode_method == "dp"
+        else f"{decoding_result.decode_method} boundaries vs segmenter"
+    )
+    font = load_debug_font(14)
+    small_font = load_debug_font(12)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    padding = 10
+    panel_width = max(image.width + 2 * padding, 280)
+    image_x = max(padding, (panel_width - image.width) // 2)
+    title_height = text_height(probe, font) + 6
+    summary = (
+        f"segmenter {len(segmenter_cuts)}; final {len(decoded_cuts)}; "
+        f"shared {len(shared)}; segmenter-only {len(segmenter_only)}; "
+        f"final-only {len(decoded_only)}"
+    )
+    summary_lines = wrapped_lines(probe, summary, small_font, panel_width - 2 * padding)
+    small_line_height = text_height(probe, small_font) + 4
+    legend_line_height = text_height(probe, small_font) + 6
+    legend = (
+        ((220, 45, 45), "segmenter only"),
+        ((25, 145, 55), "selected only"),
+        ((230, 170, 0), "present in both"),
+    )
+    panel_height = (
+        padding
+        + title_height
+        + image.height
+        + 8
+        + len(summary_lines) * small_line_height
+        + 4
+        + len(legend) * legend_line_height
+        + padding
+    )
+    panel = Image.new("RGB", (panel_width, panel_height), color=(246, 246, 246))
+    draw = ImageDraw.Draw(panel)
+    y = padding
+    draw.text((padding, y), title, fill=(55, 55, 55), font=font)
+    y += title_height
+    overlay = draw_cut_comparison_overlay(
+        image,
+        list(segmenter_cuts),
+        list(decoded_cuts),
+        timesteps,
+    )
+    panel.paste(overlay, (image_x, y))
+    y += image.height + 8
+    for line in summary_lines:
+        draw.text((padding, y), line, fill=(55, 55, 55), font=small_font)
+        y += small_line_height
+    y += 4
+    for color, label in legend:
+        draw.rectangle((padding, y + 2, padding + 12, y + 14), fill=color)
+        draw.text((padding + 18, y), label, fill=(55, 55, 55), font=small_font)
+        y += legend_line_height
+    return panel
+
+
 def render_segmentation_panel(
     image: Image.Image,
     result: VerticalSegmentationResult,
@@ -292,6 +413,7 @@ def render_pipeline_panel(
     network_input_image: Image.Image | None,
     preprocess_images: list[tuple[str, Image.Image]] | None,
     ocr_enabled: bool,
+    cut_decoding_result: CutDecodingResult | None = None,
 ) -> Image.Image:
     column_width = 560
     gap = 12
@@ -314,6 +436,17 @@ def render_pipeline_panel(
                 render_segmentation_panel(vertical_segmentation_input_image, segmentation_result),
             )
         )
+        if cut_decoding_result is not None:
+            vertical_segmentation_items.append(
+                (
+                    "segmenter vs final decoded cuts",
+                    render_cut_comparison_panel(
+                        vertical_segmentation_input_image,
+                        segmentation_result,
+                        cut_decoding_result,
+                    ),
+                )
+            )
 
     ocr_items = list(preprocess_images or [])
     _append_final_input(ocr_items, network_input_image)
@@ -484,6 +617,7 @@ def save_debug_image(
         network_input_image=network_input_image,
         preprocess_images=preprocess_images,
         ocr_enabled=ocr_enabled,
+        cut_decoding_result=cut_decoding_result,
     )
 
     width = pipeline_panel.width
