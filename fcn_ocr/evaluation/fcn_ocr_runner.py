@@ -151,7 +151,7 @@ def evaluate_prepared(
     vertical_segmentation_cut_max_width: int | None = None,
     vertical_segmentation_cut_smooth_radius: int | None = None,
     decode_method: str = "cells",
-    decode_top_k: int = 8,
+    debug_top_k: int = 8,
     center_fraction: float = 0.6,
     min_score_width: int = 1,
     cut_weight: float = 1.0,
@@ -181,7 +181,6 @@ def evaluate_prepared(
             "decode": {
                 "enabled": decode_with_vertical_segmentation,
                 "method": decode_method,
-                "top_k": decode_top_k,
                 "center_fraction": center_fraction,
                 "min_score_width": min_score_width,
                 "cut_weight": cut_weight,
@@ -191,7 +190,7 @@ def evaluate_prepared(
                 "glyph_width_prior": glyph_width_prior or {},
             },
         },
-        "debug": {"top_k": decode_top_k},
+        "debug": {"top_k": debug_top_k},
     }
     if baseline_crop:
         config_data["baseline_detection"] = {
@@ -260,7 +259,7 @@ def evaluate_prepared(
     metrics["vertical_segmentation_y_pad"] = float(vertical_segmentation_y_pad)
     metrics["vertical_segmentation_x_pad"] = float(vertical_segmentation_x_pad)
     metrics["decode_method"] = str(decode_method)
-    metrics["decode_top_k"] = int(decode_top_k)
+    metrics["debug_top_k"] = int(debug_top_k)
     metrics["center_fraction"] = float(center_fraction)
     metrics["min_score_width"] = int(min_score_width)
     metrics["cut_weight"] = float(cut_weight)
@@ -400,7 +399,7 @@ def evaluate(
     vertical_segmentation_cut_max_width: int | None = None,
     vertical_segmentation_cut_smooth_radius: int | None = None,
     decode_method: str = "cells",
-    decode_top_k: int = 8,
+    debug_top_k: int = 8,
     center_fraction: float = 0.6,
     min_score_width: int = 1,
     cut_weight: float = 1.0,
@@ -439,7 +438,7 @@ def evaluate(
         vertical_segmentation_cut_max_width=vertical_segmentation_cut_max_width,
         vertical_segmentation_cut_smooth_radius=vertical_segmentation_cut_smooth_radius,
         decode_method=decode_method,
-        decode_top_k=decode_top_k,
+        debug_top_k=debug_top_k,
         center_fraction=center_fraction,
         min_score_width=min_score_width,
         cut_weight=cut_weight,

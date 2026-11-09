@@ -36,7 +36,7 @@ def _common_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "vertical_segmentation_cut_max_width": args.vertical_segmentation_cut_max_width,
         "vertical_segmentation_cut_smooth_radius": args.vertical_segmentation_cut_smooth_radius,
         "decode_method": args.decode_method,
-        "decode_top_k": args.decode_top_k,
+        "debug_top_k": args.debug_top_k,
         "center_fraction": args.center_fraction,
         "min_score_width": args.min_score_width,
         "cut_weight": args.cut_weight,
@@ -76,7 +76,6 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             "decode": {
                 "enabled": bool(metrics["decode_with_vertical_segmentation"] and has_vertical_segmentation),
                 "method": metrics["decode_method"],
-                "top_k": metrics["decode_top_k"],
                 "center_fraction": metrics["center_fraction"],
                 "min_score_width": metrics["min_score_width"],
                 "cut_weight": metrics["cut_weight"],
@@ -87,7 +86,7 @@ def _print_inference_command(args: argparse.Namespace, metrics: dict[str, Any]) 
             },
         },
         "debug": {
-            "top_k": getattr(args, "inference_debug_top_k", 8),
+            "top_k": metrics["debug_top_k"],
         },
     }
     if has_vertical_segmentation:

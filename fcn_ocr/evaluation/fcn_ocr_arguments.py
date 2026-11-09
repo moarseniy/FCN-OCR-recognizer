@@ -100,7 +100,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--vertical-segmentation-cut-max-width", type=int, default=None)
     parser.add_argument("--vertical-segmentation-cut-smooth-radius", type=int, default=None)
     parser.add_argument("--decode-method", choices=["cells", "dp"], default=None)
-    parser.add_argument("--decode-top-k", type=int, default=None)
+    parser.add_argument(
+        "--debug-top-k",
+        type=int,
+        default=None,
+        help="Number of class alternatives to include in raw and cut-decoder debug output.",
+    )
     parser.add_argument("--center-fraction", type=float, default=None)
     parser.add_argument("--min-score-width", type=int, default=None)
     parser.add_argument("--cut-weight", type=float, default=None)
@@ -337,13 +342,6 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
             "cells",
         )
     )
-    args.decode_top_k = int(
-        _first_defined(
-            args.decode_top_k,
-            decode.top_k if decode is not None else None,
-            8,
-        )
-    )
     args.center_fraction = float(
         _first_defined(
             args.center_fraction,
@@ -394,5 +392,11 @@ def resolve_inference_args(args: argparse.Namespace) -> argparse.Namespace:
             "Vertical segmentation decoding requires vertical_segmentation.checkpoint in --inference-config "
             "or --vertical-segmentation-checkpoint"
         )
-    args.inference_debug_top_k = config.debug.top_k if config is not None else 8
+    args.debug_top_k = int(
+        _first_defined(
+            args.debug_top_k,
+            config.debug.top_k if config is not None else None,
+            8,
+        )
+    )
     return args

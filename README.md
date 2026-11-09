@@ -187,13 +187,17 @@ fcn_ocr:
   decode:
     enabled: true
     method: dp
-    top_k: 8
     center_fraction: 0.6
     min_score_width: 1
+
+debug:
+  top_k: 8
 ```
 
 Отсутствующий раздел полностью пропускает соответствующую стадию.
 `fcn_ocr.decode.enabled: true` требует vertical segmentation.
+`debug.top_k` задает число альтернативных классов, показываемых для raw OCR
+таймстепов и для ячеек, декодированных через vertical segmentation.
 
 `--debug-image` сохраняет три столбца: baseline detection, vertical
 segmentation и OCR. В каждом показаны собственный preprocessing, вход сети и

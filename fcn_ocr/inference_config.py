@@ -54,7 +54,6 @@ class OCRDecodeConfig(BaseModel):
 
     enabled: bool = False
     method: Literal["cells", "dp"] = "cells"
-    top_k: int = Field(default=8, ge=1)
     center_fraction: float = Field(default=0.6, gt=0.0, le=1.0)
     min_score_width: int = Field(default=1, ge=1)
     cut_weight: float = Field(default=1.0, ge=0.0)

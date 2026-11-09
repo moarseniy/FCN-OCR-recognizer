@@ -463,7 +463,7 @@ class FCNPipeline:
         decode_kwargs = {
             "input_width": int(ocr_input.shape[-1]),
             "input_height": int(ocr_input.shape[-2]),
-            "top_k": self.decode.top_k,
+            "top_k": self.config.debug.top_k,
             "center_fraction": self.decode.center_fraction,
             "min_score_width": self.decode.min_score_width,
             "ocr_source_x": ocr_source_x,

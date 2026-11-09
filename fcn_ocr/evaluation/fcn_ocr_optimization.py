@@ -132,7 +132,7 @@ def optimize_preprocess(
     vertical_segmentation_cut_max_width: int | None = None,
     vertical_segmentation_cut_smooth_radius: int | None = None,
     decode_method: str = "cells",
-    decode_top_k: int = 8,
+    debug_top_k: int = 8,
     center_fraction: float = 0.6,
     min_score_width: int = 1,
     cut_weight: float = 1.0,
@@ -367,7 +367,7 @@ def optimize_preprocess(
                     vertical_segmentation_cut_smooth_radius_max if tune_active_vertical_segmentation else None,
                 ),
                 "decode_method": decode_method,
-                "decode_top_k": decode_top_k,
+                "debug_top_k": debug_top_k,
                 "center_fraction": _parameter_value(
                     center_fraction,
                     center_fraction_min if tune_active_vertical_segmentation else None,
@@ -556,7 +556,7 @@ def optimize_preprocess(
             vertical_segmentation_cut_max_width=current_vertical_segmentation_cut_max_width,
             vertical_segmentation_cut_smooth_radius=current_vertical_segmentation_cut_smooth_radius,
             decode_method=decode_method,
-            decode_top_k=decode_top_k,
+            debug_top_k=debug_top_k,
             center_fraction=float(
                 center_fraction
                 if current_center_fraction is None
@@ -658,7 +658,7 @@ def optimize_preprocess(
             vertical_segmentation_cut_smooth_radius,
         ),
         decode_method=decode_method,
-        decode_top_k=decode_top_k,
+        debug_top_k=debug_top_k,
         center_fraction=float(
             best_or_fixed(
                 best_params,

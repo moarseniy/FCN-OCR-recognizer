@@ -18,6 +18,10 @@ class _FakeRecognizer:
     device = torch.device("cpu")
     architecture = "fake_ocr"
 
+    def __init__(self) -> None:
+        self.raw_top_k = None
+        self.decoded_top_k = None
+
     @staticmethod
     def prepare_baseline_image(image: Image.Image, collect_debug: bool = False):
         return image.convert("RGB"), PreprocessDebug(metadata={}, images=[])
@@ -41,6 +45,7 @@ class _FakeRecognizer:
     def recognize_tensor_debug_with_logits(
         self, image_tensor: torch.Tensor, top_k: int = 8
     ):
+        self.raw_top_k = top_k
         logits, input_shape = self.logits_from_tensor(image_tensor)
         recognition = RecognitionResult(
             text="RAW",
@@ -54,8 +59,8 @@ class _FakeRecognizer:
         )
         return recognition, logits
 
-    @staticmethod
-    def decode_fcn_ocr_with_cuts(logits, segmentation_result, **kwargs):
+    def decode_fcn_ocr_with_cuts(self, logits, segmentation_result, **kwargs):
+        self.decoded_top_k = kwargs["top_k"]
         return CutDecodingResult(
             text="AB",
             symbols=[],
@@ -97,10 +102,11 @@ class _FakeVerticalSegmenter:
         return self.analyze_segmentation_logits(logits, input_shape)
 
 
-def _pipeline_with_fakes(recognizer, vertical_segmenter) -> FCNPipeline:
+def _pipeline_with_fakes(recognizer, vertical_segmenter, debug_top_k: int = 8) -> FCNPipeline:
     config = InferenceConfig.model_validate(
         {
             "device": "cpu",
+            "debug": {"top_k": debug_top_k},
             "fcn_ocr": {
                 "checkpoint": "unused_ocr.pth",
                 "decode": {"enabled": True, "method": "cells"},
@@ -159,3 +165,29 @@ def test_pipeline_and_evaluation_path_return_the_same_decoded_text(
 
     assert path_results[0].error == ""
     assert pipeline_text == path_results[0].text == "AB"
+
+
+def test_one_debug_top_k_controls_raw_and_cut_decoder_candidates() -> None:
+    recognizer = _FakeRecognizer()
+    pipeline = _pipeline_with_fakes(
+        recognizer,
+        _FakeVerticalSegmenter(),
+        debug_top_k=3,
+    )
+
+    pipeline.recognize_pil(Image.new("RGB", (8, 8), "white"))
+
+    assert recognizer.raw_top_k == 3
+    assert recognizer.decoded_top_k == 3
+
+
+def test_decode_config_rejects_a_second_top_k_setting() -> None:
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        InferenceConfig.model_validate(
+            {
+                "fcn_ocr": {
+                    "checkpoint": "unused_ocr.pth",
+                    "decode": {"top_k": 4},
+                }
+            }
+        )
