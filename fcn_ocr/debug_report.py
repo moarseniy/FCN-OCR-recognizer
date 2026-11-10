@@ -263,6 +263,59 @@ def render_cut_comparison_panel(
     return panel
 
 
+def render_final_decoded_cuts_panel(
+    image: Image.Image,
+    decoding_result: CutDecodingResult,
+) -> Image.Image:
+    timesteps = decoding_result.vertical_segmentation_width
+    decoded_cuts = sorted(
+        {
+            int(cut)
+            for cut in decoding_result.cuts
+            if 0 <= int(cut) < timesteps
+        }
+    )
+    overlay = draw_cut_comparison_overlay(image, [], decoded_cuts, timesteps)
+    method = "DP" if decoding_result.decode_method == "dp" else decoding_result.decode_method
+    title = f"Final decoded segmentation ({method})"
+
+    font = load_debug_font(14)
+    small_font = load_debug_font(12)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    padding = 10
+    panel_width = max(image.width + 2 * padding, 280)
+    image_x = max(padding, (panel_width - image.width) // 2)
+    title_height = text_height(probe, font) + 6
+    detail = f"selected cuts: {len(decoded_cuts)}; decoded symbols: {len(decoding_result.symbols)}"
+    detail_lines = wrapped_lines(probe, detail, small_font, panel_width - 2 * padding)
+    detail_line_height = text_height(probe, small_font) + 4
+    legend_line_height = text_height(probe, small_font) + 6
+    panel_height = (
+        padding
+        + title_height
+        + image.height
+        + 8
+        + len(detail_lines) * detail_line_height
+        + 4
+        + legend_line_height
+        + padding
+    )
+    panel = Image.new("RGB", (panel_width, panel_height), color=(246, 246, 246))
+    draw = ImageDraw.Draw(panel)
+    y = padding
+    draw.text((padding, y), title, fill=(55, 55, 55), font=font)
+    y += title_height
+    panel.paste(overlay, (image_x, y))
+    y += image.height + 8
+    for line in detail_lines:
+        draw.text((padding, y), line, fill=(55, 55, 55), font=small_font)
+        y += detail_line_height
+    y += 4
+    draw.rectangle((padding, y + 2, padding + 12, y + 14), fill=(25, 145, 55))
+    draw.text((padding + 18, y), "final selected boundary", fill=(55, 55, 55), font=small_font)
+    return panel
+
+
 def render_segmentation_panel(
     image: Image.Image,
     result: VerticalSegmentationResult,
@@ -437,6 +490,15 @@ def render_pipeline_panel(
             )
         )
         if cut_decoding_result is not None:
+            vertical_segmentation_items.append(
+                (
+                    "final decoded segmentation",
+                    render_final_decoded_cuts_panel(
+                        vertical_segmentation_input_image,
+                        cut_decoding_result,
+                    ),
+                )
+            )
             vertical_segmentation_items.append(
                 (
                     "segmenter vs final decoded cuts",
