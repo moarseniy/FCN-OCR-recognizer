@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+fcn_synth_generator/fonts/google-fonts/
+
 # Distribution / packaging
 .Python
 data/
