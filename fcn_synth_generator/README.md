@@ -207,14 +207,23 @@ gap и ограничениям видимости, он пропускаетс�
 
 ## Шрифты и фоны
 
-Пути считаются относительно generation YAML:
+`font_dir` принимает каталог (поиск рекурсивный) или `.txt`-список шрифтов.
+Путь к каталогу или самому txt считается относительно generation YAML. Пути
+внутри txt, напротив, считаются относительно папки, где лежит этот txt;
+пустые строки и комментарии с `#` игнорируются. Например, для
+`fcn_synth_generator/fonts/lat.txt`:
 
 ```yaml
-font_dir: ../fonts
+font_dir: ../fonts/lat.txt
 font_extensions: [.ttf, .otf, .ttc, .otc]
 background_dir: ../backgrounds
 background_extensions: [.png, .jpg, .jpeg, .bmp, .webp]
 ```
+
+Строка `linux-system-fonts/DejaVuSans.ttf` в `lat.txt` означает путь
+`fcn_synth_generator/fonts/linux-system-fonts/DejaVuSans.ttf`. Для полного
+рекурсивного поиска укажите `font_dir: ../fonts`. `font_paths` по-прежнему
+принимает явный список файлов; его элементы разрешаются относительно YAML.
 
 Fonts check оставляет только шрифты, покрывающие весь `alphabet`, и печатает
 статистику принятых и отклоненных файлов. Для установки надежной проверки:
@@ -248,6 +257,22 @@ python -m fcn_synth_generator.font_validation \
 ```
 
 `--include-rejected` дополнительно отрисует шрифты, не прошедшие проверку.
+Визуальная проверка понимает тот же `font_dir`, включая txt-список. Чтобы
+одновременно сохранить список шрифтов, покрывающих весь алфавит конфига,
+запустите проверку на рекурсивном каталоге и укажите файл вывода:
+
+```bash
+python -m fcn_synth_generator.font_validation \
+  --config fcn_synth_generator/configs/eng_101.yaml \
+  --output-dir output/font_validation/latin \
+  --accepted-list-output fcn_synth_generator/fonts/lat.txt
+```
+
+Строки в выходном списке будут относительными к `font_dir`. Для `cyr.txt`
+используйте generation YAML с нужным кириллическим `alphabet` и тем же
+рекурсивным `font_dir`, поменяв пути вывода на `output/font_validation/cyr`
+и `fcn_synth_generator/fonts/cyr.txt`. Не передавайте `--limit` при экспорте
+списка: это ограничение предназначено только для быстрой визуальной проверки.
 
 ## Render Text
 

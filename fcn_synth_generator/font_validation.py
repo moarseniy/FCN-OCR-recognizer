@@ -33,6 +33,15 @@ def parse_args() -> argparse.Namespace:
         help="Also render fonts that do not cover every character in the config alphabet.",
     )
     parser.add_argument("--limit", type=int, default=None, help="Optional limit for a quick validation run.")
+    parser.add_argument(
+        "--accepted-list-output",
+        type=Path,
+        default=None,
+        help=(
+            "Optionally write fonts covering the full alphabet to a .txt list. "
+            "Entries are relative to the configured font_dir root."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -175,6 +184,9 @@ def unique_output_path(output_dir: Path, font_path: Path, index: int) -> Path:
 
 def main() -> None:
     args = parse_args()
+    if args.accepted_list_output is not None and args.limit is not None:
+        raise SystemExit("--accepted-list-output cannot be combined with --limit")
+
     config = load_config(args.config)
     alphabet = config.alphabet
 
@@ -186,6 +198,8 @@ def main() -> None:
     if args.limit is not None:
         font_paths = font_paths[: max(0, args.limit)]
 
+    accepted_font_paths: list[Path] = []
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -194,6 +208,8 @@ def main() -> None:
     for index, font_path_str in enumerate(font_paths):
         font_path = Path(font_path_str)
         missing_chars, error = SingleLineDataset._missing_font_chars(font_path, alphabet)
+        if error is None and not missing_chars:
+            accepted_font_paths.append(font_path)
         if not args.include_rejected and (error is not None or missing_chars):
             skipped += 1
             continue
@@ -211,6 +227,42 @@ def main() -> None:
     print(f"Font validation saved {saved} images to {output_dir}")
     if skipped:
         print(f"Skipped {skipped} rejected fonts. Use --include-rejected to render them too.")
+
+    if args.accepted_list_output is not None:
+        font_root = Path(config.font_dir) if config.font_dir else None
+        if font_root is None:
+            raise ValueError(
+                "--accepted-list-output requires font_dir to point to a directory "
+                "or a .txt font list."
+            )
+        if font_root.is_file() and font_root.suffix.lower() == ".txt":
+            font_root = font_root.parent
+        if not font_root.is_dir():
+            raise NotADirectoryError(
+                f"Cannot determine font-list root from configured font_dir: {font_root}"
+            )
+
+        list_path = args.accepted_list_output.expanduser().resolve()
+        configured_list = Path(config.font_dir).expanduser().resolve()
+        if configured_list.is_file() and list_path == configured_list:
+            raise ValueError("Refusing to overwrite the input font list")
+
+        relative_paths = []
+        for font_path in accepted_font_paths:
+            try:
+                relative_paths.append(font_path.resolve().relative_to(font_root.resolve()).as_posix())
+            except ValueError as exc:
+                raise ValueError(
+                    f"Font {font_path} is outside font_dir root {font_root}; "
+                    "cannot write it as a relative font-list entry."
+                ) from exc
+
+        list_path.parent.mkdir(parents=True, exist_ok=True)
+        list_path.write_text(
+            "".join(f"{path}\n" for path in relative_paths),
+            encoding="utf-8",
+        )
+        print(f"Accepted font list saved: {list_path} ({len(relative_paths)} fonts)")
 
 
 if __name__ == "__main__":

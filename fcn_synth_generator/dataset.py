@@ -1565,13 +1565,38 @@ class SingleLineDataset:
             root = Path(font_dir)
             if not root.exists():
                 raise FileNotFoundError(f"font_dir does not exist: {root}")
-            if not root.is_dir():
-                raise NotADirectoryError(f"font_dir is not a directory: {root}")
-            paths.extend(
-                path
-                for path in root.rglob("*")
-                if path.is_file() and path.suffix.lower() in normalized_extensions
-            )
+            if root.is_dir():
+                paths.extend(
+                    path
+                    for path in root.rglob("*")
+                    if path.is_file() and path.suffix.lower() in normalized_extensions
+                )
+            elif root.is_file() and root.suffix.lower() == ".txt":
+                try:
+                    lines = root.read_text(encoding="utf-8-sig").splitlines()
+                except OSError as exc:
+                    raise OSError(f"Could not read font list {root}: {exc}") from exc
+
+                for line_number, raw_line in enumerate(lines, start=1):
+                    entry = raw_line.strip()
+                    if not entry or entry.startswith("#"):
+                        continue
+                    path = Path(entry).expanduser()
+                    if not path.is_absolute():
+                        path = root.parent / path
+                    if path.suffix.lower() not in normalized_extensions:
+                        raise ValueError(
+                            f"Unsupported font extension in {root}:{line_number}: "
+                            f"{entry!r}; expected one of {sorted(normalized_extensions)}"
+                        )
+                    if path.is_file():
+                        paths.append(path)
+                    else:
+                        missing_paths.append(path)
+            else:
+                raise NotADirectoryError(
+                    f"font_dir must be a directory or a .txt font list: {root}"
+                )
 
         if configured_paths is None and font_dir is None:
             paths.extend(Path(path) for path in DEFAULT_FONT_CANDIDATES)
@@ -1586,7 +1611,8 @@ class SingleLineDataset:
 
         if not deduplicated:
             raise FileNotFoundError(
-                "No font files found. Pass font_dir or font_paths in the dataset config."
+                "No font files found. Pass a font directory, a .txt font list, "
+                "or font_paths in the dataset config."
             )
         return deduplicated, missing_paths
 
